@@ -256,7 +256,8 @@ const N_RAW_PAPER_JUMPY  = 30;
 // Drop this many frames off the END of the GT trail in the paper-figure
 // panel (residual track noise at the trajectory tail otherwise pollutes the
 // still). Applies to GT only — Pred and Raw still span the full clip.
-const PAPER_GT_TAIL_DROP = 11;
+// 9 → keeps frames 0..23 inclusive on a 33-frame clip.
+const PAPER_GT_TAIL_DROP = 9;
 // Paper-mode gradient is more saturated than the live panels: the pale end
 // blends only PAPER_MIX_LO * white into the base color, so even the oldest
 // segment reads as a clear pink/green/red rather than near-white.
