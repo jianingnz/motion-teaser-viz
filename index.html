@@ -17,10 +17,10 @@
   --text-secondary: #6b7280;
   --text-muted: #9ca3af;
 
-  /* High-contrast trail colors on white */
-  --c-hist: #2563eb;     /* deep blue — context / history */
+  /* Trail colors */
+  --c-hist: #94a3b8;     /* slate / cool grey-blue — context */
   --c-gt:   #16a34a;     /* deep green — ground truth */
-  --c-pred: #dc2626;     /* deep red — prediction */
+  --c-pred: #ea580c;     /* deep orange — prediction */
 }
 html, body {
   background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
@@ -217,16 +217,16 @@ const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 6;      // catmull-rom samples per interval
 const POINT_SPHERE_R     = 0.0055; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0078; // anchor at history end
-const PC_POINT_PIX       = 9.0;    // PC base pixel size
+const PC_POINT_PIX       = 5.5;    // PC base pixel size (smaller — was 9)
 const TRAIL_LINE_PX_BIG  = 3.2;    // px linewidth in big panel
 const TRAIL_LINE_PX_SM   = 2.4;    // px linewidth in small panels
 
 const TRAIL_COLORS = {
-  hist: 0x2563eb,
-  gt:   0x16a34a,
-  pred: 0xdc2626,
+  hist: 0x94a3b8,   // slate
+  gt:   0x16a34a,   // deep green
+  pred: 0xea580c,   // deep orange
 };
-const ERR_COLOR = 0x9ca3af; // soft gray
+const ERR_COLOR = 0x6b7280; // soft gray
 
 // Background
 const BG_COLOR = 0xffffff;
@@ -247,8 +247,10 @@ function resetCamera() {
   panels.forEach(p => { p.applyCamera(); p.render(); });
 }
 
-// ──────────── Round, FLAT (no glow) disc shader for the PC ────────────
-function makeDiscMaterial({ size = 8.0 } = {}) {
+// ──────────── Round, FLAT, OPAQUE disc shader for the PC ────────────
+// Hard alpha-cutoff disc with depthWrite enabled so nearer points
+// correctly occlude farther points (no see-through bug).
+function makeDiscMaterial({ size = 5.0 } = {}) {
   return new THREE.ShaderMaterial({
     uniforms: { uSize: { value: size }, uViewport: { value: 600 } },
     vertexShader: `
@@ -259,22 +261,19 @@ function makeDiscMaterial({ size = 8.0 } = {}) {
       void main() {
         vColor = color;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        // perspective-aware sizing in pixels
-        gl_PointSize = max(2.5, uSize * (uViewport / max(0.05, -mv.z)) * 0.0070);
+        gl_PointSize = max(1.5, uSize * (uViewport / max(0.05, -mv.z)) * 0.0050);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       varying vec3 vColor;
       void main() {
         vec2 uv = gl_PointCoord * 2.0 - 1.0;
-        float r2 = dot(uv, uv);
-        if (r2 > 1.0) discard;
-        // Antialiased edge ONLY — no fake highlight, no shading
-        float a = 1.0 - smoothstep(0.85, 1.0, r2);
-        gl_FragColor = vec4(vColor, a);
+        if (dot(uv, uv) > 1.0) discard;
+        gl_FragColor = vec4(vColor, 1.0);
       }`,
-    transparent: true,
-    depthWrite: false,
+    transparent: false,
+    depthWrite: true,
+    depthTest: true,
   });
 }
 
@@ -715,7 +714,7 @@ function drawVideoOverlay(lastFi) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p++) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(37,99,235,0.85)', 1.9);
+      strokeSmoothPath(ctx, pts, 'rgba(148,163,184,0.85)', 1.9);
     }
   }
   if (cfg.gt_2d && lastFi >= nHist) {
@@ -729,7 +728,7 @@ function drawVideoOverlay(lastFi) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p++) {
       const pts = collectPath(cfg.pred_2d, p, tStart, lastFi, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(220,38,38,0.95)', 2.1, [5, 3]);
+      strokeSmoothPath(ctx, pts, 'rgba(234,88,12,0.95)', 2.1, [5, 3]);
     }
   }
 
@@ -745,7 +744,7 @@ function drawVideoOverlay(lastFi) {
     if (cfg.pred_2d && lastFi >= nHist && lastFi < cfg.pred_2d.length) {
       const pt = cfg.pred_2d[lastFi]?.[p];
       if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(220,38,38,0.95)', 4.2);
+        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(234,88,12,0.95)', 4.2);
       }
     }
   }
@@ -766,7 +765,7 @@ function drawChronoOverlay() {
   if (cfg.gt_2d && nHist > 0) {
     for (let p = 0; p < P; p++) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(37,99,235,0.85)', 1.6);
+      strokeSmoothPath(ctx, pts, 'rgba(148,163,184,0.85)', 1.6);
     }
   }
   // GT future: green
@@ -780,7 +779,7 @@ function drawChronoOverlay() {
   if (cfg.pred_2d) {
     for (let p = 0; p < P; p++) {
       const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), cfg.pred_2d.length - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(220,38,38,0.9)', 1.8, [5, 3]);
+      strokeSmoothPath(ctx, pts, 'rgba(234,88,12,0.95)', 1.8, [5, 3]);
     }
   }
   // Endpoint markers
@@ -802,7 +801,7 @@ function drawChronoOverlay() {
     if (cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
-        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(220,38,38,1)', 4.6);
+        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(234,88,12,1)', 4.6);
       }
     }
   }

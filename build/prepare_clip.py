@@ -71,31 +71,40 @@ def build_object_stamps_chrono(
     bg: np.ndarray,
     stamp_frames: list,                 # list of BGR images, one per sampled time
     stamp_pts2d:   list,                # parallel list of [P, 2] normalized point arrays
-    mask_radius:   int = 35,            # disc radius around each query point (px)
-    edge_blur:     int = 9,             # small soft edge to avoid jagged seams
+    dilate_px:     int = 14,            # margin around the convex hull (px)
+    edge_blur:     int = 7,             # small soft edge to avoid jagged seams
 ) -> np.ndarray:
     """Composite an opaque object cutout per stamp_frame onto `bg`.
 
-    For each stamp, the mask is the union of discs around all query points
-    (where the object is). That mask is hard-blended (alpha=mask) so the
-    object reads as solid, not a transparent ghost. Later stamps occlude
-    earlier ones where they overlap.
+    The mask for each stamp is the **convex hull** of the query points,
+    optionally dilated by a small margin. This tightly hugs the object
+    rather than the union-of-discs approach (which would include lots of
+    background between query points). Hard-blended so the object reads as
+    a solid stamp, not a translucent ghost; later stamps occlude earlier
+    ones where they overlap.
     """
     H, W = bg.shape[:2]
     out = bg.astype(np.float32).copy()
 
     for frame, pts in zip(stamp_frames, stamp_pts2d):
-        mask = np.zeros((H, W), dtype=np.uint8)
+        coords = []
         for pt in pts:
             if pt is None or pt[0] is None:
                 continue
             u, v = pt[0], pt[1]
             if not (0 <= u <= 1 and 0 <= v <= 1):
                 continue
-            cx = int(round(u * (W - 1))); cy = int(round(v * (H - 1)))
-            cv2.circle(mask, (cx, cy), mask_radius, 255, -1)
-        if mask.max() == 0:
+            coords.append([int(round(u * (W - 1))), int(round(v * (H - 1)))])
+        if len(coords) < 3:
             continue
+        coords_np = np.array(coords, dtype=np.int32)
+        hull = cv2.convexHull(coords_np)
+        mask = np.zeros((H, W), dtype=np.uint8)
+        cv2.fillPoly(mask, [hull], 255)
+        if dilate_px > 0:
+            k = 2 * dilate_px + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            mask = cv2.dilate(mask, kernel)
         if edge_blur > 1:
             soft = cv2.GaussianBlur(mask, (edge_blur, edge_blur), 0).astype(np.float32) / 255.0
         else:
@@ -149,10 +158,10 @@ def main():
     ap.add_argument("--src-mp4", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--clip-id", required=True)
-    ap.add_argument("--n-stamps", type=int, default=8,
-                    help="Number of object-stamp frames in the chronophoto (last frame is the bg)")
-    ap.add_argument("--mask-radius", type=int, default=40,
-                    help="Disc radius (px) around each query point when building the object mask")
+    ap.add_argument("--n-stamps", type=int, default=4,
+                    help="Number of object stamps in the chronophoto (last frame is the bg + this many earlier stamps)")
+    ap.add_argument("--dilate-px", type=int, default=14,
+                    help="Margin (px) added around the convex hull of query points")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())
@@ -212,16 +221,16 @@ def main():
         bg=bg_frame,
         stamp_frames=stamp_frames,
         stamp_pts2d=stamp_pts2d,
-        mask_radius=args.mask_radius,
-        edge_blur=11,
+        dilate_px=args.dilate_px,
+        edge_blur=7,
     )
     chrono_path = out_video_dir / f"{args.clip_id}_chrono.jpg"
     cv2.imwrite(str(chrono_path), chrono_img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
     clip["chrono"] = {
         "image_url": f"static/videos/{args.clip_id}_chrono.jpg",
         "frame_indices": stamp_video_idxs + [clip_end],   # original indices
-        "mode": "object_stamps_on_last_frame",
-        "mask_radius_px": args.mask_radius,
+        "mode": "object_stamps_on_last_frame_convex_hull",
+        "dilate_px": args.dilate_px,
     }
 
     # ── 3. Trim mp4 to [clip_start, clip_end] inclusive ──
