@@ -12,7 +12,10 @@ single-clip bundle for motion-teaser-viz:
 
 import argparse
 import json
+import os
 import subprocess
+import tempfile
+import zipfile
 from pathlib import Path
 
 import cv2
@@ -23,6 +26,96 @@ try:
     FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
 except Exception:
     FFMPEG_BIN = "ffmpeg"  # rely on PATH
+
+
+# ────────────────────── dense PC from depth (visual.py style) ──────────────────────
+
+def load_exr_depth(raw_bytes: bytes) -> np.ndarray:
+    """Decode a single-channel ('Z') EXR byte string to float32 (H, W)."""
+    import OpenEXR
+    import Imath
+    with tempfile.NamedTemporaryFile(suffix='.exr', delete=False) as f:
+        f.write(raw_bytes); fname = f.name
+    try:
+        exr = OpenEXR.InputFile(fname)
+        dw  = exr.header()['dataWindow']
+        W   = dw.max.x - dw.min.x + 1
+        H   = dw.max.y - dw.min.y + 1
+        buf = exr.channel('Z', Imath.PixelType(Imath.PixelType.FLOAT))
+        depth = np.frombuffer(buf, dtype=np.float32).reshape(H, W).copy()
+        exr.close()
+    finally:
+        os.unlink(fname)
+    return depth
+
+
+def backproject_depth_to_world(depth: np.ndarray, rgb: np.ndarray,
+                               c2w: np.ndarray, intrinsics: np.ndarray,
+                               subsample: int = 2):
+    """Regular-grid sample of depth → world-space (xyz, colors). visual.py logic."""
+    H, W = depth.shape
+    fx, fy, cx, cy = intrinsics
+    us = np.arange(0, W, subsample, dtype=np.int32)
+    vs = np.arange(0, H, subsample, dtype=np.int32)
+    uu, vv = np.meshgrid(us, vs)
+    uu, vv = uu.ravel(), vv.ravel()
+    z = depth[vv, uu]
+    valid = (z > 0) & np.isfinite(z)
+    uu, vv, z = uu[valid], vv[valid], z[valid]
+    xc = (uu.astype(np.float32) - cx) / fx * z
+    yc = (vv.astype(np.float32) - cy) / fy * z
+    pts_cam = np.stack([xc, yc, z, np.ones_like(z)], axis=1)
+    xyz = (c2w @ pts_cam.T).T[:, :3].astype(np.float32)
+    colors = rgb[vv, uu].astype(np.uint8)
+    return xyz, colors
+
+
+def build_dense_concat_pc(vipe_root: Path, video_stem: str,
+                          frame_indices: list, subsample: int = 3):
+    """Concatenate depth-backprojected PCs from `frame_indices` (raw video frame ids)."""
+    pose_path  = vipe_root / 'pose' / f'{video_stem}.npz'
+    intr_path  = vipe_root / 'intrinsics' / f'{video_stem}.npz'
+    depth_zip  = vipe_root / 'depth' / f'{video_stem}.zip'
+    rgb_path   = vipe_root / 'rgb' / f'{video_stem}.mp4'
+    if not all(p.exists() for p in [pose_path, intr_path, depth_zip, rgb_path]):
+        raise RuntimeError(f"vipe artifacts missing for {video_stem}")
+
+    poses = np.load(pose_path)['data'].astype(np.float32)
+    intrs = np.load(intr_path)['data'].astype(np.float32)
+
+    cap = cv2.VideoCapture(str(rgb_path))
+    rgb_frames = {}
+    for fi in frame_indices:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(fi))
+        ok, f = cap.read()
+        if not ok:
+            raise RuntimeError(f"cannot read RGB frame {fi} from {rgb_path}")
+        rgb_frames[int(fi)] = cv2.cvtColor(f, cv2.COLOR_BGR2RGB)
+    cap.release()
+
+    all_xyz, all_col = [], []
+    with zipfile.ZipFile(depth_zip) as zf:
+        names = sorted(zf.namelist())
+        for fi in frame_indices:
+            depth = load_exr_depth(zf.read(names[int(fi)]))
+            c2w   = poses[int(fi)]
+            intr  = intrs[int(fi)]
+            rgb   = rgb_frames[int(fi)]
+            xyz, col = backproject_depth_to_world(depth, rgb, c2w, intr, subsample)
+            all_xyz.append(xyz); all_col.append(col)
+
+    xyz_all = np.concatenate(all_xyz, axis=0)
+    col_all = np.concatenate(all_col, axis=0)
+    return xyz_all, col_all, poses, intrs
+
+
+def write_pc_binary(path: Path, xyz: np.ndarray, colors_u8: np.ndarray):
+    """Compact binary: 4-byte LE uint32 N | N*12 bytes float32 xyz | N*3 bytes uint8 rgb."""
+    N = int(xyz.shape[0])
+    with open(path, 'wb') as f:
+        f.write(np.uint32(N).tobytes())
+        f.write(xyz.astype(np.float32).tobytes())
+        f.write(colors_u8.astype(np.uint8).tobytes())
 
 
 # ────────────────────── color sampling ──────────────────────
@@ -164,6 +257,15 @@ def main():
                     help="Margin (px) added around the strict convex hull of query points")
     ap.add_argument("--edge-blur", type=int, default=3,
                     help="Tiny gaussian blur on the mask edge (odd kernel size; 1 = none)")
+    ap.add_argument("--vipe-root", type=Path,
+                    default=Path("/weka/prior-default/jianingz/home/project/_GenTraj/vipe/vipe_results"),
+                    help="vipe_results dir containing depth/pose/intrinsics/rgb subdirs")
+    ap.add_argument("--video-stem", required=True,
+                    help="Video stem (e.g. part4_pick_place_food_2372) — used to locate vipe artifacts")
+    ap.add_argument("--pc-subsample", type=int, default=3,
+                    help="Pixel stride when backprojecting depth (lower = denser; visual.py default = 2)")
+    ap.add_argument("--pc-n-frames", type=int, default=5,
+                    help="How many depth frames to backproject and concatenate")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())
@@ -241,16 +343,50 @@ def main():
     if n_written != n_clip:
         print(f"  WARN: ffmpeg wrote {n_written} frames, expected {n_clip}")
 
-    # ── 4. Remap all video-frame indices in JSON to be 0-based within trimmed mp4 ──
+    # ── 4. Build dense REGULAR-GRID concatenated PC from depth ──
+    out_pc_dir = args.out_dir / "static" / "data"
+    out_pc_dir.mkdir(parents=True, exist_ok=True)
+    n_concat = max(1, min(args.pc_n_frames, n_clip))
+    pc_frame_idxs = np.linspace(clip_start, clip_end, n_concat).astype(int)
+    print(f"Backprojecting depth at frames {list(pc_frame_idxs)} "
+          f"(subsample={args.pc_subsample}) …")
+    xyz_d, col_d, poses_full, intrs_full = build_dense_concat_pc(
+        args.vipe_root, args.video_stem, list(pc_frame_idxs),
+        subsample=args.pc_subsample,
+    )
+    pc_bin_path = out_pc_dir / f"{args.clip_id}_pc.bin"
+    write_pc_binary(pc_bin_path, xyz_d, col_d)
+    # Drop the bulky pc_xyz / pc_colors arrays from JSON; viewer fetches the bin.
+    clip.pop("pc_xyz", None)
+    clip.pop("pc_colors", None)
+    clip["pc_bin"] = {
+        "url": f"static/data/{args.clip_id}_pc.bin",
+        "n_points": int(xyz_d.shape[0]),
+        "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
+        "n_concat_frames": n_concat,
+        "subsample": args.pc_subsample,
+        "frame_indices_original": [int(x) for x in pc_frame_idxs],
+    }
+
+    # Stash camera params + frame-0 ego camera so the static panels can use them
+    f0 = clip_start
+    clip["camera"] = {
+        "c2w_frame0": poses_full[f0].astype(float).tolist(),
+        "intrinsics_frame0": intrs_full[f0].astype(float).tolist(),
+        "video_stem": args.video_stem,
+    }
+
+    # ── 5. Remap all video-frame indices in JSON to be 0-based within trimmed mp4 ──
     remap_clip_indices(clip, clip_start)
 
-    # ── 5. Write enriched JSON ──
+    # ── 6. Write enriched JSON ──
     out_json = out_data_dir / f"{args.clip_id}.json"
     out_json.write_text(json.dumps(clip))
 
     print(f"wrote {out_json}    ({out_json.stat().st_size//1024} KB)")
     print(f"wrote {mp4_dst}     ({mp4_dst.stat().st_size//1024} KB, {n_clip} frames @ {fps:.1f}fps)")
     print(f"wrote {chrono_path}  ({chrono_path.stat().st_size//1024} KB, bg=last frame + {len(stamp_video_idxs)} object stamps)")
+    print(f"wrote {pc_bin_path}   ({pc_bin_path.stat().st_size//1024} KB, {xyz_d.shape[0]} dense PC points from {n_concat} frames @ subsample={args.pc_subsample})")
     for obj, n in sampled.items():
         print(f"  sampled {n} colors for obj={obj}")
 
