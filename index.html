@@ -514,14 +514,17 @@ class Panel {
   }
 
   // Build a smooth segments-batch for one trail type, with per-vertex colors
-  // that ramp from dim (oldest, segment start) to vivid (newest, current frame)
-  // along the base color. This encodes motion direction as a brightness
-  // gradient — the eye reads the bright end as "now" and the dim end as "earlier".
+  // that ramp from a *pale tint* of the base color (oldest, segment start) to
+  // the *vivid* base color (newest, current frame). The pale end blends toward
+  // white instead of black so the gradient reads light → saturated rather than
+  // dark → saturated, matching the light scene background.
   _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat, baseColor) {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
-    const K_LO = 0.20, K_HI = 1.00;  // brightness ramp (oldest → newest)
+    // Mix fraction of base color: oldest = MIX_LO of base + (1-MIX_LO) of white,
+    // newest = MIX_HI of base + (1-MIX_HI) of white.
+    const MIX_LO = 0.18, MIX_HI = 1.00;
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const raw = [];
       for (let fi = fStart; fi < fEndExclusive; fi++) {
@@ -537,12 +540,13 @@ class Panel {
       for (let i = 0; i < m - 1; i++) {
         const t0 = i / (m - 1);
         const t1 = (i + 1) / (m - 1);
-        const k0 = K_LO + (K_HI - K_LO) * t0;
-        const k1 = K_LO + (K_HI - K_LO) * t1;
+        const k0 = MIX_LO + (MIX_HI - MIX_LO) * t0;
+        const k1 = MIX_LO + (MIX_HI - MIX_LO) * t1;
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
-        cols.push(r0*k0, g0*k0, b0*k0);
-        cols.push(r0*k1, g0*k1, b0*k1);
+        // rgb = base * k + white * (1 - k)  — light gradient
+        cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
+        cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
       }
     }
     if (segs.length === 0) return null;
@@ -788,7 +792,8 @@ function collectPath(pts2d, p, fStart, fEnd, W, H) {
   return out;
 }
 
-// Per-segment gradient stroke: oldest → dim, newest → vivid (motion direction).
+// Per-segment gradient stroke: oldest → pale tint, newest → vivid (motion
+// direction reads as a light → saturated gradient, not dark → saturated).
 // `baseRgb` = [r, g, b] in 0–255. Optional `dash` keeps the dashed-pred look.
 function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
   if (pts.length < 2) return;
@@ -799,15 +804,17 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  const K_LO = 0.30, K_HI = 1.00;
-  const A_LO = 0.45, A_HI = 0.95;
+  // mix fraction of base color (rest is white) and alpha at each end
+  const MIX_LO = 0.18, MIX_HI = 1.00;
+  const A_LO = 0.55, A_HI = 0.95;
   for (let i = 0; i < m - 1; i++) {
     const t = (i + 0.5) / Math.max(1, m - 1);
-    const k = K_LO + (K_HI - K_LO) * t;
+    const k = MIX_LO + (MIX_HI - MIX_LO) * t;
     const a = A_LO + (A_HI - A_LO) * t;
-    const r = Math.min(255, Math.round(baseRgb[0] * k));
-    const g = Math.min(255, Math.round(baseRgb[1] * k));
-    const b = Math.min(255, Math.round(baseRgb[2] * k));
+    // rgb = base * k + white * (1 - k)
+    const r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
+    const g = Math.min(255, Math.round(baseRgb[1] * k + 255 * (1 - k)));
+    const b = Math.min(255, Math.round(baseRgb[2] * k + 255 * (1 - k)));
     ctx.strokeStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
     ctx.beginPath();
     ctx.moveTo(smooth[i][0], smooth[i][1]);
