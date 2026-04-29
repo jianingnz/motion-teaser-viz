@@ -339,19 +339,21 @@ class Panel {
 
     this.staticGroup = new THREE.Group();
     this.dynGroup = new THREE.Group();
+    this.staticGroup.renderOrder = 0;   // PC draws first
+    this.dynGroup.renderOrder = 2;      // trails + spheres always draw after PC
     this.scene.add(this.staticGroup);
     this.scene.add(this.dynGroup);
 
-    // Sphere material: flat color (NO glow / NO directional shading)
-    this.sphereMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    // Sphere material — flat color, depthTest off so spheres always overlay PC
+    this.sphereMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false });
 
-    // line materials
+    // Line materials — depthTest off so trails always overlay PC
     const lw = this.opts.lineWidth;
     this.lineMats = {
-      hist: new LineMaterial({ color: TRAIL_COLORS.hist, linewidth: lw, transparent:true, opacity:0.95, dashed:false }),
-      gt:   new LineMaterial({ color: TRAIL_COLORS.gt,   linewidth: lw, transparent:true, opacity:0.98, dashed:false }),
-      pred: new LineMaterial({ color: TRAIL_COLORS.pred, linewidth: lw, transparent:true, opacity:0.98, dashed:true,  dashSize:0.04, gapSize:0.025 }),
-      err:  new LineMaterial({ color: ERR_COLOR,        linewidth: 1.4, transparent:true, opacity:0.7, dashed:false }),
+      hist: new LineMaterial({ color: TRAIL_COLORS.hist, linewidth: lw, transparent:true, opacity:0.95, depthTest:false, depthWrite:false, dashed:false }),
+      gt:   new LineMaterial({ color: TRAIL_COLORS.gt,   linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:false }),
+      pred: new LineMaterial({ color: TRAIL_COLORS.pred, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:true, dashSize:0.04, gapSize:0.025 }),
+      err:  new LineMaterial({ color: ERR_COLOR,        linewidth: 1.4, transparent:true, opacity:0.7, depthTest:false, depthWrite:false, dashed:false }),
     };
 
     this._setupInput();
