@@ -258,12 +258,11 @@ const N_RAW_PAPER_JUMPY  = 30;
 // still). Applies to GT only — Pred and Raw still span the full clip.
 // 9 → keeps frames 0..23 inclusive on a 33-frame clip.
 const PAPER_GT_TAIL_DROP = 9;
-// Paper-mode gradient: fade-toward-white scheme, but the bulk of the trail
-// is the vivid base color and only a small tip transitions to pink/pale.
-// We invert the t axis vs the live panels (paper trails START vivid at the
-// oldest frame and FADE pale only near the newest tip) and use a power
-// curve to keep the vivid plateau wide:
-//   k(t) = MIX_LO + (1 - MIX_LO) * pow(1 - t, PAPER_T_EXP)
+// Paper-mode gradient: same time direction as the live panels (pale at the
+// OLDEST frame, vivid at the NEWEST), but a power curve keeps the vivid
+// plateau wide so only a small region near the oldest tip is pale and the
+// bulk of each trail reads as the actual base color.
+//   k(t) = MIX_LO + (1 - MIX_LO) * pow(t, PAPER_T_EXP)
 // Lower PAPER_T_EXP → faster transition → smaller pale region.
 const PAPER_MIX_LO       = 0.15;
 const PAPER_T_EXP        = 0.30;
@@ -665,11 +664,10 @@ class Panel {
       for (let i = 0; i < m - 1; i++) {
         const t0 = i / (m - 1);
         const t1 = (i + 1) / (m - 1);
-        // Paper inverts t (vivid at oldest); live uses t directly (vivid at newest).
-        const u0 = isPaperGrad ? (1 - t0) : t0;
-        const u1 = isPaperGrad ? (1 - t1) : t1;
-        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u0, T_EXP);
-        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u1, T_EXP);
+        // Same time direction as live (pale at oldest, vivid at newest);
+        // paper uses a steeper power curve to keep the vivid plateau wide.
+        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
+        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
         cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
@@ -745,10 +743,8 @@ class Panel {
           for (let i = 0; i < m - 1; i++) {
             const t0 = i / (m - 1);
             const t1 = (i + 1) / (m - 1);
-            const u0 = isPaper ? (1 - t0) : t0;
-            const u1 = isPaper ? (1 - t1) : t1;
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u0, T_EXP);
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u1, T_EXP);
+            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
+            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
             cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
