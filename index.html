@@ -18,7 +18,7 @@
   --text-muted: #9ca3af;
 
   /* Trail colors — bright + saturated */
-  --c-hist: #8fd9f8;     /* baby blue — context */
+  --c-hist: #0ea5e9;     /* sky blue — context */
   --c-gt:   #34d399;     /* mint green — ground truth */
   --c-pred: #f0529c;     /* pink — prediction */
 }
@@ -245,7 +245,7 @@ const TRAIL_LINE_PX_SM   = 1.7;    // px linewidth in small panels
 const RENDER_PIXEL_RATIO = Math.min(2.5, (window.devicePixelRatio || 1) * 2);
 
 const TRAIL_COLORS = {
-  hist: 0x8fd9f8,   // baby blue
+  hist: 0x0ea5e9,   // sky blue
   gt:   0x34d399,   // mint green
   pred: 0xf0529c,   // pink
 };
@@ -518,13 +518,15 @@ class Panel {
   // the *vivid* base color (newest, current frame). The pale end blends toward
   // white instead of black so the gradient reads light → saturated rather than
   // dark → saturated, matching the light scene background.
-  _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat, baseColor) {
+  _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat, baseColor, useGradient = true) {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
     // Mix fraction of base color: oldest = MIX_LO of base + (1-MIX_LO) of white,
-    // newest = MIX_HI of base + (1-MIX_HI) of white.
-    const MIX_LO = 0.18, MIX_HI = 1.00;
+    // newest = MIX_HI of base + (1-MIX_HI) of white. With useGradient=false the
+    // whole trail stays at full base color (no temporal fade).
+    const MIX_LO = useGradient ? 0.18 : 1.00;
+    const MIX_HI = 1.00;
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const raw = [];
       for (let fi = fStart; fi < fEndExclusive; fi++) {
@@ -580,7 +582,8 @@ class Panel {
 
     if (this.opts.showHist && nHist > 0) {
       const histEnd = Math.min(nHist - 1, lastFi);
-      const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist, this.lineBaseCols.hist);
+      // Solid sky-blue history (no temporal gradient — only GT/pred fade).
+      const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist, this.lineBaseCols.hist, false);
       if (layer) this.dynGroup.add(layer);
     }
     if (this.opts.showGT && lastFi >= nHist) {
@@ -792,6 +795,23 @@ function collectPath(pts2d, p, fStart, fEnd, W, H) {
   return out;
 }
 
+// Solid stroke (no gradient) — used for history trails so they read as a
+// constant context line, not a fade.
+function strokeSolidPath(ctx, pts, color, lineWidth, dash=null) {
+  if (pts.length < 2) return;
+  const smooth = smoothPath2D(pts);
+  if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(smooth[0][0], smooth[0][1]);
+  for (let i = 1; i < smooth.length; i++) ctx.lineTo(smooth[i][0], smooth[i][1]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
 // Per-segment gradient stroke: oldest → pale tint, newest → vivid (motion
 // direction reads as a light → saturated gradient, not dark → saturated).
 // `baseRgb` = [r, g, b] in 0–255. Optional `dash` keeps the dashed-pred look.
@@ -826,7 +846,7 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
 
 // Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars.
 const TRAIL_RGB = {
-  hist: [143, 217, 248],
+  hist: [ 14, 165, 233],
   gt:   [ 52, 211, 153],
   pred: [240,  82, 156],
 };
@@ -872,7 +892,7 @@ function drawVideoOverlay(fiFrac) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.hist, 1.4);
+      strokeSolidPath(ctx, pts, 'rgba(14,165,233,0.85)', 1.4);
     }
   }
   if (cfg.gt_2d && lastFi >= nHist) {
@@ -923,7 +943,7 @@ function drawChronoOverlay() {
   if (cfg.gt_2d && nHist > 0) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.hist, 1.2);
+      strokeSolidPath(ctx, pts, 'rgba(14,165,233,0.85)', 1.2);
     }
   }
   if (cfg.gt_2d) {
