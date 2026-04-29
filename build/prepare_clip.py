@@ -210,15 +210,25 @@ def build_object_stamps_chrono(
 
 # ────────────────────── mp4 trim ──────────────────────
 
-def trim_mp4_ffmpeg(src: Path, dst: Path, start_frame: int, end_frame: int, fps: float):
-    """Use ffmpeg `select` filter to extract exactly frames [start_frame, end_frame] inclusive."""
+def trim_mp4_ffmpeg(src: Path, dst: Path, start_frame: int, end_frame: int,
+                    fps: float, out_fps: float = None):
+    """Trim to [start_frame, end_frame], optionally up-sample to `out_fps` with
+    motion-compensated frame interpolation so playback at slow rates stays fluid."""
     n_frames = end_frame - start_frame + 1
-    duration = n_frames / fps
-    # Use frame-accurate seek + select; re-encode h264 yuv420p crf 22.
+    if out_fps and out_fps > fps + 0.1:
+        # 1) select clip frames at native fps, 2) reset PTS, 3) motion-interpolate to out_fps
+        vf = (f"select=between(n\\,{start_frame}\\,{end_frame}),"
+              f"setpts=PTS-STARTPTS,"
+              f"fps={fps},"
+              f"minterpolate=fps={out_fps}:mi_mode=mci:mc_mode=aobmc:vsbmc=1")
+    else:
+        vf = (f"select=between(n\\,{start_frame}\\,{end_frame}),"
+              f"setpts=PTS-STARTPTS,"
+              f"fps={fps}")
     cmd = [
         FFMPEG_BIN, "-y", "-loglevel", "error",
         "-i", str(src),
-        "-vf", f"select=between(n\\,{start_frame}\\,{end_frame}),setpts=PTS-STARTPTS,fps={fps}",
+        "-vf", vf,
         "-an",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "22",
         str(dst),
@@ -268,6 +278,10 @@ def main():
                     help="How many depth frames to backproject and concatenate. "
                          "Default = 1 (frame 0 only) so the hand isn't ghosted into the PC. "
                          "Increase only if you actually want a multi-frame fused scene.")
+    ap.add_argument("--out-fps", type=float, default=60.0,
+                    help="Output mp4 fps. If higher than source fps, ffmpeg's "
+                         "minterpolate (motion-compensated) is used to add frames "
+                         "so slow-mo playback stays smooth. Default 60.")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())
@@ -341,9 +355,11 @@ def main():
 
     # ── 3. Trim mp4 to [clip_start, clip_end] inclusive ──
     mp4_dst = out_video_dir / f"{args.clip_id}.mp4"
-    n_written = trim_mp4_ffmpeg(args.src_mp4, mp4_dst, clip_start, clip_end, fps=fps)
+    n_written = trim_mp4_ffmpeg(args.src_mp4, mp4_dst, clip_start, clip_end,
+                                fps=fps, out_fps=args.out_fps)
     if n_written != n_clip:
-        print(f"  WARN: ffmpeg wrote {n_written} frames, expected {n_clip}")
+        print(f"  ffmpeg wrote {n_written} clip-source frames "
+              f"(motion-interpolated to {args.out_fps:.0f} fps)")
 
     # ── 4. Build dense REGULAR-GRID concatenated PC from depth ──
     out_pc_dir = args.out_dir / "static" / "data"

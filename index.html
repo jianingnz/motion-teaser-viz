@@ -514,25 +514,21 @@ class Panel {
     const P     = cfg.gt_3d[0].length;
     const ptColors = cfg.pt_colors_rgb || [];
 
-    // History (full so far)
     if (this.opts.showHist && nHist > 0) {
       const histEnd = Math.min(nHist - 1, lastFi);
       const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist);
       if (layer) this.dynGroup.add(layer);
     }
-    // GT future trail
     if (this.opts.showGT && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
       const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, lastFi + 1, P, this.lineMats.gt);
       if (layer) this.dynGroup.add(layer);
     }
-    // Pred future trail
     if (this.opts.showPred && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
       const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, P, this.lineMats.pred);
       if (layer) this.dynGroup.add(layer);
     }
-    // Error vectors GT↔Pred at current frame
     if (this.opts.showErrors && lastFi >= nHist) {
       const segs = [];
       for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
@@ -547,16 +543,12 @@ class Panel {
       }
     }
 
-    // Per-point object-color spheres — only DURING history. Once we're past
-    // history, the blue trail line stands alone (no lingering object dots).
     if (nHist > 0 && this.opts.showHist && lastFi < nHist) {
       this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, ANCHOR_SPHERE_R, 1.0);
     }
-    // Current-frame GT spheres
     if (this.opts.showGT && lastFi >= nHist) {
       this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, POINT_SPHERE_R, 1.0);
     }
-    // Current-frame Pred spheres
     if (this.opts.showPred && lastFi >= nHist) {
       this._addSphereLayer(cfg.pred_3d, lastFi, ptColors, POINT_SPHERE_R, 0.85);
     }
@@ -678,7 +670,6 @@ async function init() {
         const totalRel = App.clipEndFrame - App.clipStartFrame;
         document.getElementById('frame-lbl').textContent = `frame ${fiRel}/${totalRel}`;
         document.getElementById('vid-frame').textContent = `frame ${fiRel}/${totalRel}`;
-        // scrub maps [0..100] to [clipStartTime..clipEndTime]
         const denom = Math.max(1e-6, App.clipEndTime - App.clipStartTime);
         document.getElementById('scrub').value = Math.max(0, Math.min(100,
           (video.currentTime - App.clipStartTime) / denom * 100));
