@@ -264,8 +264,10 @@ def main():
                     help="Video stem (e.g. part4_pick_place_food_2372) — used to locate vipe artifacts")
     ap.add_argument("--pc-subsample", type=int, default=3,
                     help="Pixel stride when backprojecting depth (lower = denser; visual.py default = 2)")
-    ap.add_argument("--pc-n-frames", type=int, default=5,
-                    help="How many depth frames to backproject and concatenate")
+    ap.add_argument("--pc-n-frames", type=int, default=1,
+                    help="How many depth frames to backproject and concatenate. "
+                         "Default = 1 (frame 0 only) so the hand isn't ghosted into the PC. "
+                         "Increase only if you actually want a multi-frame fused scene.")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())

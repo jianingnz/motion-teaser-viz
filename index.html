@@ -161,25 +161,6 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </section>
 
-  <!-- Static high-resolution renders (matplotlib, visual.py-style; no interaction) -->
-  <section class="row small" id="static-panel-row" style="display:none;">
-    <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-hist)">⑤a · history (static render)</span></div>
-      <div class="body"><img id="spanel-hist" style="width:100%;height:100%;object-fit:contain;background:#fff;"></div>
-    </div>
-    <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-gt)">⑤b · history + GT (static render)</span></div>
-      <div class="body"><img id="spanel-gt" style="width:100%;height:100%;object-fit:contain;background:#fff;"></div>
-    </div>
-    <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-pred)">⑤c · history + Pred (static render)</span></div>
-      <div class="body"><img id="spanel-pred" style="width:100%;height:100%;object-fit:contain;background:#fff;"></div>
-    </div>
-    <div class="card panel-card">
-      <div class="ttl"><span>⑤d · combined (static render)</span></div>
-      <div class="body"><img id="spanel-all" style="width:100%;height:100%;object-fit:contain;background:#fff;"></div>
-    </div>
-  </section>
 
   <!-- Controls -->
   <div class="card controls-card">
@@ -658,15 +639,6 @@ async function init() {
     console.log(`PC: ${clipData._pc.N} points loaded from ${clipData.pc_bin.url}`);
   }
 
-  // Wire up static-render panels if present
-  if (clipData.static_panels && clipData.static_panels.panels) {
-    const sp = clipData.static_panels.panels;
-    if (sp.hist) document.getElementById('spanel-hist').src = sp.hist;
-    if (sp.gt)   document.getElementById('spanel-gt').src   = sp.gt;
-    if (sp.pred) document.getElementById('spanel-pred').src = sp.pred;
-    if (sp.all)  document.getElementById('spanel-all').src  = sp.all;
-    document.getElementById('static-panel-row').style.display = 'grid';
-  }
   document.getElementById('hdr-caption').textContent = clipData.caption || '';
   document.getElementById('hdr-meta').textContent =
     `obj=${cfg.obj_name} · t=${cfg.t} · MSE=${(clipData.mse??NaN).toFixed(4)} · L2=${(clipData.l2??NaN).toFixed(4)} · ${cfg.gt_3d[0].length} pts × ${cfg.gt_3d.length} frames`;
