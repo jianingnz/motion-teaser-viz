@@ -258,20 +258,19 @@ const N_RAW_PAPER_JUMPY  = 30;
 // still). Applies to GT only — Pred and Raw still span the full clip.
 // 9 → keeps frames 0..23 inclusive on a 33-frame clip.
 const PAPER_GT_TAIL_DROP = 9;
-// Paper-mode gradient: brightness-only ramp (no white mixing). Each segment
-// has rgb = base * k where k ranges PAPER_MIX_LO → 1.0 from oldest to newest.
-// This gives a much more visible color progression than the live panels'
-// fade-toward-white scheme — the old end is a clearly darker shade of the
-// same hue rather than a pale wash, so every segment along the trail reads
-// as a distinct color.
-const PAPER_MIX_LO       = 0.30;
+// Paper-mode gradient: same fade-toward-white scheme as the live panels but
+// with a non-linear curve and a slightly lower floor — so only a small tip
+// at the oldest end is pale, and the rest of the trail is fully vivid.
+// k(t) = MIX_LO + (1 - MIX_LO) * pow(t, PAPER_T_EXP); exp < 1 biases k high.
+const PAPER_MIX_LO       = 0.15;
+const PAPER_T_EXP        = 0.40;
 // In paper mode, drop GT points whose LAST few frames jump a lot — even
 // inside our smoothest set, a few will have a large kink at the trajectory
-// tail that reads as noise in a still figure. We score the last
-// PAPER_GT_TAIL_WINDOW frames before the GT-end cap and keep the cleanest
-// PAPER_GT_KEEP_FRAC * |goodIdx| points.
+// tail that reads as noise in a still figure. To stay stricter without
+// losing track count, we widen the candidate pool to PAPER_GT_POOL_MULT ×
+// N_GT_KEEP smoothest-globally, then keep the N_GT_KEEP cleanest-tail.
 const PAPER_GT_TAIL_WINDOW = 6;
-const PAPER_GT_KEEP_FRAC   = 0.65;
+const PAPER_GT_POOL_MULT   = 1.7;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
 const PC_POINT_PIX       = 7.0;    // PC base pixel size
@@ -639,15 +638,13 @@ class Panel {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
-    // Two gradient modes:
-    //   • mixLoOverride == null  → live panels: rgb = base*k + white*(1-k).
-    //     Old end fades toward white. Subtle, paper-friendly.
-    //   • mixLoOverride != null  → paper panel: rgb = base*k (no white).
-    //     Old end is a darker shade of the same hue. Much more visible
-    //     segment-to-segment color change in a still figure.
-    const isPaperGrad = mixLoOverride !== null;
+    // Both modes use the same `rgb = base*k + white*(1-k)` fade-toward-white,
+    // but the paper panel applies a power curve to t so k rises fast and
+    // most of the trail is vivid — only a small tip at the oldest end is
+    // pale, instead of the live panels' more even fade.
     const MIX_LO = useGradient ? (mixLoOverride ?? 0.18) : 1.00;
     const MIX_HI = 1.00;
+    const T_EXP = (mixLoOverride !== null) ? PAPER_T_EXP : 1.00;
     for (const p of ptIdx) {
       const raw = [];
       for (let fi = fStart; fi < fEndExclusive; fi++) {
@@ -663,19 +660,13 @@ class Panel {
       for (let i = 0; i < m - 1; i++) {
         const t0 = i / (m - 1);
         const t1 = (i + 1) / (m - 1);
-        const k0 = MIX_LO + (MIX_HI - MIX_LO) * t0;
-        const k1 = MIX_LO + (MIX_HI - MIX_LO) * t1;
+        // power-curve t: paper exp < 1 biases the trail toward vivid early.
+        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
+        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
-        if (isPaperGrad) {
-          // brightness-only ramp: dark base → full base, no white
-          cols.push(r0*k0, g0*k0, b0*k0);
-          cols.push(r0*k1, g0*k1, b0*k1);
-        } else {
-          // mix toward white (live panels)
-          cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
-          cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
-        }
+        cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
+        cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
       }
     }
     if (segs.length === 0) return null;
@@ -727,7 +718,7 @@ class Panel {
       const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
       const MIX_LO = isPaper ? PAPER_MIX_LO : 0.18;
       const MIX_HI = 1.00;
-      const isPaperGrad = isPaper;  // same brightness-only ramp as trails
+      const T_EXP  = isPaper ? PAPER_T_EXP : 1.00;
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -747,17 +738,12 @@ class Panel {
           for (let i = 0; i < m - 1; i++) {
             const t0 = i / (m - 1);
             const t1 = (i + 1) / (m - 1);
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * t0;
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * t1;
+            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
+            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-            if (isPaperGrad) {
-              cols.push(r0*k0, g0*k0, b0*k0);
-              cols.push(r0*k1, g0*k1, b0*k1);
-            } else {
-              cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
-              cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
-            }
+            cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
+            cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
           }
         }
       }
@@ -885,16 +871,19 @@ async function init() {
   // the old `p += POINT_SUBSAMPLE` stride.
   cfg._goodIdx = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), N_GT_KEEP);
 
-  // Paper-figure GT idx: from the smoothest-overall set, additionally drop
-  // points whose tail (last PAPER_GT_TAIL_WINDOW frames before the GT cap)
-  // still has a big kink. Keeps the cleanest PAPER_GT_KEEP_FRAC fraction.
+  // Paper-figure GT idx: widen the candidate pool to N_GT_KEEP × POOL_MULT
+  // smoothest-globally, then keep the N_GT_KEEP cleanest in the TAIL window.
+  // This lets us be stricter on tail noise without dropping the track count.
   {
     const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - PAPER_GT_TAIL_DROP);
+    const poolSize   = Math.min(cfg.gt_3d[0].length,
+                                Math.ceil(N_GT_KEEP * PAPER_GT_POOL_MULT));
+    const pool       = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), poolSize);
     const tailScores = pointMaxJumpScores(cfg.gt_3d,
       Math.max(0, paperGtEnd - PAPER_GT_TAIL_WINDOW), paperGtEnd);
-    const ranked = [...cfg._goodIdx].sort((a, b) => tailScores[a] - tailScores[b]);
-    const keep   = Math.max(6, Math.floor(ranked.length * PAPER_GT_KEEP_FRAC));
-    cfg._goodIdxPaper = ranked.slice(0, keep).sort((a, b) => a - b);
+    const ranked = [...pool].sort((a, b) => tailScores[a] - tailScores[b]);
+    cfg._goodIdxPaper = ranked.slice(0, Math.min(N_GT_KEEP, ranked.length))
+                             .sort((a, b) => a - b);
   }
 
   if (clipData.raw_3d && clipData.raw_3d.length) {
