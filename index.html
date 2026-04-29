@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motion Teaser — 4D Trajectory Visualization</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #08080c;
+  --bg-card: #131319;
+  --border: #23232c;
+  --text: #d4d4d4;
+  --text-heading: #f0f0f0;
+  --text-secondary: #888;
+  --text-muted: #555;
+  --c-hist: #7dd3fc;     /* cyan — context */
+  --c-gt:   #22e36b;     /* green — ground truth */
+  --c-pred: #ff7e3c;     /* warm orange — prediction */
+}
+html, body { background: linear-gradient(180deg, #0a0a10 0%, #14141d 100%); min-height: 100vh; font-family: 'Inter', sans-serif; color: var(--text); line-height: 1.5; }
+.page { max-width: 1500px; margin: 0 auto; padding: 24px; }
+
+header.masthead {
+  display:flex; justify-content:space-between; align-items:flex-end;
+  padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--border);
+}
+header h1 { font-family: 'Playfair Display', serif; font-size: 1.7rem; color: var(--text-heading); }
+header .sub { font-size: .8rem; color: var(--text-secondary); margin-top: 4px; }
+header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospace; }
+
+.row { display:grid; gap: 16px; margin-bottom: 16px; }
+.row.top { grid-template-columns: 1fr 1fr; }
+.row.small { grid-template-columns: repeat(4, 1fr); }
+
+.card {
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.card .ttl {
+  font-size: .72rem; padding: 8px 12px; border-bottom: 1px solid var(--border);
+  color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.card .ttl .lg-tag { font-size: .7rem; }
+
+/* Video card */
+.video-card .body { position: relative; width: 100%; }
+.video-card video { width:100%; display:block; }
+.video-card canvas.over { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
+/* Chrono card */
+.chrono-card .body { position: relative; width: 100%; }
+.chrono-card img { width:100%; display:block; }
+.chrono-card canvas.over { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+
+/* 3D card */
+.panel-card .body { width: 100%; flex:1; min-height: 320px; position: relative; background: #0a0a10; }
+.panel-card.big .body { min-height: 480px; }
+.panel-card .body canvas { display: block; width: 100%; height: 100%; }
+
+/* Footer controls */
+.controls-card { padding: 12px 16px; }
+.row-c { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom: 8px; }
+.row-c:last-child { margin-bottom: 0; }
+.row-c label { font-size: .75rem; color: var(--text-secondary); }
+.btn {
+  background: #1c1c25; border: 1px solid var(--border); color: var(--text);
+  padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: .75rem; font-family: inherit;
+}
+.btn:hover { border-color: #444; }
+.btn.on { background: #2c2c3a; border-color: #555; color: var(--text-heading); }
+input[type=range] { flex:1; min-width: 200px; }
+.frame-lbl { font-family: monospace; font-size: .72rem; color: var(--text-muted); min-width: 80px; }
+
+/* Legend */
+.legend { display:flex; gap:18px; font-size: .72rem; color: var(--text-secondary); flex-wrap: wrap; }
+.legend .sw { display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+.legend span { display:inline-flex; align-items: center; }
+
+footer.foot { text-align:center; font-size: .7rem; color: var(--text-muted); margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+footer a { color: #4a9eff; text-decoration: none; }
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div>
+      <h1 id="hdr-title">Motion Teaser — 4D Trajectory Visualization</h1>
+      <div class="sub" id="hdr-caption">Loading…</div>
+    </div>
+    <div class="meta" id="hdr-meta"></div>
+  </header>
+
+  <!-- Top row: video + chronophoto -->
+  <section class="row top">
+    <div class="card video-card">
+      <div class="ttl"><span>① RGB video + 2D tracks</span><span class="lg-tag" id="vid-frame">frame 0</span></div>
+      <div class="body">
+        <video id="rgb-video" muted loop playsinline preload="auto"></video>
+        <canvas class="over" id="vid-overlay"></canvas>
+      </div>
+    </div>
+    <div class="card chrono-card">
+      <div class="ttl"><span>② Chronophotography (motion ghost) + 2D tracks</span><span class="lg-tag">all frames composited</span></div>
+      <div class="body">
+        <img id="chrono-img" alt="chronophoto">
+        <canvas class="over" id="chrono-overlay"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- Big combined 3D panel -->
+  <section class="row">
+    <div class="card panel-card big">
+      <div class="ttl"><span>③ 3D scene · combined view (history + GT + prediction + scene point cloud)</span><span class="lg-tag">drag to rotate · scroll to zoom · synced across all panels</span></div>
+      <div class="body"><canvas id="canvas-all"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Small comparison panels -->
+  <section class="row small">
+    <div class="card panel-card">
+      <div class="ttl"><span style="color:var(--c-hist)">④a · history only</span></div>
+      <div class="body"><canvas id="canvas-hist"></canvas></div>
+    </div>
+    <div class="card panel-card">
+      <div class="ttl"><span style="color:var(--c-gt)">④b · history + GT future</span></div>
+      <div class="body"><canvas id="canvas-gt"></canvas></div>
+    </div>
+    <div class="card panel-card">
+      <div class="ttl"><span style="color:var(--c-pred)">④c · history + prediction</span></div>
+      <div class="body"><canvas id="canvas-pred"></canvas></div>
+    </div>
+    <div class="card panel-card">
+      <div class="ttl"><span>④d · history + GT + pred + error</span></div>
+      <div class="body"><canvas id="canvas-cmp"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Controls -->
+  <div class="card controls-card">
+    <div class="row-c">
+      <button class="btn" id="play-btn">▶</button>
+      <button class="btn" id="step-back">◀|</button>
+      <button class="btn" id="step-fwd">|▶</button>
+      <select class="btn" id="rate-sel">
+        <option value="1">1×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.25" selected>0.25×</option>
+        <option value="0.1">0.1×</option>
+      </select>
+      <input type="range" id="scrub" min="0" max="100" step="any" value="0">
+      <span class="frame-lbl" id="frame-lbl">frame 0/0</span>
+    </div>
+    <div class="row-c">
+      <label>Toggle layers in big panel:</label>
+      <button class="btn on" id="t-pc">scene point cloud</button>
+      <button class="btn on" id="t-hist">history</button>
+      <button class="btn on" id="t-gt">GT future</button>
+      <button class="btn on" id="t-pred">prediction</button>
+      <button class="btn" id="t-err">GT↔Pred error vectors</button>
+      <button class="btn" id="t-camera-reset">reset camera</button>
+    </div>
+    <div class="row-c">
+      <span class="legend">
+        <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
+        <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
+        <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
+        <span><span class="sw" style="background:#fff;border:1px solid #555"></span>per-point dot color = sampled from frame 0 (object identity)</span>
+      </span>
+    </div>
+  </div>
+
+  <footer class="foot">
+    <p>Built for the MotionPlanner / 4D point-tracking teaser. Code:
+      <a href="https://github.com/jianingnz/motion-teaser-viz" target="_blank">github.com/jianingnz/motion-teaser-viz</a>
+    </p>
+  </footer>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+
+// ──────────── Config ────────────
+const CLIP_URL = new URLSearchParams(location.search).get('clip')
+  || 'static/data/bowls_nest_t91.json';
+const TRAIL_LEN = 12;          // frames of trail to render in 3D / 2D-overlay
+const POINT_SPHERE_R = 0.011;  // 3D sphere radius for current-frame trajectory dots
+const ANCHOR_SPHERE_R = 0.014; // bigger anchor at history-end
+const PC_POINT_PIX = 5.0;      // base pixel size for PC discs
+const TRAIL_LINE_PX = 3.0;     // base px linewidth for trails
+
+const TRAIL_COLORS = {
+  hist: new THREE.Color(0x7dd3fc),
+  gt:   new THREE.Color(0x22e36b),
+  pred: new THREE.Color(0xff7e3c),
+};
+
+// ──────────── Shared camera state ────────────
+const camState = {
+  yaw: Math.PI * 0.25,
+  pitch: 0.35,
+  dist: 3.0,
+  target: new THREE.Vector3(0, 0, 0),
+  default: null,
+};
+function snapshotDefault() { camState.default = { ...camState, target: camState.target.clone() }; }
+function resetCamera() {
+  if (!camState.default) return;
+  camState.yaw = camState.default.yaw;
+  camState.pitch = camState.default.pitch;
+  camState.dist = camState.default.dist;
+  camState.target.copy(camState.default.target);
+  panels.forEach(p => p.applyCamera());
+  panels.forEach(p => p.render());
+}
+
+// ──────────── Round disc shader for point clouds (replaces square gl.POINTS) ────────────
+function makeDiscMaterial({ size = 5.0, opacityFalloff = true } = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uSize: { value: size },
+      uViewport: { value: 600 },
+    },
+    vertexShader: `
+      attribute vec3 color;
+      varying vec3 vColor;
+      uniform float uSize;
+      uniform float uViewport;
+      void main() {
+        vColor = color;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = max(1.5, uSize * (uViewport / -mv.z) * 0.0025);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      void main() {
+        vec2 uv = gl_PointCoord * 2.0 - 1.0;
+        float r2 = dot(uv, uv);
+        if (r2 > 1.0) discard;
+        // antialiased soft disc with gentle highlight
+        float a = 1.0 - smoothstep(0.85, 1.0, r2);
+        float hl = 1.0 - r2 * 0.4;
+        gl_FragColor = vec4(vColor * hl, a);
+      }`,
+    transparent: true,
+    depthWrite: false,
+  });
+}
+
+// ──────────── Panel: one 3D viewer ────────────
+class Panel {
+  constructor(canvasId, opts) {
+    this.canvas = document.getElementById(canvasId);
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, ...opts };
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+    this.renderer.setClearColor(0x0a0a10, 1);
+    this.scene = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(50, 1, 0.005, 500);
+
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(2.5, 4.0, 3.0);
+    this.scene.add(dir);
+    const dir2 = new THREE.DirectionalLight(0x99bbff, 0.25);
+    dir2.position.set(-3, 2, -2);
+    this.scene.add(dir2);
+
+    this.staticGroup = new THREE.Group(); this.staticGroup.name = 'static';
+    this.dynGroup = new THREE.Group();    this.dynGroup.name = 'dyn';
+    this.scene.add(this.staticGroup);
+    this.scene.add(this.dynGroup);
+
+    // line materials (each panel owns its own so resolution can be set independently)
+    this.lineMats = {
+      hist: new LineMaterial({ color: TRAIL_COLORS.hist.getHex(), linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.92, depthTest: true, dashed: false }),
+      gt:   new LineMaterial({ color: TRAIL_COLORS.gt.getHex(),   linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.95, depthTest: true, dashed: false }),
+      pred: new LineMaterial({ color: TRAIL_COLORS.pred.getHex(), linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.95, depthTest: true, dashed: true,  dashSize: 0.04, gapSize: 0.025 }),
+      err:  new LineMaterial({ color: 0xff3344, linewidth: 1.6, transparent: true, opacity: 0.7, depthTest: true, dashed: false }),
+    };
+
+    this._setupInput();
+    new ResizeObserver(() => { this.applyCamera(); this.render(); }).observe(this.canvas.parentElement);
+  }
+
+  _setupInput() {
+    let drag = false, pm = {x:0, y:0};
+    this.canvas.addEventListener('mousedown', e => { drag=true; pm={x:e.clientX, y:e.clientY}; });
+    window.addEventListener('mouseup', () => { drag=false; });
+    this.canvas.addEventListener('mousemove', e => {
+      if (!drag) return;
+      camState.yaw -= (e.clientX - pm.x) * 0.005;
+      camState.pitch -= (e.clientY - pm.y) * 0.005;
+      camState.pitch = Math.max(-1.5, Math.min(1.5, camState.pitch));
+      pm = {x:e.clientX, y:e.clientY};
+      panels.forEach(p => { p.applyCamera(); p.render(); });
+    });
+    this.canvas.addEventListener('wheel', e => {
+      camState.dist = Math.max(0.05, Math.min(30, camState.dist + e.deltaY * 0.005));
+      panels.forEach(p => { p.applyCamera(); p.render(); });
+      e.preventDefault();
+    }, { passive: false });
+    this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+  }
+
+  applyCamera() {
+    const { yaw, pitch, dist, target } = camState;
+    this.camera.position.set(
+      target.x + dist * Math.sin(yaw) * Math.cos(pitch),
+      target.y + dist * Math.sin(pitch),
+      target.z + dist * Math.cos(yaw) * Math.cos(pitch),
+    );
+    this.camera.lookAt(target);
+  }
+
+  _resizeRenderer() {
+    const parent = this.canvas.parentElement;
+    const w = parent.clientWidth || 600;
+    const h = parent.clientHeight || 360;
+    this.renderer.setSize(w, h, false);
+    this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px';
+    this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+    // line materials need resolution in pixels
+    const r = new THREE.Vector2(w, h);
+    for (const k in this.lineMats) this.lineMats[k].resolution.copy(r);
+    return { w, h };
+  }
+
+  render() {
+    this._resizeRenderer();
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  // Build the static portion (PC + ground hint). One-time per clip change.
+  buildStatic(clipData, cfg) {
+    while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
+
+    if (this.opts.showPC && clipData.pc_xyz && clipData.pc_colors) {
+      const N = clipData.pc_xyz.length;
+      const pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        pos[i*3]   = clipData.pc_xyz[i][0];
+        pos[i*3+1] = -clipData.pc_xyz[i][1];
+        pos[i*3+2] = -clipData.pc_xyz[i][2];
+        col[i*3]   = clipData.pc_colors[i][0] / 255;
+        col[i*3+1] = clipData.pc_colors[i][1] / 255;
+        col[i*3+2] = clipData.pc_colors[i][2] / 255;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+      const m = makeDiscMaterial({ size: PC_POINT_PIX });
+      m.uniforms.uViewport.value = this.canvas.height || 400;
+      this.pcMaterial = m;
+      this.staticGroup.add(new THREE.Points(g, m));
+    }
+
+    // Soft ground disc near trajectory floor
+    const trajPts = [];
+    for (let f = 0; f < cfg.gt_3d.length; f++) {
+      for (let p = 0; p < cfg.gt_3d[f].length; p++) {
+        const pt = cfg.gt_3d[f][p];
+        if (pt && Number.isFinite(pt[0]) && (Math.abs(pt[0])>1e-8 || Math.abs(pt[1])>1e-8)) {
+          trajPts.push([pt[0], -pt[1], -pt[2]]);
+        }
+      }
+    }
+    if (trajPts.length) {
+      const ys = trajPts.map(p => p[1]); ys.sort((a,b)=>a-b);
+      const xs = trajPts.map(p => p[0]); xs.sort((a,b)=>a-b);
+      const zs = trajPts.map(p => p[2]); zs.sort((a,b)=>a-b);
+      const cx = (xs[0]+xs.at(-1))/2, cy = (ys[0]+ys.at(-1))/2, cz = (zs[0]+zs.at(-1))/2;
+      const spread = Math.max(xs.at(-1)-xs[0], ys.at(-1)-ys[0], zs.at(-1)-zs[0], 0.15);
+      // ground disc as fade-out shadow
+      const groundGeom = new THREE.CircleGeometry(spread*1.4, 64);
+      const groundMat = new THREE.ShaderMaterial({
+        uniforms: {},
+        vertexShader: `
+          varying vec2 vUv;
+          void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+        fragmentShader: `
+          varying vec2 vUv;
+          void main(){
+            float d = length(vUv - vec2(0.5));
+            float a = smoothstep(0.5, 0.0, d) * 0.35;
+            gl_FragColor = vec4(0.55, 0.6, 0.85, a);
+          }`,
+        transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const ground = new THREE.Mesh(groundGeom, groundMat);
+      ground.rotation.x = -Math.PI/2;
+      ground.position.set(cx, ys[0]-0.005, cz);
+      this.staticGroup.add(ground);
+
+      // Cache layout for camera framing
+      this._layout = { cx, cy, cz, spread };
+    }
+  }
+
+  frameToTrajectory() {
+    if (!this._layout) return;
+    const { cx, cy, cz, spread } = this._layout;
+    camState.target.set(cx, cy, cz);
+    camState.dist = spread * 1.3;
+    snapshotDefault();
+    panels.forEach(p => p.applyCamera());
+  }
+
+  // Update dynamic content (trails + spheres) for current video frame
+  updateDynamic(cfg, lastFi) {
+    while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
+
+    const nHist = cfg.n_hist || 0;
+    const af    = cfg.all_frames || cfg.future_frames;
+    const P     = cfg.gt_3d[0].length;
+    const ptColors = cfg.pt_colors_rgb || [];
+
+    // Helper: make a Line2 from per-frame xyz triples for one point
+    const polyLine = (pts3d, ptIdx, fStart, fEnd, mat) => {
+      const seg = [];
+      for (let fi = fStart; fi <= fEnd; fi++) {
+        if (fi < 0 || fi >= pts3d.length) continue;
+        const pt = pts3d[fi][ptIdx];
+        if (!pt || !Number.isFinite(pt[0])) continue;
+        seg.push(pt[0], -pt[1], -pt[2]);
+      }
+      if (seg.length < 6) return null;
+      const g = new LineGeometry();
+      g.setPositions(seg);
+      const ln = new Line2(g, mat);
+      ln.computeLineDistances();
+      ln.scale.set(1, 1, 1);
+      return ln;
+    };
+
+    // ── HISTORY trails (cyan) ──
+    if (this.opts.showHist && nHist > 0) {
+      const histEnd = Math.min(nHist - 1, lastFi);
+      for (let p = 0; p < P; p++) {
+        const ln = polyLine(cfg.gt_3d, p, 0, histEnd, this.lineMats.hist);
+        if (ln) this.dynGroup.add(ln);
+      }
+    }
+
+    // ── GT future trails (green) ──
+    if (this.opts.showGT && lastFi >= nHist) {
+      const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+      for (let p = 0; p < P; p++) {
+        const ln = polyLine(cfg.gt_3d, p, trailStart, lastFi, this.lineMats.gt);
+        if (ln) this.dynGroup.add(ln);
+      }
+    }
+
+    // ── PRED future trails (orange, dashed) ──
+    if (this.opts.showPred && lastFi >= nHist) {
+      const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+      for (let p = 0; p < P; p++) {
+        const ln = polyLine(cfg.pred_3d, p, trailStart, lastFi, this.lineMats.pred);
+        if (ln) this.dynGroup.add(ln);
+      }
+    }
+
+    // ── ERROR vectors (small red lines GT↔Pred at current frame) ──
+    if (this.opts.showErrors && lastFi >= nHist) {
+      for (let p = 0; p < P; p++) {
+        const a = cfg.gt_3d[lastFi]?.[p], b = cfg.pred_3d[lastFi]?.[p];
+        if (!a || !b || !Number.isFinite(a[0]) || !Number.isFinite(b[0])) continue;
+        const g = new LineGeometry();
+        g.setPositions([a[0], -a[1], -a[2], b[0], -b[1], -b[2]]);
+        const ln = new Line2(g, this.lineMats.err);
+        this.dynGroup.add(ln);
+      }
+    }
+
+    // ── Current-frame spheres in object color (true 3D, visible from any angle) ──
+    const sphereGeom = new THREE.SphereGeometry(POINT_SPHERE_R, 14, 12);
+
+    // Anchor sphere at history end (slightly bigger, with white outline = darker shell)
+    if (nHist > 0 && this.opts.showHist) {
+      const histEnd = Math.min(nHist - 1, lastFi);
+      const anchorGeom = new THREE.SphereGeometry(ANCHOR_SPHERE_R, 14, 12);
+      const inst = new THREE.InstancedMesh(anchorGeom,
+        new THREE.MeshLambertMaterial({ color: 0xffffff }), P);
+      const colorAttr = new Float32Array(P * 3);
+      const dummy = new THREE.Object3D();
+      let visN = 0;
+      for (let p = 0; p < P; p++) {
+        const pt = cfg.gt_3d[histEnd]?.[p];
+        if (!pt || !Number.isFinite(pt[0])) continue;
+        dummy.position.set(pt[0], -pt[1], -pt[2]);
+        dummy.updateMatrix();
+        inst.setMatrixAt(visN, dummy.matrix);
+        const c = ptColors[p] || [200,200,200];
+        // brighten slightly for visibility
+        colorAttr[visN*3]   = Math.min(1, c[0]/255 * 1.15);
+        colorAttr[visN*3+1] = Math.min(1, c[1]/255 * 1.15);
+        colorAttr[visN*3+2] = Math.min(1, c[2]/255 * 1.15);
+        visN++;
+      }
+      inst.count = visN;
+      inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+      this.dynGroup.add(inst);
+    }
+
+    // Current-frame GT spheres
+    if (this.opts.showGT && lastFi >= nHist) {
+      this._addSphereInstances(cfg.gt_3d, lastFi, ptColors, sphereGeom, 1.0);
+    }
+    // Current-frame Pred spheres (slightly desaturated to differentiate by position only)
+    if (this.opts.showPred && lastFi >= nHist) {
+      this._addSphereInstances(cfg.pred_3d, lastFi, ptColors, sphereGeom, 0.85);
+    }
+  }
+
+  _addSphereInstances(pts3d, fi, ptColors, geom, brightness) {
+    const P = pts3d[0].length;
+    const inst = new THREE.InstancedMesh(geom,
+      new THREE.MeshLambertMaterial({ color: 0xffffff }), P);
+    const colorAttr = new Float32Array(P * 3);
+    const dummy = new THREE.Object3D();
+    let visN = 0;
+    for (let p = 0; p < P; p++) {
+      const pt = pts3d[fi]?.[p];
+      if (!pt || !Number.isFinite(pt[0])) continue;
+      dummy.position.set(pt[0], -pt[1], -pt[2]);
+      dummy.updateMatrix();
+      inst.setMatrixAt(visN, dummy.matrix);
+      const c = ptColors[p] || [220, 220, 220];
+      colorAttr[visN*3]   = Math.min(1, c[0]/255 * brightness);
+      colorAttr[visN*3+1] = Math.min(1, c[1]/255 * brightness);
+      colorAttr[visN*3+2] = Math.min(1, c[2]/255 * brightness);
+      visN++;
+    }
+    inst.count = visN;
+    inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+    this.dynGroup.add(inst);
+  }
+}
+
+// ──────────── App state ────────────
+let panels = [];
+let clipData = null, cfg = null;
+let video, vidOver, vidOverCtx, chronoOver, chronoOverCtx;
+
+async function init() {
+  const resp = await fetch(CLIP_URL + '?v=' + Date.now());
+  clipData = await resp.json();
+  cfg = clipData.configs[0];
+  document.getElementById('hdr-caption').textContent = clipData.caption || '';
+  document.getElementById('hdr-meta').textContent =
+    `obj=${cfg.obj_name} · t=${cfg.t} · MSE=${(clipData.mse??NaN).toFixed(4)} · L2=${(clipData.l2??NaN).toFixed(4)} · ${cfg.gt_3d[0].length} pts × ${cfg.gt_3d.length} frames`;
+
+  // Video setup
+  video = document.getElementById('rgb-video');
+  // mp4 lives at static/videos/<basename of CLIP_URL>.mp4
+  const base = CLIP_URL.split('/').pop().replace(/\.json$/,'');
+  video.src = `static/videos/${base}.mp4`;
+  vidOver = document.getElementById('vid-overlay');
+  vidOverCtx = vidOver.getContext('2d');
+
+  // Chrono setup
+  const chronoImg = document.getElementById('chrono-img');
+  chronoImg.src = clipData.chrono.image_url;
+  chronoOver = document.getElementById('chrono-overlay');
+  chronoOverCtx = chronoOver.getContext('2d');
+  chronoImg.addEventListener('load', () => {
+    chronoOver.width = chronoImg.naturalWidth;
+    chronoOver.height = chronoImg.naturalHeight;
+    drawChronoOverlay();
+  });
+
+  // Build panels
+  panels = [
+    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false }),
+    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false }),
+    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false }),
+    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true }),
+    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true }),
+  ];
+  panels.forEach(p => p.buildStatic(clipData, cfg));
+  panels[0].frameToTrajectory();
+  panels.forEach(p => p.applyCamera());
+  panels.forEach(p => p.render());
+
+  // Hook video → frame sync
+  video.addEventListener('loadedmetadata', () => {
+    // jump video to start of history
+    const T = clipData.num_frames || 1;
+    video.currentTime = (cfg.hist_frames[0] / Math.max(T-1, 1)) * video.duration;
+    video.pause();
+    setupVideoOverlay();
+    tick();
+  });
+
+  // Wire controls
+  bindControls();
+
+  // Tick loop for animation sync (rAF; video timeupdate is too coarse)
+  function tick() {
+    const T = clipData.num_frames || 1;
+    if (video.duration) {
+      const fi = Math.round(video.currentTime / video.duration * Math.max(T-1, 0));
+      if (fi !== App._lastFi) {
+        App._lastFi = fi;
+        document.getElementById('frame-lbl').textContent = `frame ${fi}/${T-1}`;
+        document.getElementById('vid-frame').textContent = `frame ${fi}`;
+        document.getElementById('scrub').value = (fi / Math.max(T-1, 1)) * 100;
+        const lastFi = videoFrameToConfigFi(fi);
+        panels.forEach(p => { p.updateDynamic(cfg, lastFi); p.render(); });
+        drawVideoOverlay(lastFi);
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+}
+
+const App = { _lastFi: -1 };
+
+function videoFrameToConfigFi(videoFrame) {
+  const af = cfg.all_frames || cfg.future_frames;
+  let lastFi = -1;
+  for (let i = 0; i < af.length; i++) if (af[i] <= videoFrame) lastFi = i;
+  return lastFi;
+}
+
+function setupVideoOverlay() {
+  vidOver.width = video.videoWidth;
+  vidOver.height = video.videoHeight;
+}
+
+// ──────────── 2D Overlay drawing ────────────
+function tracksAtFrame(pts2d, fi, ptIdx) {
+  if (!pts2d || fi < 0 || fi >= pts2d.length) return null;
+  return pts2d[fi]?.[ptIdx];
+}
+
+function pickHex(rgb) {
+  if (!rgb) return '#cccccc';
+  return `rgb(${rgb[0]|0},${rgb[1]|0},${rgb[2]|0})`;
+}
+
+function drawTrack2D(ctx, pts2d, ptIdx, fStart, fEnd, W, H, strokeStyle, lineWidth) {
+  if (!pts2d) return false;
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.beginPath();
+  let started = false;
+  for (let fi = fStart; fi <= fEnd; fi++) {
+    if (fi < 0 || fi >= pts2d.length) continue;
+    const pt = pts2d[fi]?.[ptIdx];
+    if (!pt || pt[0]==null || !Number.isFinite(pt[0]) || pt[0]<0||pt[0]>1||pt[1]<0||pt[1]>1) continue;
+    if (!started) { ctx.moveTo(pt[0]*W, pt[1]*H); started = true; }
+    else ctx.lineTo(pt[0]*W, pt[1]*H);
+  }
+  if (started) ctx.stroke();
+  return started;
+}
+
+function drawDot2D(ctx, pt, W, H, fillColor, r, outline) {
+  if (!pt || pt[0]==null || !Number.isFinite(pt[0])) return;
+  if (pt[0]<0||pt[0]>1||pt[1]<0||pt[1]>1) return;
+  const x = pt[0]*W, y = pt[1]*H;
+  if (outline) {
+    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x, y, r+1.5, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle = fillColor; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+}
+
+function drawVideoOverlay(lastFi) {
+  if (!video.videoWidth) return;
+  const W = vidOver.width = video.videoWidth, H = vidOver.height = video.videoHeight;
+  const ctx = vidOverCtx;
+  ctx.clearRect(0, 0, W, H);
+  if (lastFi < 0) return;
+
+  const nHist = cfg.n_hist || 0;
+  const P = cfg.gt_3d[0].length;
+  const ptColors = cfg.pt_colors_rgb || [];
+
+  // History (cyan trail) up to min(lastFi, nHist-1)
+  const histEnd = Math.min(nHist - 1, lastFi);
+  if (cfg.gt_2d && nHist > 0 && histEnd >= 0) {
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.gt_2d, p, 0, histEnd, W, H, 'rgba(125,211,252,0.85)', 2.5);
+    }
+  }
+
+  // GT future trail (green)
+  if (cfg.gt_2d && lastFi >= nHist) {
+    const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.gt_2d, p, tStart, lastFi, W, H, 'rgba(34,227,107,0.92)', 2.5);
+    }
+  }
+
+  // Pred future trail (orange, slightly thinner)
+  if (cfg.pred_2d && lastFi >= nHist) {
+    const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.pred_2d, p, tStart, lastFi, W, H, 'rgba(255,126,60,0.92)', 2.5);
+    }
+  }
+
+  // Current dots at this frame, colored by per-point object color from frame 0
+  for (let p = 0; p < P; p++) {
+    const ptColor = pickHex(ptColors[p]);
+    if (cfg.gt_2d && lastFi < cfg.gt_2d.length) {
+      drawDot2D(ctx, cfg.gt_2d[lastFi][p], W, H, ptColor, 5.5, true);
+    }
+    if (cfg.pred_2d && lastFi >= nHist && lastFi < cfg.pred_2d.length) {
+      // pred = ringed (open) circle in object color
+      const pt = cfg.pred_2d[lastFi][p];
+      if (pt && pt[0]!=null && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1 && pt[1]>=0 && pt[1]<=1) {
+        const x = pt[0]*W, y = pt[1]*H;
+        ctx.lineWidth = 2.0;
+        ctx.strokeStyle = '#000';
+        ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI*2); ctx.stroke();
+        ctx.strokeStyle = ptColor;
+        ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI*2); ctx.stroke();
+      }
+    }
+  }
+}
+
+// Static chrono overlay — full sequence drawn once
+function drawChronoOverlay() {
+  if (!chronoOver.width) return;
+  const W = chronoOver.width, H = chronoOver.height;
+  const ctx = chronoOverCtx;
+  ctx.clearRect(0, 0, W, H);
+
+  const nHist = cfg.n_hist || 0;
+  const P = cfg.gt_3d[0].length;
+  const af = cfg.all_frames || cfg.future_frames;
+  const ptColors = cfg.pt_colors_rgb || [];
+
+  // For chrono we plot the FULL 2D track, color-coded by trail type
+  // History segment: 0..nHist-1 in cyan
+  if (cfg.gt_2d && nHist > 0) {
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.gt_2d, p, 0, nHist-1, W, H, 'rgba(125,211,252,0.85)', 2.0);
+    }
+  }
+  // GT future: nHist-1..end in green
+  if (cfg.gt_2d) {
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.gt_2d, p, Math.max(0, nHist-1), cfg.gt_2d.length-1, W, H, 'rgba(34,227,107,0.85)', 2.0);
+    }
+  }
+  // Pred future: nHist-1..end in orange (dashed)
+  if (cfg.pred_2d) {
+    ctx.setLineDash([6, 4]);
+    for (let p = 0; p < P; p++) {
+      drawTrack2D(ctx, cfg.pred_2d, p, Math.max(0, nHist-1), cfg.pred_2d.length-1, W, H, 'rgba(255,126,60,0.92)', 2.0);
+    }
+    ctx.setLineDash([]);
+  }
+  // Endpoint markers: start (object color, big), end-of-GT (green outline), end-of-pred (orange outline)
+  for (let p = 0; p < P; p++) {
+    const ptColor = pickHex(ptColors[p]);
+    // start
+    if (cfg.gt_2d) drawDot2D(ctx, cfg.gt_2d[0][p], W, H, ptColor, 4.5, true);
+    // end of GT
+    if (cfg.gt_2d) {
+      const pt = cfg.gt_2d[cfg.gt_2d.length-1][p];
+      if (pt && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1) {
+        const x = pt[0]*W, y = pt[1]*H;
+        ctx.fillStyle = ptColor; ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fill();
+        ctx.strokeStyle = 'rgba(34,227,107,1)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x,y,5.5,0,Math.PI*2); ctx.stroke();
+      }
+    }
+    // end of pred (open circle, orange ring)
+    if (cfg.pred_2d) {
+      const pt = cfg.pred_2d[cfg.pred_2d.length-1][p];
+      if (pt && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1) {
+        const x = pt[0]*W, y = pt[1]*H;
+        ctx.strokeStyle = 'rgba(255,126,60,1)'; ctx.lineWidth = 2.0;
+        ctx.beginPath(); ctx.arc(x,y,5.5,0,Math.PI*2); ctx.stroke();
+      }
+    }
+  }
+}
+
+// ──────────── Controls ────────────
+function bindControls() {
+  document.getElementById('play-btn').onclick = () => {
+    if (video.paused) { video.play(); document.getElementById('play-btn').textContent = '❚❚'; }
+    else { video.pause(); document.getElementById('play-btn').textContent = '▶'; }
+  };
+  document.getElementById('rate-sel').onchange = e => video.playbackRate = parseFloat(e.target.value);
+  document.getElementById('scrub').oninput = e => {
+    if (!video.duration) return;
+    video.currentTime = (e.target.value/100) * video.duration;
+  };
+  document.getElementById('step-back').onclick = () => stepFrame(-1);
+  document.getElementById('step-fwd').onclick  = () => stepFrame(+1);
+  document.getElementById('t-pc').onclick     = (e) => toggleLayer(e, 'showPC');
+  document.getElementById('t-hist').onclick   = (e) => toggleLayer(e, 'showHist');
+  document.getElementById('t-gt').onclick     = (e) => toggleLayer(e, 'showGT');
+  document.getElementById('t-pred').onclick   = (e) => toggleLayer(e, 'showPred');
+  document.getElementById('t-err').onclick    = (e) => toggleLayer(e, 'showErrors');
+  document.getElementById('t-camera-reset').onclick = resetCamera;
+  // initial rate
+  video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
+}
+
+function stepFrame(dir) {
+  if (!video.duration) return;
+  video.pause();
+  document.getElementById('play-btn').textContent = '▶';
+  const T = clipData.num_frames || 1;
+  const cur = Math.round(video.currentTime/video.duration * Math.max(T-1, 0));
+  const next = Math.max(0, Math.min(T-1, cur + dir));
+  video.currentTime = (next / Math.max(T-1, 1)) * video.duration;
+}
+
+function toggleLayer(ev, layer) {
+  const btn = ev.currentTarget;
+  btn.classList.toggle('on');
+  const on = btn.classList.contains('on');
+  // big panel only — small panels keep their fixed assignments
+  panels[0].opts[layer] = on;
+  if (layer === 'showPC') panels[0].buildStatic(clipData, cfg);
+  panels[0].updateDynamic(cfg, App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1);
+  panels[0].render();
+}
+
+init().catch(e => {
+  console.error(e);
+  document.getElementById('hdr-caption').textContent = 'Error: ' + e.message;
+});
+</script>
+</body>
+</html>
