@@ -218,8 +218,8 @@ const SMOOTH_SAMPLES     = 3;      // catmull-rom samples per interval (lower = 
 const POINT_SPHERE_R     = 0.0055; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0078; // anchor at history end
 const PC_POINT_PIX       = 7.5;    // PC base pixel size
-const TRAIL_LINE_PX_BIG  = 1.8;    // px linewidth in big panel (thinner)
-const TRAIL_LINE_PX_SM   = 1.3;    // px linewidth in small panels
+const TRAIL_LINE_PX_BIG  = 2.6;    // px linewidth in big panel
+const TRAIL_LINE_PX_SM   = 1.9;    // px linewidth in small panels
 
 const TRAIL_COLORS = {
   hist: 0x3b82f6,   // vivid blue
@@ -521,10 +521,10 @@ class Panel {
       }
     }
 
-    // Anchor sphere at history end (a bit larger)
-    if (nHist > 0 && this.opts.showHist) {
-      const histEnd = Math.min(nHist - 1, lastFi);
-      this._addSphereLayer(cfg.gt_3d, histEnd, ptColors, ANCHOR_SPHERE_R, 1.0);
+    // Per-point object-color spheres — only DURING history. Once we're past
+    // history, the blue trail line stands alone (no lingering object dots).
+    if (nHist > 0 && this.opts.showHist && lastFi < nHist) {
+      this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, ANCHOR_SPHERE_R, 1.0);
     }
     // Current-frame GT spheres
     if (this.opts.showGT && lastFi >= nHist) {
