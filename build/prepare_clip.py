@@ -160,8 +160,10 @@ def main():
     ap.add_argument("--clip-id", required=True)
     ap.add_argument("--n-stamps", type=int, default=4,
                     help="Number of object stamps in the chronophoto (last frame is the bg + this many earlier stamps)")
-    ap.add_argument("--dilate-px", type=int, default=14,
-                    help="Margin (px) added around the convex hull of query points")
+    ap.add_argument("--dilate-px", type=int, default=2,
+                    help="Margin (px) added around the strict convex hull of query points")
+    ap.add_argument("--edge-blur", type=int, default=3,
+                    help="Tiny gaussian blur on the mask edge (odd kernel size; 1 = none)")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())
@@ -222,7 +224,7 @@ def main():
         stamp_frames=stamp_frames,
         stamp_pts2d=stamp_pts2d,
         dilate_px=args.dilate_px,
-        edge_blur=7,
+        edge_blur=args.edge_blur,
     )
     chrono_path = out_video_dir / f"{args.clip_id}_chrono.jpg"
     cv2.imwrite(str(chrono_path), chrono_img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
