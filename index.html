@@ -506,13 +506,27 @@ class Panel {
     return new LineSegments2(g, mat);
   }
 
-  updateDynamic(cfg, lastFi) {
+  // Interpolate a 3D point at fractional frame fiFrac (used for current-dot motion)
+  _interpPt(pts3d, fiFrac, p) {
+    const f0 = Math.max(0, Math.floor(fiFrac));
+    const f1 = Math.min(f0 + 1, pts3d.length - 1);
+    const t  = Math.max(0, Math.min(1, fiFrac - f0));
+    const a = pts3d[f0]?.[p], b = pts3d[f1]?.[p];
+    if (!a || !Number.isFinite(a[0])) return null;
+    if (f0 === f1 || !b || !Number.isFinite(b[0])) return [a[0], a[1], a[2]];
+    return [a[0]*(1-t) + b[0]*t, a[1]*(1-t) + b[1]*t, a[2]*(1-t) + b[2]*t];
+  }
+
+  updateDynamic(cfg, fiFrac) {
     while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
-    if (lastFi < 0) return;
+    if (fiFrac < 0) return;
 
     const nHist = cfg.n_hist || 0;
     const P     = cfg.gt_3d[0].length;
     const ptColors = cfg.pt_colors_rgb || [];
+    // Trails snap to the nearest integer frame so the polyline never grows
+    // sub-frame (no trajectory interpolation).
+    const lastFi = Math.round(fiFrac);
 
     if (this.opts.showHist && nHist > 0) {
       const histEnd = Math.min(nHist - 1, lastFi);
@@ -529,11 +543,13 @@ class Panel {
       const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, P, this.lineMats.pred);
       if (layer) this.dynGroup.add(layer);
     }
-    if (this.opts.showErrors && lastFi >= nHist) {
+    // Error vectors — interpolated to follow current motion
+    if (this.opts.showErrors && fiFrac >= nHist) {
       const segs = [];
       for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
-        const a = cfg.gt_3d[lastFi]?.[p], b = cfg.pred_3d[lastFi]?.[p];
-        if (!a || !b || !Number.isFinite(a[0]) || !Number.isFinite(b[0])) continue;
+        const a = this._interpPt(cfg.gt_3d, fiFrac, p);
+        const b = this._interpPt(cfg.pred_3d, fiFrac, p);
+        if (!a || !b) continue;
         segs.push(a[0], -a[1], -a[2], b[0], -b[1], -b[2]);
       }
       if (segs.length) {
@@ -543,18 +559,19 @@ class Panel {
       }
     }
 
-    if (nHist > 0 && this.opts.showHist && lastFi < nHist) {
-      this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, ANCHOR_SPHERE_R, 1.0);
+    // Current-frame spheres — INTERPOLATED at fiFrac to match the smooth video
+    if (nHist > 0 && this.opts.showHist && fiFrac < nHist) {
+      this._addSphereLayerFrac(cfg.gt_3d, fiFrac, ptColors, ANCHOR_SPHERE_R, 1.0);
     }
-    if (this.opts.showGT && lastFi >= nHist) {
-      this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, POINT_SPHERE_R, 1.0);
+    if (this.opts.showGT && fiFrac >= nHist) {
+      this._addSphereLayerFrac(cfg.gt_3d, fiFrac, ptColors, POINT_SPHERE_R, 1.0);
     }
-    if (this.opts.showPred && lastFi >= nHist) {
-      this._addSphereLayer(cfg.pred_3d, lastFi, ptColors, POINT_SPHERE_R, 0.85);
+    if (this.opts.showPred && fiFrac >= nHist) {
+      this._addSphereLayerFrac(cfg.pred_3d, fiFrac, ptColors, POINT_SPHERE_R, 0.85);
     }
   }
 
-  _addSphereLayer(pts3d, fi, ptColors, radius, brightness) {
+  _addSphereLayerFrac(pts3d, fiFrac, ptColors, radius, brightness) {
     const P = pts3d[0].length;
     const geom = new THREE.SphereGeometry(radius, 12, 10);
     const inst = new THREE.InstancedMesh(geom, this.sphereMat, P);
@@ -562,8 +579,8 @@ class Panel {
     const dummy = new THREE.Object3D();
     let visN = 0;
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
-      const pt = pts3d[fi]?.[p];
-      if (!pt || !Number.isFinite(pt[0])) continue;
+      const pt = this._interpPt(pts3d, fiFrac, p);
+      if (!pt) continue;
       dummy.position.set(pt[0], -pt[1], -pt[2]);
       dummy.updateMatrix();
       inst.setMatrixAt(visN, dummy.matrix);
@@ -658,28 +675,36 @@ async function init() {
 
   function tick() {
     if (video.duration && App.clipEndTime != null) {
-      // Custom loop: clamp playback to the clip window
       if (video.currentTime > App.clipEndTime + 0.005) {
         video.currentTime = App.clipStartTime;
       }
       const T = App.totalFrames;
-      const fiAbs = Math.round(video.currentTime / video.duration * Math.max(T-1, 0));
-      if (fiAbs !== App._lastFi) {
-        App._lastFi = fiAbs;
-        const fiRel = Math.max(0, fiAbs - App.clipStartFrame);
+      // FRACTIONAL trajectory frame index — drives smooth current-dot motion
+      const fiAbsFrac = (video.currentTime / video.duration) * Math.max(T-1, 0);
+      const fiAbsInt  = Math.round(fiAbsFrac);
+      if (fiAbsInt !== App._lastFi) {
+        App._lastFi = fiAbsInt;
+        const fiRel = Math.max(0, fiAbsInt - App.clipStartFrame);
         const totalRel = App.clipEndFrame - App.clipStartFrame;
         document.getElementById('frame-lbl').textContent = `frame ${fiRel}/${totalRel}`;
         document.getElementById('vid-frame').textContent = `frame ${fiRel}/${totalRel}`;
         const denom = Math.max(1e-6, App.clipEndTime - App.clipStartTime);
         document.getElementById('scrub').value = Math.max(0, Math.min(100,
           (video.currentTime - App.clipStartTime) / denom * 100));
-        const lastFi = videoFrameToConfigFi(fiAbs);
-        panels.forEach(p => { p.updateDynamic(cfg, lastFi); p.render(); });
-        drawVideoOverlay(lastFi);
       }
+      // Render every rAF with fractional fi → trails snap to integer frames,
+      // current dots/spheres move smoothly with the (60fps motion-interpolated) video.
+      const fiFrac = videoFrameFracToConfigFi(fiAbsFrac);
+      panels.forEach(p => { p.updateDynamic(cfg, fiFrac); p.render(); });
+      drawVideoOverlay(fiFrac);
     }
     requestAnimationFrame(tick);
   }
+}
+
+function videoFrameFracToConfigFi(videoFrameFrac) {
+  const af = cfg.all_frames || cfg.future_frames;
+  return Math.max(-1, Math.min(af.length - 1, videoFrameFrac));
 }
 
 const App = { _lastFi: -1 };
@@ -743,18 +768,29 @@ function ringDot(ctx, x, y, color, r) {
 }
 
 // ──────────── Video 2D overlay ────────────
-function drawVideoOverlay(lastFi) {
+function interp2d(pts2d, fiFrac, p) {
+  const f0 = Math.max(0, Math.floor(fiFrac));
+  const f1 = Math.min(f0 + 1, pts2d.length - 1);
+  const t  = Math.max(0, Math.min(1, fiFrac - f0));
+  const a = pts2d[f0]?.[p], b = pts2d[f1]?.[p];
+  if (!a || a[0] == null || !Number.isFinite(a[0])) return null;
+  if (f0 === f1 || !b || b[0] == null || !Number.isFinite(b[0])) return [a[0], a[1]];
+  return [a[0]*(1-t) + b[0]*t, a[1]*(1-t) + b[1]*t];
+}
+
+function drawVideoOverlay(fiFrac) {
   if (!video.videoWidth) return;
   const W = vidOver.width = video.videoWidth, H = vidOver.height = video.videoHeight;
   const ctx = vidOverCtx;
   ctx.clearRect(0, 0, W, H);
-  if (lastFi < 0) return;
+  if (fiFrac < 0) return;
 
   const nHist = cfg.n_hist || 0;
   const P = cfg.gt_3d[0].length;
   const ptColors = cfg.pt_colors_rgb || [];
+  // Trails snap to integer (no sub-frame trail growth)
+  const lastFi = Math.round(fiFrac);
 
-  // Trails (smoothed) — thin, lower-alpha so the underlying object reads through
   if (cfg.gt_2d && nHist > 0) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
@@ -777,18 +813,18 @@ function drawVideoOverlay(lastFi) {
     }
   }
 
-  // Current-frame dots (object color); always drawn LAST so they sit on top of trails
+  // Current-frame dots — INTERPOLATED so they track the smooth video motion
   for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
     const ptColor = pickHex(ptColors[p]);
-    if (cfg.gt_2d && lastFi < cfg.gt_2d.length) {
-      const pt = cfg.gt_2d[lastFi]?.[p];
-      if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
+    if (cfg.gt_2d) {
+      const pt = interp2d(cfg.gt_2d, fiFrac, p);
+      if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
         softDot(ctx, pt[0]*W, pt[1]*H, ptColor, 4.2);
       }
     }
-    if (cfg.pred_2d && lastFi >= nHist && lastFi < cfg.pred_2d.length) {
-      const pt = cfg.pred_2d[lastFi]?.[p];
-      if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
+    if (cfg.pred_2d && fiFrac >= nHist) {
+      const pt = interp2d(cfg.pred_2d, fiFrac, p);
+      if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
         ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(240,82,156,0.95)', 5.0);
       }
     }
