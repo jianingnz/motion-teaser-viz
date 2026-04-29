@@ -113,7 +113,13 @@ footer a { color: #2563eb; text-decoration: none; }
       <h1 id="hdr-title">Motion Teaser — 4D Trajectory Visualization</h1>
       <div class="sub" id="hdr-caption">Loading…</div>
     </div>
-    <div class="meta" id="hdr-meta"></div>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+      <select class="btn" id="clip-sel" style="font-size:.72rem;">
+        <option value="static/data/clean_surface_1713_t10.json">clean_surface_1713 · obj0 · t10</option>
+        <option value="static/data/basic_pick_place_14851_t29.json">basic_pick_place_14851 · obj2 · t29</option>
+      </select>
+      <div class="meta" id="hdr-meta"></div>
+    </div>
   </header>
 
   <!-- Top row -->
@@ -213,7 +219,20 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 
 // ──────────── Config ────────────
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
-  || 'static/data/pick_food_2372_t20.json';
+  || 'static/data/clean_surface_1713_t10.json';
+
+// Sync the clip-selector dropdown to the current clip and reload on change.
+{
+  const sel = document.getElementById('clip-sel');
+  if (sel) {
+    if ([...sel.options].some(o => o.value === CLIP_URL)) sel.value = CLIP_URL;
+    sel.addEventListener('change', () => {
+      const url = new URL(location.href);
+      url.searchParams.set('clip', sel.value);
+      location.href = url.toString();
+    });
+  }
+}
 const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 2;      // catmull-rom samples per interval
 const POINT_SUBSAMPLE    = 4;      // show every Nth query point only (cleaner / less dense)

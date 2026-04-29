@@ -74,11 +74,16 @@ static/videos/<clip_id>.mp4
 static/videos/<clip_id>_chrono.jpg
 ```
 
-The viewer loads `static/data/bowls_nest_t91.json` by default; pass
-`?clip=static/data/<other>.json` to swap.
+The viewer loads `static/data/clean_surface_1713_t10.json` by default; the
+header has a clip-selector dropdown for switching, or pass
+`?clip=static/data/<other>.json` directly.
 
-## Source clip used for the demo
+## Source clips used for the demo
 
-`part5_stack_unstack_bowls_1324_obj0_t91` from the EgoDex test split.
-Caption: *"nest three bowls together"*. 16 tracked points × 33 frames
-(3 history + 30 future), 128-frame video, 15k-point sparse PC.
+| clip id | source | description |
+|---|---|---|
+| `clean_surface_1713_t10` | `part1_clean_surface_1713_obj0_t10` (EgoDex test) | default — wiping a surface |
+| `basic_pick_place_14851_t29` | `part2_basic_pick_place_14851_obj2_t29` (EgoDex test) | basic pick-and-place |
+
+Both bundles are 33-frame clips (3 history + 30 future) at 15 fps, with a
+single-frame depth-backprojected sparse PC (subsample=3, ~45k points).
