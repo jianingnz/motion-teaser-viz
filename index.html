@@ -261,7 +261,13 @@ function makeDiscMaterial({ size = 5.0 } = {}) {
       void main() {
         vColor = color;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(1.5, uSize * (uViewport / max(0.05, -mv.z)) * 0.0050);
+        float depth = max(0.05, -mv.z);
+        float perspPx = uSize * (uViewport / depth) * 0.0050;
+        // Near points keep full perspective size; far points stop shrinking
+        // below a floor so they stay visually dense instead of collapsing
+        // into single pixels.
+        float floorPx = uSize * 0.60;
+        gl_PointSize = max(floorPx, perspPx);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
