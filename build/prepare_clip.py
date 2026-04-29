@@ -299,6 +299,74 @@ def main():
     n_clip     = clip_end - clip_start + 1
     fps        = float(clip.get("fps", 30))
 
+    # ── Raw (unfiltered, unsmoothed) tracks, sliced to the same frame window ──
+    # 2D: track_output/<stem>/<stem>_merged.npz  →  tracks (T_video, P, 2) px
+    # 3D: final_tracks/<stem>_filter_meta.npz    →  P_original (P, T_video, 3) world
+    # We slice [clip_start .. clip_end] inclusive so the result is indexed 0..n_clip-1
+    # in clip-local frames (same axis as gt_2d / gt_3d after remap).
+    track_root = Path("/weka/prior-default/jianingz/home/project/_GenTraj/vipe")
+    merged_npz = track_root / "track_output" / args.video_stem / f"{args.video_stem}_merged.npz"
+    meta_npz   = track_root / "final_tracks" / f"{args.video_stem}_filter_meta.npz"
+    if not merged_npz.exists():
+        raise RuntimeError(f"missing raw 2D tracks: {merged_npz}")
+    if not meta_npz.exists():
+        raise RuntimeError(f"missing filter_meta (raw 3D): {meta_npz}")
+    m2 = np.load(merged_npz, allow_pickle=True)
+    raw_tracks_px = m2["tracks"]                     # (T_video, P, 2)
+    raw_vis       = m2["visibility"]                 # (T_video, P)
+    raw_dim_HW    = m2["dim"].astype(np.int64)       # [H, W]
+    H_raw, W_raw  = int(raw_dim_HW[0]), int(raw_dim_HW[1])
+    mm = np.load(meta_npz, allow_pickle=True)
+    P_orig = mm["P_original"]                        # (P, T_video, 3)
+    if raw_tracks_px.shape[0] <= clip_end:
+        raise RuntimeError(f"raw 2D tracks have only {raw_tracks_px.shape[0]} frames "
+                           f"but clip ends at {clip_end}")
+    if P_orig.shape[1] <= clip_end:
+        raise RuntimeError(f"P_original has only {P_orig.shape[1]} frames "
+                           f"but clip ends at {clip_end}")
+
+    raw_tracks_px_clip = raw_tracks_px[clip_start:clip_end + 1]   # (n_clip, P, 2)
+    raw_vis_clip       = raw_vis[clip_start:clip_end + 1]         # (n_clip, P)
+    raw_3d_clip        = np.transpose(P_orig[:, clip_start:clip_end + 1, :], (1, 0, 2))
+    P_total = raw_tracks_px_clip.shape[1]
+
+    raw_2d_list = []
+    for t in range(n_clip):
+        frame_pts = []
+        for p in range(P_total):
+            if not bool(raw_vis_clip[t, p]):
+                frame_pts.append(None)
+                continue
+            x, y = float(raw_tracks_px_clip[t, p, 0]), float(raw_tracks_px_clip[t, p, 1])
+            frame_pts.append([x / max(W_raw, 1), y / max(H_raw, 1)])
+        raw_2d_list.append(frame_pts)
+
+    raw_3d_list = []
+    for t in range(n_clip):
+        frame_pts = []
+        for p in range(P_total):
+            x, y, z = float(raw_3d_clip[t, p, 0]), float(raw_3d_clip[t, p, 1]), float(raw_3d_clip[t, p, 2])
+            if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
+                frame_pts.append(None)
+                continue
+            frame_pts.append([x, y, z])
+        raw_3d_list.append(frame_pts)
+
+    # Stash on the clip top-level — clip-local frame indexing already aligned
+    # with gt_2d/gt_3d (same axis 0..n_clip-1). No filter applied, no smoothing.
+    clip["raw_2d"] = raw_2d_list                     # (n_clip, P_total) of [u,v] | null
+    clip["raw_3d"] = raw_3d_list                     # (n_clip, P_total) of [x,y,z] | null
+    clip["raw_meta"] = {
+        "n_points": int(P_total),
+        "n_frames": int(n_clip),
+        "video_dim_HW": [H_raw, W_raw],
+        "src_clip_start": int(clip_start),           # original src-video frame index
+        "src_clip_end":   int(clip_end),
+        "source_2d": str(merged_npz),
+        "source_3d": str(meta_npz),
+        "note": "Pre-filter, pre-smoothing tracks. No outlier rejection, no Catmull-Rom; render plainly.",
+    }
+
     # ── 1. Sample per-point colors from each config's first hist frame (using ORIGINAL indices) ──
     sampled = {}
     for cfg in clip["configs"]:

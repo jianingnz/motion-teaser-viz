@@ -190,6 +190,7 @@ footer a { color: #2563eb; text-decoration: none; }
       <button class="btn on" id="t-gt">GT future</button>
       <button class="btn on" id="t-pred">prediction</button>
       <button class="btn" id="t-err">GT↔Pred error vectors</button>
+      <button class="btn" id="t-raw">raw tracks (unfiltered, unsmoothed)</button>
       <button class="btn" id="t-camera-reset">reset camera</button>
     </div>
     <div class="row-c">
@@ -400,6 +401,13 @@ class Panel {
       gt:   new THREE.Color(TRAIL_COLORS.gt),
       pred: new THREE.Color(TRAIL_COLORS.pred),
     };
+    // Raw-track material: thin, dim, no smoothing — purposely "ugly" so it
+    // reads as the unprocessed signal next to the clean GT/Pred trails.
+    this.rawLineMat = new LineMaterial({
+      color: 0x1f2937, vertexColors:false,
+      linewidth: 1.0, transparent:true, opacity:0.30,
+      depthTest:false, depthWrite:false, dashed:false,
+    });
 
     this._setupInput();
     new ResizeObserver(() => { this.applyCamera(); this.render(); }).observe(this.canvas.parentElement);
@@ -444,6 +452,7 @@ class Panel {
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
     const r = new THREE.Vector2(w, h);
     for (const k in this.lineMats) this.lineMats[k].resolution.copy(r);
+    if (this.rawLineMat) this.rawLineMat.resolution.copy(r);
     if (this.pcMaterial) this.pcMaterial.uniforms.uViewport.value = h;
   }
 
@@ -485,6 +494,37 @@ class Panel {
       // becomes three.js Y-down, hence the negative scale on Y and Z).
       pc.scale.set(1, -1, -1);
       this.staticGroup.add(pc);
+    }
+
+    // Raw 3D tracks (no smoothing, no filtering) — drawn as plain LineSegments2
+    // through consecutive raw frames per point. Visibility nulls split a point
+    // into multiple sub-polylines so we don't draw long jump segments across
+    // gaps. Same Y/Z flip convention as the rest of the scene.
+    if (this.opts.showRaw && clipData.raw_3d && clipData.raw_3d.length > 0) {
+      const raw = clipData.raw_3d;
+      const T = raw.length;
+      const P = raw[0].length;
+      const segs = [];
+      for (let p = 0; p < P; p++) {
+        let prev = null;
+        for (let t = 0; t < T; t++) {
+          const pt = raw[t]?.[p];
+          if (!pt || !Number.isFinite(pt[0])) { prev = null; continue; }
+          const cur = [pt[0], -pt[1], -pt[2]];
+          if (prev) {
+            segs.push(prev[0], prev[1], prev[2]);
+            segs.push(cur[0],  cur[1],  cur[2]);
+          }
+          prev = cur;
+        }
+      }
+      if (segs.length) {
+        const g = new LineSegmentsGeometry();
+        g.setPositions(segs);
+        const layer = new LineSegments2(g, this.rawLineMat);
+        layer.renderOrder = 1;  // between PC (0) and dyn trails (2)
+        this.staticGroup.add(layer);
+      }
     }
 
     // compute layout from trajectory points for camera framing
@@ -699,11 +739,11 @@ async function init() {
   });
 
   panels = [
-    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, lineWidth:TRAIL_LINE_PX_BIG }),
-    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false, lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:false, lineWidth:TRAIL_LINE_PX_BIG }),
+    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
   ];
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
@@ -864,6 +904,36 @@ function ringDot(ctx, x, y, color, r) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
 }
 
+// Plain raw-track stroke: no smoothing, no per-segment styling — just a
+// straight polyline through the raw 2D points (visibility nulls split the
+// polyline so we don't draw across gaps). Dim slate so it reads as the
+// unprocessed signal next to the colored, smoothed clip trails.
+function drawRaw2D(ctx, raw2d, W, H, color = 'rgba(31,41,55,0.30)', lineWidth = 0.8) {
+  if (!raw2d || raw2d.length < 2) return;
+  const T = raw2d.length;
+  const P = raw2d[0].length;
+  ctx.setLineDash([]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let p = 0; p < P; p++) {
+    let inPath = false;
+    ctx.beginPath();
+    for (let t = 0; t < T; t++) {
+      const pt = raw2d[t]?.[p];
+      if (!pt || pt[0] == null || !Number.isFinite(pt[0])) {
+        if (inPath) { ctx.stroke(); ctx.beginPath(); inPath = false; }
+        continue;
+      }
+      const x = pt[0] * W, y = pt[1] * H;
+      if (!inPath) { ctx.moveTo(x, y); inPath = true; }
+      else         { ctx.lineTo(x, y); }
+    }
+    if (inPath) ctx.stroke();
+  }
+}
+
 // ──────────── Video 2D overlay ────────────
 function interp2d(pts2d, fiFrac, p) {
   const f0 = Math.max(0, Math.floor(fiFrac));
@@ -887,6 +957,11 @@ function drawVideoOverlay(fiFrac) {
   const ptColors = cfg.pt_colors_rgb || [];
   // Trails snap to integer (no sub-frame trail growth)
   const lastFi = Math.round(fiFrac);
+
+  // Raw tracks first, so the colored clip trails draw on top
+  if (App.showRaw && clipData.raw_2d) {
+    drawRaw2D(ctx, clipData.raw_2d, W, H);
+  }
 
   if (cfg.gt_2d && nHist > 0) {
     const histEnd = Math.min(nHist - 1, lastFi);
@@ -938,6 +1013,11 @@ function drawChronoOverlay() {
   const nHist = cfg.n_hist || 0;
   const P = cfg.gt_3d[0].length;
   const ptColors = cfg.pt_colors_rgb || [];
+
+  // Raw tracks first (no smoothing, no filter) — drawn under the clip trails
+  if (App.showRaw && clipData.raw_2d) {
+    drawRaw2D(ctx, clipData.raw_2d, W, H);
+  }
 
   // Trails: thin + temporal-gradient so motion direction reads at a glance
   if (cfg.gt_2d && nHist > 0) {
@@ -1001,6 +1081,7 @@ function bindControls() {
   document.getElementById('t-gt').onclick     = (e) => toggleLayer(e, 'showGT');
   document.getElementById('t-pred').onclick   = (e) => toggleLayer(e, 'showPred');
   document.getElementById('t-err').onclick    = (e) => toggleLayer(e, 'showErrors');
+  document.getElementById('t-raw').onclick    = (e) => toggleRaw(e);
   document.getElementById('t-camera-reset').onclick = resetCamera;
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
 }
@@ -1021,6 +1102,21 @@ function toggleLayer(ev, layer, rebuildStatic = false) {
   if (rebuildStatic) panels[0].buildStatic(clipData, cfg);
   panels[0].updateDynamic(cfg, App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1);
   panels[0].render();
+}
+
+// Toggle raw (pre-filter, pre-smoothing) tracks. The 3D layer lives in the
+// big panel's static group, so we rebuild that. The 2D overlay reads
+// App.showRaw on every frame; just redraw to pick it up.
+function toggleRaw(ev) {
+  const btn = ev.currentTarget;
+  btn.classList.toggle('on');
+  App.showRaw = btn.classList.contains('on');
+  panels[0].opts.showRaw = App.showRaw;
+  panels[0].buildStatic(clipData, cfg);
+  panels[0].updateDynamic(cfg, App._lastFi >= 0 ? App._lastFi : -1);
+  panels[0].render();
+  drawVideoOverlay(App._lastFi >= 0 ? App._lastFi : 0);
+  drawChronoOverlay();
 }
 
 init().catch(e => {
