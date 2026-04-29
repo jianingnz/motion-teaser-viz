@@ -18,9 +18,9 @@
   --text-muted: #9ca3af;
 
   /* Trail colors — bright + saturated */
-  --c-hist: #3b82f6;     /* vivid blue — context */
-  --c-gt:   #22c55e;     /* bright green — ground truth */
-  --c-pred: #f97316;     /* bright orange — prediction */
+  --c-hist: #8fd9f8;     /* baby blue — context */
+  --c-gt:   #34d399;     /* mint green — ground truth */
+  --c-pred: #f0529c;     /* pink — prediction */
 }
 html, body {
   background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
@@ -226,9 +226,9 @@ const TRAIL_LINE_PX_SM   = 1.7;    // px linewidth in small panels
 const RENDER_PIXEL_RATIO = Math.min(2.5, (window.devicePixelRatio || 1) * 2);
 
 const TRAIL_COLORS = {
-  hist: 0x3b82f6,   // vivid blue
-  gt:   0x22c55e,   // bright green
-  pred: 0xf97316,   // bright orange
+  hist: 0x8fd9f8,   // baby blue
+  gt:   0x34d399,   // mint green
+  pred: 0xf0529c,   // pink
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -768,21 +768,21 @@ function drawVideoOverlay(lastFi) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(59,130,246,0.80)', 1.2);
+      strokeSmoothPath(ctx, pts, 'rgba(143,217,248,0.80)', 1.2);
     }
   }
   if (cfg.gt_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, tStart, lastFi, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(34,197,94,0.80)', 1.3);
+      strokeSmoothPath(ctx, pts, 'rgba(52,211,153,0.80)', 1.3);
     }
   }
   if (cfg.pred_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.pred_2d, p, tStart, lastFi, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(249,115,22,0.80)', 1.3, [4, 3]);
+      strokeSmoothPath(ctx, pts, 'rgba(240,82,156,0.80)', 1.3, [4, 3]);
     }
   }
 
@@ -798,7 +798,7 @@ function drawVideoOverlay(lastFi) {
     if (cfg.pred_2d && lastFi >= nHist && lastFi < cfg.pred_2d.length) {
       const pt = cfg.pred_2d[lastFi]?.[p];
       if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(249,115,22,0.95)', 5.0);
+        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(240,82,156,0.95)', 5.0);
       }
     }
   }
@@ -819,19 +819,19 @@ function drawChronoOverlay() {
   if (cfg.gt_2d && nHist > 0) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(59,130,246,0.80)', 1.0);
+      strokeSmoothPath(ctx, pts, 'rgba(143,217,248,0.80)', 1.0);
     }
   }
   if (cfg.gt_2d) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), cfg.gt_2d.length - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(34,197,94,0.80)', 1.1);
+      strokeSmoothPath(ctx, pts, 'rgba(52,211,153,0.80)', 1.1);
     }
   }
   if (cfg.pred_2d) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), cfg.pred_2d.length - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(249,115,22,0.80)', 1.1, [4, 3]);
+      strokeSmoothPath(ctx, pts, 'rgba(240,82,156,0.80)', 1.1, [4, 3]);
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails (object stays in front)
@@ -846,14 +846,14 @@ function drawChronoOverlay() {
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;
         softDot(ctx, x, y, ptColor, 3.4);
-        ctx.strokeStyle = 'rgba(34,197,94,0.95)'; ctx.lineWidth = 1.0;
+        ctx.strokeStyle = 'rgba(52,211,153,0.95)'; ctx.lineWidth = 1.0;
         ctx.beginPath(); ctx.arc(x, y, 5.2, 0, Math.PI*2); ctx.stroke();
       }
     }
     if (cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
-        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(249,115,22,0.95)', 5.2);
+        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(240,82,156,0.95)', 5.2);
       }
     }
   }
