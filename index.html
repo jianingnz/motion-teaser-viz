@@ -212,12 +212,12 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 
 // ──────────── Config ────────────
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
-  || 'static/data/stack_plates_1078_t9.json';
+  || 'static/data/pick_food_2372_t20.json';
 const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 6;      // catmull-rom samples per interval
 const POINT_SPHERE_R     = 0.0055; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0078; // anchor at history end
-const PC_POINT_PIX       = 5.5;    // PC base pixel size (smaller — was 9)
+const PC_POINT_PIX       = 7.5;    // PC base pixel size
 const TRAIL_LINE_PX_BIG  = 3.2;    // px linewidth in big panel
 const TRAIL_LINE_PX_SM   = 2.4;    // px linewidth in small panels
 
@@ -266,7 +266,7 @@ function makeDiscMaterial({ size = 5.0 } = {}) {
         // Near points keep full perspective size; far points stop shrinking
         // below a floor so they stay visually dense instead of collapsing
         // into single pixels.
-        float floorPx = uSize * 0.60;
+        float floorPx = uSize * 0.90;
         gl_PointSize = max(floorPx, perspPx);
         gl_Position = projectionMatrix * mv;
       }`,
