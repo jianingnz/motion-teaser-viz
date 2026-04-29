@@ -253,6 +253,10 @@ const N_RAW_JUMPY        = 8;      // of N_RAW_KEEP, this many must come from th
 // single static frame still communicates "look how noisy raw cotracker is".
 const N_RAW_PAPER        = 55;
 const N_RAW_PAPER_JUMPY  = 30;
+// Drop this many frames off the end of GT/Pred in the paper-figure panel —
+// the very last frames tend to carry residual track noise even after our
+// smoothing, so trimming them gives a cleaner reference curve in the still.
+const PAPER_GT_TAIL_DROP = 5;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
 const PC_POINT_PIX       = 7.0;    // PC base pixel size
@@ -734,17 +738,21 @@ class Panel {
       const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, idx, this.lineMats.hist, this.lineBaseCols.hist, false);
       if (layer) this.dynGroup.add(layer);
     }
+    // Paper-mode end cap for GT/Pred: drop the last PAPER_GT_TAIL_DROP frames
+    // so residual track noise at the trajectory tail doesn't pollute the
+    // figure. Raw still spans the full clip — the noise there is the point.
+    const paperGtEnd = Math.max(nHist, T_clip - PAPER_GT_TAIL_DROP);
     if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
       const trailStart = isPaper ? Math.max(0, nHist - 1)
                                  : Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const trailEnd   = isPaper ? T_clip : (lastFi + 1);
+      const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
       const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, trailEnd, idx, this.lineMats.gt, this.lineBaseCols.gt);
       if (layer) this.dynGroup.add(layer);
     }
     if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
       const trailStart = isPaper ? Math.max(0, nHist - 1)
                                  : Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const trailEnd   = isPaper ? T_clip : (lastFi + 1);
+      const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
       const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, trailEnd, idx, this.lineMats.pred, this.lineBaseCols.pred);
       if (layer) this.dynGroup.add(layer);
     }
@@ -1261,13 +1269,26 @@ function stepFrame(dir) {
   video.currentTime = next / App.fps;
 }
 
+// Layer toggles apply to both the live big panel (panels[0]) and the
+// paper-figure panel (panels.find paperMode), so the paper still stays in
+// sync with what the user selected. The smaller analytic panels keep their
+// fixed configurations.
+function _togglePanels() {
+  return panels.filter(p => p === panels[0] || p.opts.paperMode);
+}
+
 function toggleLayer(ev, layer, rebuildStatic = false) {
   const btn = ev.currentTarget;
   btn.classList.toggle('on');
-  panels[0].opts[layer] = btn.classList.contains('on');
-  if (rebuildStatic) panels[0].buildStatic(clipData, cfg);
-  panels[0].updateDynamic(cfg, App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1);
-  panels[0].render();
+  const on = btn.classList.contains('on');
+  const fi = App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1;
+  for (const p of _togglePanels()) {
+    p.opts[layer] = on;
+    if (rebuildStatic) p.buildStatic(clipData, cfg);
+    if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1);
+    else                  p.updateDynamic(cfg, fi);
+    p.render();
+  }
 }
 
 // Toggle raw (pre-filter, pre-smoothing) tracks. The 3D layer lives in
@@ -1276,9 +1297,13 @@ function toggleRaw(ev) {
   const btn = ev.currentTarget;
   btn.classList.toggle('on');
   App.showRaw = btn.classList.contains('on');
-  panels[0].opts.showRaw = App.showRaw;
-  panels[0].updateDynamic(cfg, App._lastFi >= 0 ? App._lastFi : -1);
-  panels[0].render();
+  const fi = App._lastFi >= 0 ? App._lastFi : -1;
+  for (const p of _togglePanels()) {
+    p.opts.showRaw = App.showRaw;
+    if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1);
+    else                  p.updateDynamic(cfg, fi);
+    p.render();
+  }
   drawVideoOverlay(App._lastFi >= 0 ? App._lastFi : 0);
   drawChronoOverlay();
 }
