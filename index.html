@@ -148,6 +148,14 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </section>
 
+  <!-- Paper-figure panel — single static composite, no playback -->
+  <section class="row">
+    <div class="card panel-card big">
+      <div class="ttl"><span>③b 3D scene · paper figure (all frames at once, no playback)</span><span class="lg-tag">temporal gradient encodes time · denser raw with more jumpy points</span></div>
+      <div class="body"><canvas id="canvas-paper"></canvas></div>
+    </div>
+  </section>
+
   <section class="row small">
     <div class="card panel-card">
       <div class="ttl"><span style="color:var(--c-hist)">④a · history only</span></div>
@@ -241,6 +249,10 @@ const POINT_SUBSAMPLE    = 4;      // (legacy) — replaced by curated index lis
 const N_GT_KEEP          = 22;     // GT/Pred points to render — biased toward smoothest, drop residual jumpy
 const N_RAW_KEEP         = 40;     // raw points to render — mostly cross-section, plus a few jumpy
 const N_RAW_JUMPY        = 8;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
+// Paper-figure variant: denser AND much more biased toward jumpy ones, so a
+// single static frame still communicates "look how noisy raw cotracker is".
+const N_RAW_PAPER        = 55;
+const N_RAW_PAPER_JUMPY  = 30;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
 const PC_POINT_PIX       = 7.0;    // PC base pixel size
@@ -655,28 +667,32 @@ class Panel {
 
   updateDynamic(cfg, fiFrac) {
     while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
-    if (fiFrac < 0) return;
+    const isPaper = !!this.opts.paperMode;
+    if (!isPaper && fiFrac < 0) return;
 
     const nHist = cfg.n_hist || 0;
     const ptColors = cfg.pt_colors_rgb || [];
     const idx = cfg._goodIdx || [];
+    const T_clip = cfg.gt_3d.length;
     // Trails snap to the nearest integer frame so the polyline never grows
-    // sub-frame (no trajectory interpolation).
-    const lastFi = Math.round(fiFrac);
+    // sub-frame (no trajectory interpolation). In paperMode we ignore fiFrac
+    // and just use the final frame so every trail covers its full range.
+    const lastFi = isPaper ? (T_clip - 1) : Math.round(fiFrac);
 
-    // Raw layer with the same trailing-window logic as the GT/Pred trails.
-    // Builds per-point sub-paths (split on visibility nulls) and emits a
-    // pale-→-vivid red temporal gradient via vertex colors — sharp (no
-    // smoothing) so the noise reads, but styled to match the filtered ones.
-    if (this.opts.showRaw && clipData.raw_3d && clipData._rawIdx) {
-      const rawStart = (lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const rawEnd   = lastFi + 1;  // exclusive
+    // Raw layer: trailing window in playback mode; full clip in paper mode,
+    // and with the denser jumpy-biased rawIdxPaper so a single still frame
+    // still communicates how noisy the raw signal is.
+    const rawIdxList = isPaper ? (clipData._rawIdxPaper || []) : (clipData._rawIdx || []);
+    if (this.opts.showRaw && clipData.raw_3d && rawIdxList.length) {
+      const rawStart = isPaper ? 0
+                       : ((lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - TRAIL_LEN));
+      const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
       const baseR = this.lineBaseCols.raw;
       const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
       const MIX_LO = 0.18, MIX_HI = 1.00;
-      for (const p of clipData._rawIdx) {
+      for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
         const subpaths = [];
@@ -713,21 +729,29 @@ class Panel {
     }
 
     if (this.opts.showHist && nHist > 0) {
-      const histEnd = Math.min(nHist - 1, lastFi);
+      const histEnd = isPaper ? (nHist - 1) : Math.min(nHist - 1, lastFi);
       // Solid sky-blue history (no temporal gradient — only GT/pred fade).
       const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, idx, this.lineMats.hist, this.lineBaseCols.hist, false);
       if (layer) this.dynGroup.add(layer);
     }
-    if (this.opts.showGT && lastFi >= nHist) {
-      const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, lastFi + 1, idx, this.lineMats.gt, this.lineBaseCols.gt);
+    if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
+      const trailStart = isPaper ? Math.max(0, nHist - 1)
+                                 : Math.max(nHist - 1, lastFi - TRAIL_LEN);
+      const trailEnd   = isPaper ? T_clip : (lastFi + 1);
+      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, trailEnd, idx, this.lineMats.gt, this.lineBaseCols.gt);
       if (layer) this.dynGroup.add(layer);
     }
-    if (this.opts.showPred && lastFi >= nHist) {
-      const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, idx, this.lineMats.pred, this.lineBaseCols.pred);
+    if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
+      const trailStart = isPaper ? Math.max(0, nHist - 1)
+                                 : Math.max(nHist - 1, lastFi - TRAIL_LEN);
+      const trailEnd   = isPaper ? T_clip : (lastFi + 1);
+      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, trailEnd, idx, this.lineMats.pred, this.lineBaseCols.pred);
       if (layer) this.dynGroup.add(layer);
     }
+    // PaperMode is a single still frame — no current-frame spheres or error
+    // vectors (those concepts only make sense during playback).
+    if (isPaper) return;
+
     // Error vectors — interpolated to follow current motion
     if (this.opts.showErrors && fiFrac >= nHist) {
       const segs = [];
@@ -815,11 +839,13 @@ async function init() {
   // the old `p += POINT_SUBSAMPLE` stride.
   cfg._goodIdx = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), N_GT_KEEP);
   if (clipData.raw_3d && clipData.raw_3d.length) {
-    clipData._rawIdx = selectMixedRawIdx(
-      pointMaxJumpScores(clipData.raw_3d), N_RAW_KEEP, N_RAW_JUMPY);
+    const rawScores = pointMaxJumpScores(clipData.raw_3d);
+    clipData._rawIdx      = selectMixedRawIdx(rawScores, N_RAW_KEEP, N_RAW_JUMPY);
+    clipData._rawIdxPaper = selectMixedRawIdx(rawScores, N_RAW_PAPER, N_RAW_PAPER_JUMPY);
   }
   console.log(`good GT idx: ${cfg._goodIdx.length}/${cfg.gt_3d[0].length}`);
   console.log(`raw idx:     ${(clipData._rawIdx||[]).length}/${clipData.raw_3d?.[0]?.length||0}`);
+  console.log(`raw idx (paper): ${(clipData._rawIdxPaper||[]).length}`);
 
   document.getElementById('hdr-caption').textContent = clipData.caption || '';
   document.getElementById('hdr-meta').textContent =
@@ -847,10 +873,16 @@ async function init() {
     new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    // Paper-figure panel: static composite of every frame at once (no
+    // playback). Always shows raw + filtered, with the temporal gradient
+    // standing in for time.
+    new Panel('canvas-paper',{ showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:true, paperMode:true, lineWidth:TRAIL_LINE_PX_BIG }),
   ];
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
+  // Render paper panel's full-clip composite once; tick() will keep the rest in sync.
+  panels.forEach(p => { if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1); });
   panels.forEach(p => p.render());
 
   video.addEventListener('loadedmetadata', () => {
@@ -893,7 +925,12 @@ async function init() {
         document.getElementById('scrub').value = Math.max(0, Math.min(100,
           (video.currentTime - App.clipStartTime) / denom * 100));
         // Same integer fi drives BOTH trails and current dots → no drift.
-        panels.forEach(p => { p.updateDynamic(cfg, fi); p.render(); });
+        // The paperMode panel is a static composite, so it never re-renders
+        // from tick — only the camera-rotate handler refreshes it.
+        panels.forEach(p => {
+          if (p.opts.paperMode) return;
+          p.updateDynamic(cfg, fi); p.render();
+        });
         drawVideoOverlay(fi);
       }
     }
