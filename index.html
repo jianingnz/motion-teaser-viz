@@ -8,79 +8,92 @@
 <style>
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 :root {
-  --bg: #08080c;
-  --bg-card: #131319;
-  --border: #23232c;
-  --text: #d4d4d4;
-  --text-heading: #f0f0f0;
-  --text-secondary: #888;
-  --text-muted: #555;
-  --c-hist: #7dd3fc;     /* cyan — context */
-  --c-gt:   #22e36b;     /* green — ground truth */
-  --c-pred: #ff7e3c;     /* warm orange — prediction */
+  /* Light theme */
+  --bg: #fafafa;
+  --bg-card: #ffffff;
+  --border: #e5e7eb;
+  --text: #1f2937;
+  --text-heading: #0f172a;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+
+  /* High-contrast trail colors on white */
+  --c-hist: #2563eb;     /* deep blue — context / history */
+  --c-gt:   #16a34a;     /* deep green — ground truth */
+  --c-pred: #dc2626;     /* deep red — prediction */
 }
-html, body { background: linear-gradient(180deg, #0a0a10 0%, #14141d 100%); min-height: 100vh; font-family: 'Inter', sans-serif; color: var(--text); line-height: 1.5; }
+html, body {
+  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
+  min-height: 100vh;
+  font-family: 'Inter', sans-serif;
+  color: var(--text);
+  line-height: 1.5;
+}
 .page { max-width: 1500px; margin: 0 auto; padding: 24px; }
 
 header.masthead {
-  display:flex; justify-content:space-between; align-items:flex-end;
+  display: flex; justify-content: space-between; align-items: flex-end;
   padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--border);
 }
 header h1 { font-family: 'Playfair Display', serif; font-size: 1.7rem; color: var(--text-heading); }
 header .sub { font-size: .8rem; color: var(--text-secondary); margin-top: 4px; }
 header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospace; }
 
-.row { display:grid; gap: 16px; margin-bottom: 16px; }
+.row { display: grid; gap: 16px; margin-bottom: 16px; }
 .row.top { grid-template-columns: 1fr 1fr; }
 .row.small { grid-template-columns: repeat(4, 1fr); }
 
 .card {
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
   display: flex; flex-direction: column;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 .card .ttl {
   font-size: .72rem; padding: 8px 12px; border-bottom: 1px solid var(--border);
-  color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-secondary); text-transform: uppercase; letter-spacing: .07em;
   display: flex; justify-content: space-between; align-items: center;
 }
-.card .ttl .lg-tag { font-size: .7rem; }
+.card .ttl .lg-tag { font-size: .7rem; color: var(--text-muted); }
 
 /* Video card */
 .video-card .body { position: relative; width: 100%; }
-.video-card video { width:100%; display:block; }
-.video-card canvas.over { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+.video-card video { width: 100%; display: block; background: #000; }
+.video-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* Chrono card */
 .chrono-card .body { position: relative; width: 100%; }
-.chrono-card img { width:100%; display:block; }
-.chrono-card canvas.over { position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; }
+.chrono-card img { width: 100%; display: block; }
+.chrono-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* 3D card */
-.panel-card .body { width: 100%; flex:1; min-height: 320px; position: relative; background: #0a0a10; }
+.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #ffffff; }
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
 
 /* Footer controls */
 .controls-card { padding: 12px 16px; }
-.row-c { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom: 8px; }
+.row-c { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .row-c:last-child { margin-bottom: 0; }
 .row-c label { font-size: .75rem; color: var(--text-secondary); }
 .btn {
-  background: #1c1c25; border: 1px solid var(--border); color: var(--text);
+  background: #f3f4f6; border: 1px solid var(--border); color: var(--text);
   padding: 5px 10px; border-radius: 5px; cursor: pointer; font-size: .75rem; font-family: inherit;
 }
-.btn:hover { border-color: #444; }
-.btn.on { background: #2c2c3a; border-color: #555; color: var(--text-heading); }
-input[type=range] { flex:1; min-width: 200px; }
+.btn:hover { background: #e5e7eb; }
+.btn.on { background: #1f2937; color: white; border-color: #1f2937; }
+input[type=range] { flex: 1; min-width: 200px; accent-color: #1f2937; }
 .frame-lbl { font-family: monospace; font-size: .72rem; color: var(--text-muted); min-width: 80px; }
 
 /* Legend */
-.legend { display:flex; gap:18px; font-size: .72rem; color: var(--text-secondary); flex-wrap: wrap; }
-.legend .sw { display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:6px; vertical-align:middle; }
-.legend span { display:inline-flex; align-items: center; }
+.legend { display: flex; gap: 18px; font-size: .72rem; color: var(--text-secondary); flex-wrap: wrap; }
+.legend .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; margin-right: 6px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.05); }
+.legend span { display: inline-flex; align-items: center; }
 
-footer.foot { text-align:center; font-size: .7rem; color: var(--text-muted); margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
-footer a { color: #4a9eff; text-decoration: none; }
+footer.foot { text-align: center; font-size: .7rem; color: var(--text-muted); margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
+footer a { color: #2563eb; text-decoration: none; }
 </style>
 
 <script type="importmap">
@@ -103,7 +116,7 @@ footer a { color: #4a9eff; text-decoration: none; }
     <div class="meta" id="hdr-meta"></div>
   </header>
 
-  <!-- Top row: video + chronophoto -->
+  <!-- Top row -->
   <section class="row top">
     <div class="card video-card">
       <div class="ttl"><span>① RGB video + 2D tracks</span><span class="lg-tag" id="vid-frame">frame 0</span></div>
@@ -129,7 +142,6 @@ footer a { color: #4a9eff; text-decoration: none; }
     </div>
   </section>
 
-  <!-- Small comparison panels -->
   <section class="row small">
     <div class="card panel-card">
       <div class="ttl"><span style="color:var(--c-hist)">④a · history only</span></div>
@@ -178,13 +190,13 @@ footer a { color: #4a9eff; text-decoration: none; }
         <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
         <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
         <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
-        <span><span class="sw" style="background:#fff;border:1px solid #555"></span>per-point dot color = sampled from frame 0 (object identity)</span>
+        <span><span class="sw" style="background:#fbbf24"></span>per-point dot color = sampled object RGB (frame 0)</span>
       </span>
     </div>
   </div>
 
   <footer class="foot">
-    <p>Built for the MotionPlanner / 4D point-tracking teaser. Code:
+    <p>MotionPlanner / 4D point-tracking teaser. Code:
       <a href="https://github.com/jianingnz/motion-teaser-viz" target="_blank">github.com/jianingnz/motion-teaser-viz</a>
     </p>
   </footer>
@@ -195,26 +207,34 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
 
 // ──────────── Config ────────────
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
-  || 'static/data/bowls_nest_t91.json';
-const TRAIL_LEN = 12;          // frames of trail to render in 3D / 2D-overlay
-const POINT_SPHERE_R = 0.011;  // 3D sphere radius for current-frame trajectory dots
-const ANCHOR_SPHERE_R = 0.014; // bigger anchor at history-end
-const PC_POINT_PIX = 5.0;      // base pixel size for PC discs
-const TRAIL_LINE_PX = 3.0;     // base px linewidth for trails
+  || 'static/data/pick_place_17088_t46.json';
+const TRAIL_LEN          = 12;     // frames of trail to render at any time
+const SMOOTH_SAMPLES     = 6;      // catmull-rom samples per interval
+const POINT_SPHERE_R     = 0.0055; // current-frame sphere radius (world units)
+const ANCHOR_SPHERE_R    = 0.0078; // anchor at history end
+const PC_POINT_PIX       = 9.0;    // PC base pixel size
+const TRAIL_LINE_PX_BIG  = 3.2;    // px linewidth in big panel
+const TRAIL_LINE_PX_SM   = 2.4;    // px linewidth in small panels
 
 const TRAIL_COLORS = {
-  hist: new THREE.Color(0x7dd3fc),
-  gt:   new THREE.Color(0x22e36b),
-  pred: new THREE.Color(0xff7e3c),
+  hist: 0x2563eb,
+  gt:   0x16a34a,
+  pred: 0xdc2626,
 };
+const ERR_COLOR = 0x9ca3af; // soft gray
+
+// Background
+const BG_COLOR = 0xffffff;
 
 // ──────────── Shared camera state ────────────
 const camState = {
   yaw: Math.PI * 0.25,
-  pitch: 0.35,
+  pitch: 0.30,
   dist: 3.0,
   target: new THREE.Vector3(0, 0, 0),
   default: null,
@@ -222,21 +242,15 @@ const camState = {
 function snapshotDefault() { camState.default = { ...camState, target: camState.target.clone() }; }
 function resetCamera() {
   if (!camState.default) return;
-  camState.yaw = camState.default.yaw;
-  camState.pitch = camState.default.pitch;
-  camState.dist = camState.default.dist;
-  camState.target.copy(camState.default.target);
-  panels.forEach(p => p.applyCamera());
-  panels.forEach(p => p.render());
+  Object.assign(camState, camState.default);
+  camState.target = camState.default.target.clone();
+  panels.forEach(p => { p.applyCamera(); p.render(); });
 }
 
-// ──────────── Round disc shader for point clouds (replaces square gl.POINTS) ────────────
-function makeDiscMaterial({ size = 5.0, opacityFalloff = true } = {}) {
+// ──────────── Round, FLAT (no glow) disc shader for the PC ────────────
+function makeDiscMaterial({ size = 8.0 } = {}) {
   return new THREE.ShaderMaterial({
-    uniforms: {
-      uSize: { value: size },
-      uViewport: { value: 600 },
-    },
+    uniforms: { uSize: { value: size }, uViewport: { value: 600 } },
     vertexShader: `
       attribute vec3 color;
       varying vec3 vColor;
@@ -245,7 +259,8 @@ function makeDiscMaterial({ size = 5.0, opacityFalloff = true } = {}) {
       void main() {
         vColor = color;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = max(1.5, uSize * (uViewport / -mv.z) * 0.0025);
+        // perspective-aware sizing in pixels
+        gl_PointSize = max(2.5, uSize * (uViewport / max(0.05, -mv.z)) * 0.0070);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -254,46 +269,84 @@ function makeDiscMaterial({ size = 5.0, opacityFalloff = true } = {}) {
         vec2 uv = gl_PointCoord * 2.0 - 1.0;
         float r2 = dot(uv, uv);
         if (r2 > 1.0) discard;
-        // antialiased soft disc with gentle highlight
+        // Antialiased edge ONLY — no fake highlight, no shading
         float a = 1.0 - smoothstep(0.85, 1.0, r2);
-        float hl = 1.0 - r2 * 0.4;
-        gl_FragColor = vec4(vColor * hl, a);
+        gl_FragColor = vec4(vColor, a);
       }`,
     transparent: true,
     depthWrite: false,
   });
 }
 
+// ──────────── Catmull-Rom smoothing ────────────
+function smoothCurve3(flat, samples = SMOOTH_SAMPLES) {
+  const n = flat.length / 3;
+  if (n < 3) return flat;
+  const pts = [];
+  for (let i = 0; i < n; i++) pts.push(new THREE.Vector3(flat[i*3], flat[i*3+1], flat[i*3+2]));
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+  const dense = curve.getPoints((n - 1) * samples);
+  const out = new Array(dense.length * 3);
+  for (let i = 0; i < dense.length; i++) {
+    out[i*3] = dense[i].x; out[i*3+1] = dense[i].y; out[i*3+2] = dense[i].z;
+  }
+  return out;
+}
+
+function smoothPath2D(pts, samples = SMOOTH_SAMPLES) {
+  if (pts.length < 3) return pts;
+  const out = [pts[0]];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i-1)];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[Math.min(pts.length-1, i+2)];
+    for (let j = 1; j <= samples; j++) {
+      const t = j/samples, t2 = t*t, t3 = t2*t;
+      out.push([
+        0.5*(2*p1[0] + (-p0[0]+p2[0])*t + (2*p0[0]-5*p1[0]+4*p2[0]-p3[0])*t2 + (-p0[0]+3*p1[0]-3*p2[0]+p3[0])*t3),
+        0.5*(2*p1[1] + (-p0[1]+p2[1])*t + (2*p0[1]-5*p1[1]+4*p2[1]-p3[1])*t2 + (-p0[1]+3*p1[1]-3*p2[1]+p3[1])*t3),
+      ]);
+    }
+  }
+  return out;
+}
+
+// Build flat segments array for LineSegments2 from a smoothed polyline (consecutive pairs)
+function polyToSegments(flat, into) {
+  const m = flat.length / 3;
+  for (let i = 0; i < m - 1; i++) {
+    into.push(flat[i*3], flat[i*3+1], flat[i*3+2]);
+    into.push(flat[(i+1)*3], flat[(i+1)*3+1], flat[(i+1)*3+2]);
+  }
+}
+
 // ──────────── Panel: one 3D viewer ────────────
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, ...opts };
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-    this.renderer.setClearColor(0x0a0a10, 1);
+    this.renderer.setClearColor(BG_COLOR, 1);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.005, 500);
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.65));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-    dir.position.set(2.5, 4.0, 3.0);
-    this.scene.add(dir);
-    const dir2 = new THREE.DirectionalLight(0x99bbff, 0.25);
-    dir2.position.set(-3, 2, -2);
-    this.scene.add(dir2);
-
-    this.staticGroup = new THREE.Group(); this.staticGroup.name = 'static';
-    this.dynGroup = new THREE.Group();    this.dynGroup.name = 'dyn';
+    this.staticGroup = new THREE.Group();
+    this.dynGroup = new THREE.Group();
     this.scene.add(this.staticGroup);
     this.scene.add(this.dynGroup);
 
-    // line materials (each panel owns its own so resolution can be set independently)
+    // Sphere material: flat color (NO glow / NO directional shading)
+    this.sphereMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+
+    // line materials
+    const lw = this.opts.lineWidth;
     this.lineMats = {
-      hist: new LineMaterial({ color: TRAIL_COLORS.hist.getHex(), linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.92, depthTest: true, dashed: false }),
-      gt:   new LineMaterial({ color: TRAIL_COLORS.gt.getHex(),   linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.95, depthTest: true, dashed: false }),
-      pred: new LineMaterial({ color: TRAIL_COLORS.pred.getHex(), linewidth: TRAIL_LINE_PX, transparent: true, opacity: 0.95, depthTest: true, dashed: true,  dashSize: 0.04, gapSize: 0.025 }),
-      err:  new LineMaterial({ color: 0xff3344, linewidth: 1.6, transparent: true, opacity: 0.7, depthTest: true, dashed: false }),
+      hist: new LineMaterial({ color: TRAIL_COLORS.hist, linewidth: lw, transparent:true, opacity:0.95, dashed:false }),
+      gt:   new LineMaterial({ color: TRAIL_COLORS.gt,   linewidth: lw, transparent:true, opacity:0.98, dashed:false }),
+      pred: new LineMaterial({ color: TRAIL_COLORS.pred, linewidth: lw, transparent:true, opacity:0.98, dashed:true,  dashSize:0.04, gapSize:0.025 }),
+      err:  new LineMaterial({ color: ERR_COLOR,        linewidth: 1.4, transparent:true, opacity:0.7, dashed:false }),
     };
 
     this._setupInput();
@@ -316,7 +369,7 @@ class Panel {
       camState.dist = Math.max(0.05, Math.min(30, camState.dist + e.deltaY * 0.005));
       panels.forEach(p => { p.applyCamera(); p.render(); });
       e.preventDefault();
-    }, { passive: false });
+    }, { passive:false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
   }
 
@@ -337,10 +390,9 @@ class Panel {
     this.renderer.setSize(w, h, false);
     this.canvas.style.width = w + 'px'; this.canvas.style.height = h + 'px';
     this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-    // line materials need resolution in pixels
     const r = new THREE.Vector2(w, h);
     for (const k in this.lineMats) this.lineMats[k].resolution.copy(r);
-    return { w, h };
+    if (this.pcMaterial) this.pcMaterial.uniforms.uViewport.value = h;
   }
 
   render() {
@@ -348,7 +400,6 @@ class Panel {
     this.renderer.render(this.scene, this.camera);
   }
 
-  // Build the static portion (PC + ground hint). One-time per clip change.
   buildStatic(clipData, cfg) {
     while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
 
@@ -372,45 +423,24 @@ class Panel {
       this.staticGroup.add(new THREE.Points(g, m));
     }
 
-    // Soft ground disc near trajectory floor
+    // compute layout from trajectory points for camera framing
     const trajPts = [];
     for (let f = 0; f < cfg.gt_3d.length; f++) {
       for (let p = 0; p < cfg.gt_3d[f].length; p++) {
         const pt = cfg.gt_3d[f][p];
-        if (pt && Number.isFinite(pt[0]) && (Math.abs(pt[0])>1e-8 || Math.abs(pt[1])>1e-8)) {
-          trajPts.push([pt[0], -pt[1], -pt[2]]);
-        }
+        if (pt && Number.isFinite(pt[0])) trajPts.push([pt[0], -pt[1], -pt[2]]);
       }
     }
     if (trajPts.length) {
-      const ys = trajPts.map(p => p[1]); ys.sort((a,b)=>a-b);
-      const xs = trajPts.map(p => p[0]); xs.sort((a,b)=>a-b);
-      const zs = trajPts.map(p => p[2]); zs.sort((a,b)=>a-b);
-      const cx = (xs[0]+xs.at(-1))/2, cy = (ys[0]+ys.at(-1))/2, cz = (zs[0]+zs.at(-1))/2;
-      const spread = Math.max(xs.at(-1)-xs[0], ys.at(-1)-ys[0], zs.at(-1)-zs[0], 0.15);
-      // ground disc as fade-out shadow
-      const groundGeom = new THREE.CircleGeometry(spread*1.4, 64);
-      const groundMat = new THREE.ShaderMaterial({
-        uniforms: {},
-        vertexShader: `
-          varying vec2 vUv;
-          void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
-        fragmentShader: `
-          varying vec2 vUv;
-          void main(){
-            float d = length(vUv - vec2(0.5));
-            float a = smoothstep(0.5, 0.0, d) * 0.35;
-            gl_FragColor = vec4(0.55, 0.6, 0.85, a);
-          }`,
-        transparent: true, depthWrite: false, side: THREE.DoubleSide,
-      });
-      const ground = new THREE.Mesh(groundGeom, groundMat);
-      ground.rotation.x = -Math.PI/2;
-      ground.position.set(cx, ys[0]-0.005, cz);
-      this.staticGroup.add(ground);
-
-      // Cache layout for camera framing
-      this._layout = { cx, cy, cz, spread };
+      const xs = trajPts.map(p=>p[0]).sort((a,b)=>a-b);
+      const ys = trajPts.map(p=>p[1]).sort((a,b)=>a-b);
+      const zs = trajPts.map(p=>p[2]).sort((a,b)=>a-b);
+      this._layout = {
+        cx: (xs[0]+xs.at(-1))/2,
+        cy: (ys[0]+ys.at(-1))/2,
+        cz: (zs[0]+zs.at(-1))/2,
+        spread: Math.max(xs.at(-1)-xs[0], ys.at(-1)-ys[0], zs.at(-1)-zs[0], 0.15),
+      };
     }
   }
 
@@ -418,121 +448,91 @@ class Panel {
     if (!this._layout) return;
     const { cx, cy, cz, spread } = this._layout;
     camState.target.set(cx, cy, cz);
-    camState.dist = spread * 1.3;
+    camState.dist = spread * 1.4;
     snapshotDefault();
-    panels.forEach(p => p.applyCamera());
   }
 
-  // Update dynamic content (trails + spheres) for current video frame
+  // Build a smooth segments-batch for one trail type
+  _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat) {
+    const segs = [];
+    for (let p = 0; p < P; p++) {
+      const raw = [];
+      for (let fi = fStart; fi < fEndExclusive; fi++) {
+        if (fi < 0 || fi >= pts3d.length) continue;
+        const pt = pts3d[fi]?.[p];
+        if (!pt || !Number.isFinite(pt[0])) continue;
+        raw.push(pt[0], -pt[1], -pt[2]);
+      }
+      if (raw.length < 6) continue;
+      const dense = smoothCurve3(raw);
+      polyToSegments(dense, segs);
+    }
+    if (segs.length === 0) return null;
+    const g = new LineSegmentsGeometry();
+    g.setPositions(segs);
+    return new LineSegments2(g, mat);
+  }
+
   updateDynamic(cfg, lastFi) {
     while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
+    if (lastFi < 0) return;
 
     const nHist = cfg.n_hist || 0;
-    const af    = cfg.all_frames || cfg.future_frames;
     const P     = cfg.gt_3d[0].length;
     const ptColors = cfg.pt_colors_rgb || [];
 
-    // Helper: make a Line2 from per-frame xyz triples for one point
-    const polyLine = (pts3d, ptIdx, fStart, fEnd, mat) => {
-      const seg = [];
-      for (let fi = fStart; fi <= fEnd; fi++) {
-        if (fi < 0 || fi >= pts3d.length) continue;
-        const pt = pts3d[fi][ptIdx];
-        if (!pt || !Number.isFinite(pt[0])) continue;
-        seg.push(pt[0], -pt[1], -pt[2]);
-      }
-      if (seg.length < 6) return null;
-      const g = new LineGeometry();
-      g.setPositions(seg);
-      const ln = new Line2(g, mat);
-      ln.computeLineDistances();
-      ln.scale.set(1, 1, 1);
-      return ln;
-    };
-
-    // ── HISTORY trails (cyan) ──
+    // History (full so far)
     if (this.opts.showHist && nHist > 0) {
       const histEnd = Math.min(nHist - 1, lastFi);
-      for (let p = 0; p < P; p++) {
-        const ln = polyLine(cfg.gt_3d, p, 0, histEnd, this.lineMats.hist);
-        if (ln) this.dynGroup.add(ln);
-      }
+      const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist);
+      if (layer) this.dynGroup.add(layer);
     }
-
-    // ── GT future trails (green) ──
+    // GT future trail
     if (this.opts.showGT && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      for (let p = 0; p < P; p++) {
-        const ln = polyLine(cfg.gt_3d, p, trailStart, lastFi, this.lineMats.gt);
-        if (ln) this.dynGroup.add(ln);
-      }
+      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, lastFi + 1, P, this.lineMats.gt);
+      if (layer) this.dynGroup.add(layer);
     }
-
-    // ── PRED future trails (orange, dashed) ──
+    // Pred future trail
     if (this.opts.showPred && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      for (let p = 0; p < P; p++) {
-        const ln = polyLine(cfg.pred_3d, p, trailStart, lastFi, this.lineMats.pred);
-        if (ln) this.dynGroup.add(ln);
-      }
+      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, P, this.lineMats.pred);
+      if (layer) this.dynGroup.add(layer);
     }
-
-    // ── ERROR vectors (small red lines GT↔Pred at current frame) ──
+    // Error vectors GT↔Pred at current frame
     if (this.opts.showErrors && lastFi >= nHist) {
+      const segs = [];
       for (let p = 0; p < P; p++) {
         const a = cfg.gt_3d[lastFi]?.[p], b = cfg.pred_3d[lastFi]?.[p];
         if (!a || !b || !Number.isFinite(a[0]) || !Number.isFinite(b[0])) continue;
-        const g = new LineGeometry();
-        g.setPositions([a[0], -a[1], -a[2], b[0], -b[1], -b[2]]);
-        const ln = new Line2(g, this.lineMats.err);
-        this.dynGroup.add(ln);
+        segs.push(a[0], -a[1], -a[2], b[0], -b[1], -b[2]);
+      }
+      if (segs.length) {
+        const g = new LineSegmentsGeometry();
+        g.setPositions(segs);
+        this.dynGroup.add(new LineSegments2(g, this.lineMats.err));
       }
     }
 
-    // ── Current-frame spheres in object color (true 3D, visible from any angle) ──
-    const sphereGeom = new THREE.SphereGeometry(POINT_SPHERE_R, 14, 12);
-
-    // Anchor sphere at history end (slightly bigger, with white outline = darker shell)
+    // Anchor sphere at history end (a bit larger)
     if (nHist > 0 && this.opts.showHist) {
       const histEnd = Math.min(nHist - 1, lastFi);
-      const anchorGeom = new THREE.SphereGeometry(ANCHOR_SPHERE_R, 14, 12);
-      const inst = new THREE.InstancedMesh(anchorGeom,
-        new THREE.MeshLambertMaterial({ color: 0xffffff }), P);
-      const colorAttr = new Float32Array(P * 3);
-      const dummy = new THREE.Object3D();
-      let visN = 0;
-      for (let p = 0; p < P; p++) {
-        const pt = cfg.gt_3d[histEnd]?.[p];
-        if (!pt || !Number.isFinite(pt[0])) continue;
-        dummy.position.set(pt[0], -pt[1], -pt[2]);
-        dummy.updateMatrix();
-        inst.setMatrixAt(visN, dummy.matrix);
-        const c = ptColors[p] || [200,200,200];
-        // brighten slightly for visibility
-        colorAttr[visN*3]   = Math.min(1, c[0]/255 * 1.15);
-        colorAttr[visN*3+1] = Math.min(1, c[1]/255 * 1.15);
-        colorAttr[visN*3+2] = Math.min(1, c[2]/255 * 1.15);
-        visN++;
-      }
-      inst.count = visN;
-      inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
-      this.dynGroup.add(inst);
+      this._addSphereLayer(cfg.gt_3d, histEnd, ptColors, ANCHOR_SPHERE_R, 1.0);
     }
-
     // Current-frame GT spheres
     if (this.opts.showGT && lastFi >= nHist) {
-      this._addSphereInstances(cfg.gt_3d, lastFi, ptColors, sphereGeom, 1.0);
+      this._addSphereLayer(cfg.gt_3d, lastFi, ptColors, POINT_SPHERE_R, 1.0);
     }
-    // Current-frame Pred spheres (slightly desaturated to differentiate by position only)
+    // Current-frame Pred spheres
     if (this.opts.showPred && lastFi >= nHist) {
-      this._addSphereInstances(cfg.pred_3d, lastFi, ptColors, sphereGeom, 0.85);
+      this._addSphereLayer(cfg.pred_3d, lastFi, ptColors, POINT_SPHERE_R, 0.85);
     }
   }
 
-  _addSphereInstances(pts3d, fi, ptColors, geom, brightness) {
+  _addSphereLayer(pts3d, fi, ptColors, radius, brightness) {
     const P = pts3d[0].length;
-    const inst = new THREE.InstancedMesh(geom,
-      new THREE.MeshLambertMaterial({ color: 0xffffff }), P);
+    const geom = new THREE.SphereGeometry(radius, 12, 10);
+    const inst = new THREE.InstancedMesh(geom, this.sphereMat, P);
     const colorAttr = new Float32Array(P * 3);
     const dummy = new THREE.Object3D();
     let visN = 0;
@@ -542,7 +542,7 @@ class Panel {
       dummy.position.set(pt[0], -pt[1], -pt[2]);
       dummy.updateMatrix();
       inst.setMatrixAt(visN, dummy.matrix);
-      const c = ptColors[p] || [220, 220, 220];
+      const c = ptColors[p] || [200, 200, 200];
       colorAttr[visN*3]   = Math.min(1, c[0]/255 * brightness);
       colorAttr[visN*3+1] = Math.min(1, c[1]/255 * brightness);
       colorAttr[visN*3+2] = Math.min(1, c[2]/255 * brightness);
@@ -567,15 +567,12 @@ async function init() {
   document.getElementById('hdr-meta').textContent =
     `obj=${cfg.obj_name} · t=${cfg.t} · MSE=${(clipData.mse??NaN).toFixed(4)} · L2=${(clipData.l2??NaN).toFixed(4)} · ${cfg.gt_3d[0].length} pts × ${cfg.gt_3d.length} frames`;
 
-  // Video setup
   video = document.getElementById('rgb-video');
-  // mp4 lives at static/videos/<basename of CLIP_URL>.mp4
   const base = CLIP_URL.split('/').pop().replace(/\.json$/,'');
   video.src = `static/videos/${base}.mp4`;
   vidOver = document.getElementById('vid-overlay');
   vidOverCtx = vidOver.getContext('2d');
 
-  // Chrono setup
   const chronoImg = document.getElementById('chrono-img');
   chronoImg.src = clipData.chrono.image_url;
   chronoOver = document.getElementById('chrono-overlay');
@@ -586,22 +583,19 @@ async function init() {
     drawChronoOverlay();
   });
 
-  // Build panels
   panels = [
-    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false }),
-    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false }),
-    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false }),
-    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true }),
-    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true }),
+    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, lineWidth:TRAIL_LINE_PX_BIG }),
+    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, lineWidth:TRAIL_LINE_PX_SM }),
   ];
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
   panels.forEach(p => p.render());
 
-  // Hook video → frame sync
   video.addEventListener('loadedmetadata', () => {
-    // jump video to start of history
     const T = clipData.num_frames || 1;
     video.currentTime = (cfg.hist_frames[0] / Math.max(T-1, 1)) * video.duration;
     video.pause();
@@ -609,10 +603,8 @@ async function init() {
     tick();
   });
 
-  // Wire controls
   bindControls();
 
-  // Tick loop for animation sync (rAF; video timeupdate is too coarse)
   function tick() {
     const T = clipData.num_frames || 1;
     if (video.duration) {
@@ -645,44 +637,53 @@ function setupVideoOverlay() {
   vidOver.height = video.videoHeight;
 }
 
-// ──────────── 2D Overlay drawing ────────────
-function tracksAtFrame(pts2d, fi, ptIdx) {
-  if (!pts2d || fi < 0 || fi >= pts2d.length) return null;
-  return pts2d[fi]?.[ptIdx];
-}
-
+// ──────────── 2D track helpers ────────────
 function pickHex(rgb) {
-  if (!rgb) return '#cccccc';
+  if (!rgb) return '#999';
   return `rgb(${rgb[0]|0},${rgb[1]|0},${rgb[2]|0})`;
 }
 
-function drawTrack2D(ctx, pts2d, ptIdx, fStart, fEnd, W, H, strokeStyle, lineWidth) {
-  if (!pts2d) return false;
-  ctx.strokeStyle = strokeStyle;
-  ctx.lineWidth = lineWidth;
-  ctx.beginPath();
-  let started = false;
+function collectPath(pts2d, p, fStart, fEnd, W, H) {
+  const out = [];
   for (let fi = fStart; fi <= fEnd; fi++) {
     if (fi < 0 || fi >= pts2d.length) continue;
-    const pt = pts2d[fi]?.[ptIdx];
-    if (!pt || pt[0]==null || !Number.isFinite(pt[0]) || pt[0]<0||pt[0]>1||pt[1]<0||pt[1]>1) continue;
-    if (!started) { ctx.moveTo(pt[0]*W, pt[1]*H); started = true; }
-    else ctx.lineTo(pt[0]*W, pt[1]*H);
+    const pt = pts2d[fi]?.[p];
+    if (!pt || pt[0]==null || !Number.isFinite(pt[0])) continue;
+    if (pt[0] < -0.05 || pt[0] > 1.05 || pt[1] < -0.05 || pt[1] > 1.05) continue;
+    out.push([pt[0]*W, pt[1]*H]);
   }
-  if (started) ctx.stroke();
-  return started;
+  return out;
 }
 
-function drawDot2D(ctx, pt, W, H, fillColor, r, outline) {
-  if (!pt || pt[0]==null || !Number.isFinite(pt[0])) return;
-  if (pt[0]<0||pt[0]>1||pt[1]<0||pt[1]>1) return;
-  const x = pt[0]*W, y = pt[1]*H;
-  if (outline) {
-    ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x, y, r+1.5, 0, Math.PI*2); ctx.fill();
-  }
-  ctx.fillStyle = fillColor; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+function strokeSmoothPath(ctx, pts, color, lineWidth, dash=null) {
+  if (pts.length < 2) return;
+  const smooth = smoothPath2D(pts);
+  if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(smooth[0][0], smooth[0][1]);
+  for (let i = 1; i < smooth.length; i++) ctx.lineTo(smooth[i][0], smooth[i][1]);
+  ctx.stroke();
+  ctx.setLineDash([]);
 }
 
+function softDot(ctx, x, y, color, r) {
+  // subtle drop shadow then flat disc — no glow / no rim highlight
+  ctx.fillStyle = 'rgba(0,0,0,0.20)';
+  ctx.beginPath(); ctx.arc(x, y+0.5, r+0.6, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+}
+
+function ringDot(ctx, x, y, color, r) {
+  ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+}
+
+// ──────────── Video 2D overlay ────────────
 function drawVideoOverlay(lastFi) {
   if (!video.videoWidth) return;
   const W = vidOver.width = video.videoWidth, H = vidOver.height = video.videoHeight;
@@ -694,52 +695,48 @@ function drawVideoOverlay(lastFi) {
   const P = cfg.gt_3d[0].length;
   const ptColors = cfg.pt_colors_rgb || [];
 
-  // History (cyan trail) up to min(lastFi, nHist-1)
-  const histEnd = Math.min(nHist - 1, lastFi);
-  if (cfg.gt_2d && nHist > 0 && histEnd >= 0) {
+  // Trails (smoothed)
+  if (cfg.gt_2d && nHist > 0) {
+    const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.gt_2d, p, 0, histEnd, W, H, 'rgba(125,211,252,0.85)', 2.5);
+      const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(37,99,235,0.85)', 1.9);
     }
   }
-
-  // GT future trail (green)
   if (cfg.gt_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.gt_2d, p, tStart, lastFi, W, H, 'rgba(34,227,107,0.92)', 2.5);
+      const pts = collectPath(cfg.gt_2d, p, tStart, lastFi, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(22,163,74,0.95)', 2.1);
     }
   }
-
-  // Pred future trail (orange, slightly thinner)
   if (cfg.pred_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.pred_2d, p, tStart, lastFi, W, H, 'rgba(255,126,60,0.92)', 2.5);
+      const pts = collectPath(cfg.pred_2d, p, tStart, lastFi, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(220,38,38,0.95)', 2.1, [5, 3]);
     }
   }
 
-  // Current dots at this frame, colored by per-point object color from frame 0
+  // Current-frame dots (object color); GT = filled disc, Pred = open ring
   for (let p = 0; p < P; p++) {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d && lastFi < cfg.gt_2d.length) {
-      drawDot2D(ctx, cfg.gt_2d[lastFi][p], W, H, ptColor, 5.5, true);
+      const pt = cfg.gt_2d[lastFi]?.[p];
+      if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
+        softDot(ctx, pt[0]*W, pt[1]*H, ptColor, 3.4);
+      }
     }
     if (cfg.pred_2d && lastFi >= nHist && lastFi < cfg.pred_2d.length) {
-      // pred = ringed (open) circle in object color
-      const pt = cfg.pred_2d[lastFi][p];
-      if (pt && pt[0]!=null && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1 && pt[1]>=0 && pt[1]<=1) {
-        const x = pt[0]*W, y = pt[1]*H;
-        ctx.lineWidth = 2.0;
-        ctx.strokeStyle = '#000';
-        ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI*2); ctx.stroke();
-        ctx.strokeStyle = ptColor;
-        ctx.beginPath(); ctx.arc(x, y, 6.5, 0, Math.PI*2); ctx.stroke();
+      const pt = cfg.pred_2d[lastFi]?.[p];
+      if (pt && Number.isFinite(pt[0]) && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
+        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(220,38,38,0.95)', 4.2);
       }
     }
   }
 }
 
-// Static chrono overlay — full sequence drawn once
+// ──────────── Chronophotography overlay (static, full sequence) ────────────
 function drawChronoOverlay() {
   if (!chronoOver.width) return;
   const W = chronoOver.width, H = chronoOver.height;
@@ -748,52 +745,49 @@ function drawChronoOverlay() {
 
   const nHist = cfg.n_hist || 0;
   const P = cfg.gt_3d[0].length;
-  const af = cfg.all_frames || cfg.future_frames;
   const ptColors = cfg.pt_colors_rgb || [];
 
-  // For chrono we plot the FULL 2D track, color-coded by trail type
-  // History segment: 0..nHist-1 in cyan
+  // History: blue
   if (cfg.gt_2d && nHist > 0) {
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.gt_2d, p, 0, nHist-1, W, H, 'rgba(125,211,252,0.85)', 2.0);
+      const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(37,99,235,0.85)', 1.6);
     }
   }
-  // GT future: nHist-1..end in green
+  // GT future: green
   if (cfg.gt_2d) {
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.gt_2d, p, Math.max(0, nHist-1), cfg.gt_2d.length-1, W, H, 'rgba(34,227,107,0.85)', 2.0);
+      const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), cfg.gt_2d.length - 1, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(22,163,74,0.9)', 1.8);
     }
   }
-  // Pred future: nHist-1..end in orange (dashed)
+  // Pred future: red dashed
   if (cfg.pred_2d) {
-    ctx.setLineDash([6, 4]);
     for (let p = 0; p < P; p++) {
-      drawTrack2D(ctx, cfg.pred_2d, p, Math.max(0, nHist-1), cfg.pred_2d.length-1, W, H, 'rgba(255,126,60,0.92)', 2.0);
+      const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), cfg.pred_2d.length - 1, W, H);
+      strokeSmoothPath(ctx, pts, 'rgba(220,38,38,0.9)', 1.8, [5, 3]);
     }
-    ctx.setLineDash([]);
   }
-  // Endpoint markers: start (object color, big), end-of-GT (green outline), end-of-pred (orange outline)
+  // Endpoint markers
   for (let p = 0; p < P; p++) {
     const ptColor = pickHex(ptColors[p]);
-    // start
-    if (cfg.gt_2d) drawDot2D(ctx, cfg.gt_2d[0][p], W, H, ptColor, 4.5, true);
-    // end of GT
     if (cfg.gt_2d) {
-      const pt = cfg.gt_2d[cfg.gt_2d.length-1][p];
-      if (pt && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1) {
-        const x = pt[0]*W, y = pt[1]*H;
-        ctx.fillStyle = ptColor; ctx.beginPath(); ctx.arc(x,y,3.5,0,Math.PI*2); ctx.fill();
-        ctx.strokeStyle = 'rgba(34,227,107,1)'; ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(x,y,5.5,0,Math.PI*2); ctx.stroke();
+      const s = cfg.gt_2d[0]?.[p];
+      if (s && Number.isFinite(s[0]) && s[0]>=0 && s[0]<=1) softDot(ctx, s[0]*W, s[1]*H, ptColor, 3.2);
+    }
+    if (cfg.gt_2d) {
+      const e = cfg.gt_2d[cfg.gt_2d.length-1]?.[p];
+      if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
+        const x = e[0]*W, y = e[1]*H;
+        softDot(ctx, x, y, ptColor, 2.6);
+        ctx.strokeStyle = 'rgba(22,163,74,1)'; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(x, y, 4.6, 0, Math.PI*2); ctx.stroke();
       }
     }
-    // end of pred (open circle, orange ring)
     if (cfg.pred_2d) {
-      const pt = cfg.pred_2d[cfg.pred_2d.length-1][p];
-      if (pt && Number.isFinite(pt[0]) && pt[0]>=0 && pt[0]<=1) {
-        const x = pt[0]*W, y = pt[1]*H;
-        ctx.strokeStyle = 'rgba(255,126,60,1)'; ctx.lineWidth = 2.0;
-        ctx.beginPath(); ctx.arc(x,y,5.5,0,Math.PI*2); ctx.stroke();
+      const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
+      if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
+        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(220,38,38,1)', 4.6);
       }
     }
   }
@@ -812,13 +806,12 @@ function bindControls() {
   };
   document.getElementById('step-back').onclick = () => stepFrame(-1);
   document.getElementById('step-fwd').onclick  = () => stepFrame(+1);
-  document.getElementById('t-pc').onclick     = (e) => toggleLayer(e, 'showPC');
+  document.getElementById('t-pc').onclick     = (e) => toggleLayer(e, 'showPC', true);
   document.getElementById('t-hist').onclick   = (e) => toggleLayer(e, 'showHist');
   document.getElementById('t-gt').onclick     = (e) => toggleLayer(e, 'showGT');
   document.getElementById('t-pred').onclick   = (e) => toggleLayer(e, 'showPred');
   document.getElementById('t-err').onclick    = (e) => toggleLayer(e, 'showErrors');
   document.getElementById('t-camera-reset').onclick = resetCamera;
-  // initial rate
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
 }
 
@@ -832,13 +825,11 @@ function stepFrame(dir) {
   video.currentTime = (next / Math.max(T-1, 1)) * video.duration;
 }
 
-function toggleLayer(ev, layer) {
+function toggleLayer(ev, layer, rebuildStatic = false) {
   const btn = ev.currentTarget;
   btn.classList.toggle('on');
-  const on = btn.classList.contains('on');
-  // big panel only — small panels keep their fixed assignments
-  panels[0].opts[layer] = on;
-  if (layer === 'showPC') panels[0].buildStatic(clipData, cfg);
+  panels[0].opts[layer] = btn.classList.contains('on');
+  if (rebuildStatic) panels[0].buildStatic(clipData, cfg);
   panels[0].updateDynamic(cfg, App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1);
   panels[0].render();
 }
