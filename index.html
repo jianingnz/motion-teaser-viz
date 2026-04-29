@@ -18,7 +18,7 @@
   --text-muted: #9ca3af;
 
   /* Trail colors — bright + saturated */
-  --c-hist: #0ea5e9;     /* sky blue — context */
+  --c-hist: #8fd9f8;     /* baby blue — context */
   --c-gt:   #34d399;     /* mint green — ground truth */
   --c-pred: #f0529c;     /* pink — prediction */
 }
@@ -250,7 +250,7 @@ const TRAIL_LINE_PX_SM   = 1.7;    // px linewidth in small panels
 const RENDER_PIXEL_RATIO = Math.min(2.5, (window.devicePixelRatio || 1) * 2);
 
 const TRAIL_COLORS = {
-  hist: 0x0ea5e9,   // sky blue
+  hist: 0x8fd9f8,   // baby blue
   gt:   0x34d399,   // mint green
   pred: 0xf0529c,   // pink
   raw:  0xef4444,   // red — unfiltered, unsmoothed contrast
@@ -963,7 +963,7 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
 
 // Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars.
 const TRAIL_RGB = {
-  hist: [ 14, 165, 233],
+  hist: [143, 217, 248],
   gt:   [ 52, 211, 153],
   pred: [240,  82, 156],
 };
@@ -1050,7 +1050,7 @@ function drawVideoOverlay(fiFrac) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSolidPath(ctx, pts, 'rgba(14,165,233,0.85)', 1.4);
+      strokeSolidPath(ctx, pts, 'rgba(143,217,248,0.95)', 1.4);
     }
   }
   if (cfg.gt_2d && lastFi >= nHist) {
@@ -1108,7 +1108,7 @@ function drawChronoOverlay() {
   if (cfg.gt_2d && nHist > 0) {
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSolidPath(ctx, pts, 'rgba(14,165,233,0.85)', 1.2);
+      strokeSolidPath(ctx, pts, 'rgba(143,217,248,0.95)', 1.2);
     }
   }
   if (cfg.gt_2d) {
