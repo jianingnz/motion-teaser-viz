@@ -258,12 +258,15 @@ const N_RAW_PAPER_JUMPY  = 30;
 // still). Applies to GT only — Pred and Raw still span the full clip.
 // 9 → keeps frames 0..23 inclusive on a 33-frame clip.
 const PAPER_GT_TAIL_DROP = 9;
-// Paper-mode gradient: same fade-toward-white scheme as the live panels but
-// with a non-linear curve and a slightly lower floor — so only a small tip
-// at the oldest end is pale, and the rest of the trail is fully vivid.
-// k(t) = MIX_LO + (1 - MIX_LO) * pow(t, PAPER_T_EXP); exp < 1 biases k high.
+// Paper-mode gradient: fade-toward-white scheme, but the bulk of the trail
+// is the vivid base color and only a small tip transitions to pink/pale.
+// We invert the t axis vs the live panels (paper trails START vivid at the
+// oldest frame and FADE pale only near the newest tip) and use a power
+// curve to keep the vivid plateau wide:
+//   k(t) = MIX_LO + (1 - MIX_LO) * pow(1 - t, PAPER_T_EXP)
+// Lower PAPER_T_EXP → faster transition → smaller pale region.
 const PAPER_MIX_LO       = 0.15;
-const PAPER_T_EXP        = 0.40;
+const PAPER_T_EXP        = 0.30;
 // In paper mode, drop GT points whose LAST few frames jump a lot — even
 // inside our smoothest set, a few will have a large kink at the trajectory
 // tail that reads as noise in a still figure. To stay stricter without
@@ -638,13 +641,15 @@ class Panel {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
-    // Both modes use the same `rgb = base*k + white*(1-k)` fade-toward-white,
-    // but the paper panel applies a power curve to t so k rises fast and
-    // most of the trail is vivid — only a small tip at the oldest end is
-    // pale, instead of the live panels' more even fade.
+    // Both modes use `rgb = base*k + white*(1-k)`. The live panels use linear
+    // t with k LOW at oldest (pale) → HIGH at newest (vivid). The paper panel
+    // INVERTS t and uses a power curve so the trail starts vivid and only the
+    // newest tip transitions to a small pale region — the bulk feels like the
+    // base color, not pink-washed.
     const MIX_LO = useGradient ? (mixLoOverride ?? 0.18) : 1.00;
     const MIX_HI = 1.00;
-    const T_EXP = (mixLoOverride !== null) ? PAPER_T_EXP : 1.00;
+    const isPaperGrad = mixLoOverride !== null;
+    const T_EXP = isPaperGrad ? PAPER_T_EXP : 1.00;
     for (const p of ptIdx) {
       const raw = [];
       for (let fi = fStart; fi < fEndExclusive; fi++) {
@@ -660,9 +665,11 @@ class Panel {
       for (let i = 0; i < m - 1; i++) {
         const t0 = i / (m - 1);
         const t1 = (i + 1) / (m - 1);
-        // power-curve t: paper exp < 1 biases the trail toward vivid early.
-        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
-        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
+        // Paper inverts t (vivid at oldest); live uses t directly (vivid at newest).
+        const u0 = isPaperGrad ? (1 - t0) : t0;
+        const u1 = isPaperGrad ? (1 - t1) : t1;
+        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u0, T_EXP);
+        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u1, T_EXP);
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
         cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
@@ -738,8 +745,10 @@ class Panel {
           for (let i = 0; i < m - 1; i++) {
             const t0 = i / (m - 1);
             const t1 = (i + 1) / (m - 1);
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
+            const u0 = isPaper ? (1 - t0) : t0;
+            const u1 = isPaper ? (1 - t1) : t1;
+            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u0, T_EXP);
+            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(u1, T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
             cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
