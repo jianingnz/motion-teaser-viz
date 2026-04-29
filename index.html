@@ -383,13 +383,22 @@ class Panel {
     // Sphere material — flat color, depthTest off so spheres always overlay PC
     this.sphereMat = new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, depthWrite: false });
 
-    // Line materials — depthTest off so trails always overlay PC
+    // Line materials — depthTest off so trails always overlay PC.
+    // Trails use per-vertex colors (set by _buildTrailLayer) so motion direction
+    // reads as a brightness gradient (oldest → dim, newest → vivid) along the
+    // trail. The `color` field is just a fallback; vertexColors overrides it.
     const lw = this.opts.lineWidth;
     this.lineMats = {
-      hist: new LineMaterial({ color: TRAIL_COLORS.hist, linewidth: lw, transparent:true, opacity:0.95, depthTest:false, depthWrite:false, dashed:false }),
-      gt:   new LineMaterial({ color: TRAIL_COLORS.gt,   linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:false }),
-      pred: new LineMaterial({ color: TRAIL_COLORS.pred, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:true, dashSize:0.04, gapSize:0.025 }),
-      err:  new LineMaterial({ color: ERR_COLOR,        linewidth: 1.4, transparent:true, opacity:0.7, depthTest:false, depthWrite:false, dashed:false }),
+      hist: new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.95, depthTest:false, depthWrite:false, dashed:false }),
+      gt:   new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:false }),
+      pred: new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:true, dashSize:0.04, gapSize:0.025 }),
+      err:  new LineMaterial({ color: ERR_COLOR, linewidth: 1.4, transparent:true, opacity:0.7, depthTest:false, depthWrite:false, dashed:false }),
+    };
+    // THREE.Color cache for per-trail base color (used to build vertex colors).
+    this.lineBaseCols = {
+      hist: new THREE.Color(TRAIL_COLORS.hist),
+      gt:   new THREE.Color(TRAIL_COLORS.gt),
+      pred: new THREE.Color(TRAIL_COLORS.pred),
     };
 
     this._setupInput();
@@ -504,9 +513,15 @@ class Panel {
     snapshotDefault();
   }
 
-  // Build a smooth segments-batch for one trail type
-  _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat) {
+  // Build a smooth segments-batch for one trail type, with per-vertex colors
+  // that ramp from dim (oldest, segment start) to vivid (newest, current frame)
+  // along the base color. This encodes motion direction as a brightness
+  // gradient — the eye reads the bright end as "now" and the dim end as "earlier".
+  _buildTrailLayer(pts3d, fStart, fEndExclusive, P, mat, baseColor) {
     const segs = [];
+    const cols = [];
+    const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
+    const K_LO = 0.20, K_HI = 1.00;  // brightness ramp (oldest → newest)
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const raw = [];
       for (let fi = fStart; fi < fEndExclusive; fi++) {
@@ -517,11 +532,23 @@ class Panel {
       }
       if (raw.length < 6) continue;
       const dense = smoothCurve3(raw);
-      polyToSegments(dense, segs);
+      const m = dense.length / 3;
+      if (m < 2) continue;
+      for (let i = 0; i < m - 1; i++) {
+        const t0 = i / (m - 1);
+        const t1 = (i + 1) / (m - 1);
+        const k0 = K_LO + (K_HI - K_LO) * t0;
+        const k1 = K_LO + (K_HI - K_LO) * t1;
+        segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
+        segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
+        cols.push(r0*k0, g0*k0, b0*k0);
+        cols.push(r0*k1, g0*k1, b0*k1);
+      }
     }
     if (segs.length === 0) return null;
     const g = new LineSegmentsGeometry();
     g.setPositions(segs);
+    g.setColors(cols);
     return new LineSegments2(g, mat);
   }
 
@@ -549,17 +576,17 @@ class Panel {
 
     if (this.opts.showHist && nHist > 0) {
       const histEnd = Math.min(nHist - 1, lastFi);
-      const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist);
+      const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, P, this.lineMats.hist, this.lineBaseCols.hist);
       if (layer) this.dynGroup.add(layer);
     }
     if (this.opts.showGT && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, lastFi + 1, P, this.lineMats.gt);
+      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, lastFi + 1, P, this.lineMats.gt, this.lineBaseCols.gt);
       if (layer) this.dynGroup.add(layer);
     }
     if (this.opts.showPred && lastFi >= nHist) {
       const trailStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, P, this.lineMats.pred);
+      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, lastFi + 1, P, this.lineMats.pred, this.lineBaseCols.pred);
       if (layer) this.dynGroup.add(layer);
     }
     // Error vectors — interpolated to follow current motion
@@ -679,11 +706,15 @@ async function init() {
   video.addEventListener('loadedmetadata', () => {
     const T = clipData.num_frames || 1;
     const af = cfg.all_frames || cfg.future_frames;
-    App.clipStartFrame = af[0];
-    App.clipEndFrame   = af[af.length - 1];
+    App.clipStartFrame = af[0];                           // 0 after remap
+    App.clipEndFrame   = af[af.length - 1];               // T-1 after remap
     App.totalFrames    = T;
-    App.clipStartTime  = (App.clipStartFrame / Math.max(T-1, 1)) * video.duration;
-    App.clipEndTime    = (App.clipEndFrame   / Math.max(T-1, 1)) * video.duration;
+    App.fps            = +(clipData.fps || 15);
+    // Native-fps mp4 → time of frame fi is exactly fi/fps. We use fps directly
+    // (not currentTime/duration) so the trajectory-frame index is the same
+    // integer the video element is actually displaying — no interpolation drift.
+    App.clipStartTime  = App.clipStartFrame / App.fps;
+    App.clipEndTime    = App.clipEndFrame   / App.fps;
     video.currentTime = App.clipStartTime;
     video.pause();
     setupVideoOverlay();
@@ -694,28 +725,27 @@ async function init() {
 
   function tick() {
     if (video.duration && App.clipEndTime != null) {
-      if (video.currentTime > App.clipEndTime + 0.005) {
+      if (video.currentTime > App.clipEndTime + 0.5 / App.fps) {
         video.currentTime = App.clipStartTime;
       }
-      const T = App.totalFrames;
-      // FRACTIONAL trajectory frame index — drives smooth current-dot motion
-      const fiAbsFrac = (video.currentTime / video.duration) * Math.max(T-1, 0);
-      const fiAbsInt  = Math.round(fiAbsFrac);
-      if (fiAbsInt !== App._lastFi) {
-        App._lastFi = fiAbsInt;
-        const fiRel = Math.max(0, fiAbsInt - App.clipStartFrame);
+      // Integer source-frame index = round(currentTime * fps). Because the mp4
+      // is at native fps, this matches the frame the <video> is showing.
+      const fi = Math.max(App.clipStartFrame,
+                  Math.min(App.clipEndFrame,
+                  Math.round(video.currentTime * App.fps)));
+      if (fi !== App._lastFi) {
+        App._lastFi = fi;
+        const fiRel = fi - App.clipStartFrame;
         const totalRel = App.clipEndFrame - App.clipStartFrame;
         document.getElementById('frame-lbl').textContent = `frame ${fiRel}/${totalRel}`;
         document.getElementById('vid-frame').textContent = `frame ${fiRel}/${totalRel}`;
         const denom = Math.max(1e-6, App.clipEndTime - App.clipStartTime);
         document.getElementById('scrub').value = Math.max(0, Math.min(100,
           (video.currentTime - App.clipStartTime) / denom * 100));
+        // Same integer fi drives BOTH trails and current dots → no drift.
+        panels.forEach(p => { p.updateDynamic(cfg, fi); p.render(); });
+        drawVideoOverlay(fi);
       }
-      // Render every rAF with fractional fi → trails snap to integer frames,
-      // current dots/spheres move smoothly with the (60fps motion-interpolated) video.
-      const fiFrac = videoFrameFracToConfigFi(fiAbsFrac);
-      panels.forEach(p => { p.updateDynamic(cfg, fiFrac); p.render(); });
-      drawVideoOverlay(fiFrac);
     }
     requestAnimationFrame(tick);
   }
@@ -758,20 +788,41 @@ function collectPath(pts2d, p, fStart, fEnd, W, H) {
   return out;
 }
 
-function strokeSmoothPath(ctx, pts, color, lineWidth, dash=null) {
+// Per-segment gradient stroke: oldest → dim, newest → vivid (motion direction).
+// `baseRgb` = [r, g, b] in 0–255. Optional `dash` keeps the dashed-pred look.
+function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
   if (pts.length < 2) return;
   const smooth = smoothPath2D(pts);
+  const m = smooth.length;
+  if (m < 2) return;
   if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
-  ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(smooth[0][0], smooth[0][1]);
-  for (let i = 1; i < smooth.length; i++) ctx.lineTo(smooth[i][0], smooth[i][1]);
-  ctx.stroke();
+  const K_LO = 0.30, K_HI = 1.00;
+  const A_LO = 0.45, A_HI = 0.95;
+  for (let i = 0; i < m - 1; i++) {
+    const t = (i + 0.5) / Math.max(1, m - 1);
+    const k = K_LO + (K_HI - K_LO) * t;
+    const a = A_LO + (A_HI - A_LO) * t;
+    const r = Math.min(255, Math.round(baseRgb[0] * k));
+    const g = Math.min(255, Math.round(baseRgb[1] * k));
+    const b = Math.min(255, Math.round(baseRgb[2] * k));
+    ctx.strokeStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.moveTo(smooth[i][0], smooth[i][1]);
+    ctx.lineTo(smooth[i+1][0], smooth[i+1][1]);
+    ctx.stroke();
+  }
   ctx.setLineDash([]);
 }
+
+// Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars.
+const TRAIL_RGB = {
+  hist: [143, 217, 248],
+  gt:   [ 52, 211, 153],
+  pred: [240,  82, 156],
+};
 
 function softDot(ctx, x, y, color, r) {
   // subtle drop shadow then flat disc — no glow / no rim highlight
@@ -814,21 +865,21 @@ function drawVideoOverlay(fiFrac) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(143,217,248,0.80)', 1.2);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.hist, 1.4);
     }
   }
   if (cfg.gt_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, tStart, lastFi, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(52,211,153,0.80)', 1.3);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.5);
     }
   }
   if (cfg.pred_2d && lastFi >= nHist) {
     const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.pred_2d, p, tStart, lastFi, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(240,82,156,0.80)', 1.3, [4, 3]);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.5, [4, 3]);
     }
   }
 
@@ -861,23 +912,23 @@ function drawChronoOverlay() {
   const P = cfg.gt_3d[0].length;
   const ptColors = cfg.pt_colors_rgb || [];
 
-  // Trails: thin + low-alpha so the chronophoto object stamps stay visible
+  // Trails: thin + temporal-gradient so motion direction reads at a glance
   if (cfg.gt_2d && nHist > 0) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(143,217,248,0.80)', 1.0);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.hist, 1.2);
     }
   }
   if (cfg.gt_2d) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), cfg.gt_2d.length - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(52,211,153,0.80)', 1.1);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3);
     }
   }
   if (cfg.pred_2d) {
     for (let p = 0; p < P; p += POINT_SUBSAMPLE) {
       const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), cfg.pred_2d.length - 1, W, H);
-      strokeSmoothPath(ctx, pts, 'rgba(240,82,156,0.80)', 1.1, [4, 3]);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3]);
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails (object stays in front)
@@ -931,10 +982,9 @@ function stepFrame(dir) {
   if (!video.duration || App.clipEndFrame == null) return;
   video.pause();
   document.getElementById('play-btn').textContent = '▶';
-  const T = App.totalFrames;
-  const cur  = Math.round(video.currentTime/video.duration * Math.max(T-1, 0));
+  const cur  = Math.round(video.currentTime * App.fps);
   const next = Math.max(App.clipStartFrame, Math.min(App.clipEndFrame, cur + dir));
-  video.currentTime = (next / Math.max(T-1, 1)) * video.duration;
+  video.currentTime = next / App.fps;
 }
 
 function toggleLayer(ev, layer, rebuildStatic = false) {

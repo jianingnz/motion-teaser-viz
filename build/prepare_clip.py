@@ -278,10 +278,11 @@ def main():
                     help="How many depth frames to backproject and concatenate. "
                          "Default = 1 (frame 0 only) so the hand isn't ghosted into the PC. "
                          "Increase only if you actually want a multi-frame fused scene.")
-    ap.add_argument("--out-fps", type=float, default=60.0,
-                    help="Output mp4 fps. If higher than source fps, ffmpeg's "
-                         "minterpolate (motion-compensated) is used to add frames "
-                         "so slow-mo playback stays smooth. Default 60.")
+    ap.add_argument("--out-fps", type=float, default=0.0,
+                    help="Output mp4 fps. If 0 or <= source fps, the mp4 is kept "
+                         "at its native fps (no minterpolate) so the trajectory "
+                         "JSON's per-source-frame indices align exactly with the "
+                         "displayed video frames. Default 0 (= native).")
     args = ap.parse_args()
 
     clip = json.loads(args.src_json.read_text())
