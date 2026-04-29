@@ -597,7 +597,13 @@ async function init() {
 
   video.addEventListener('loadedmetadata', () => {
     const T = clipData.num_frames || 1;
-    video.currentTime = (cfg.hist_frames[0] / Math.max(T-1, 1)) * video.duration;
+    const af = cfg.all_frames || cfg.future_frames;
+    App.clipStartFrame = af[0];
+    App.clipEndFrame   = af[af.length - 1];
+    App.totalFrames    = T;
+    App.clipStartTime  = (App.clipStartFrame / Math.max(T-1, 1)) * video.duration;
+    App.clipEndTime    = (App.clipEndFrame   / Math.max(T-1, 1)) * video.duration;
+    video.currentTime = App.clipStartTime;
     video.pause();
     setupVideoOverlay();
     tick();
@@ -606,15 +612,24 @@ async function init() {
   bindControls();
 
   function tick() {
-    const T = clipData.num_frames || 1;
-    if (video.duration) {
-      const fi = Math.round(video.currentTime / video.duration * Math.max(T-1, 0));
-      if (fi !== App._lastFi) {
-        App._lastFi = fi;
-        document.getElementById('frame-lbl').textContent = `frame ${fi}/${T-1}`;
-        document.getElementById('vid-frame').textContent = `frame ${fi}`;
-        document.getElementById('scrub').value = (fi / Math.max(T-1, 1)) * 100;
-        const lastFi = videoFrameToConfigFi(fi);
+    if (video.duration && App.clipEndTime != null) {
+      // Custom loop: clamp playback to the clip window
+      if (video.currentTime > App.clipEndTime + 0.005) {
+        video.currentTime = App.clipStartTime;
+      }
+      const T = App.totalFrames;
+      const fiAbs = Math.round(video.currentTime / video.duration * Math.max(T-1, 0));
+      if (fiAbs !== App._lastFi) {
+        App._lastFi = fiAbs;
+        const fiRel = Math.max(0, fiAbs - App.clipStartFrame);
+        const totalRel = App.clipEndFrame - App.clipStartFrame;
+        document.getElementById('frame-lbl').textContent = `frame ${fiRel}/${totalRel}`;
+        document.getElementById('vid-frame').textContent = `frame ${fiRel}/${totalRel}`;
+        // scrub maps [0..100] to [clipStartTime..clipEndTime]
+        const denom = Math.max(1e-6, App.clipEndTime - App.clipStartTime);
+        document.getElementById('scrub').value = Math.max(0, Math.min(100,
+          (video.currentTime - App.clipStartTime) / denom * 100));
+        const lastFi = videoFrameToConfigFi(fiAbs);
         panels.forEach(p => { p.updateDynamic(cfg, lastFi); p.render(); });
         drawVideoOverlay(lastFi);
       }
@@ -801,8 +816,8 @@ function bindControls() {
   };
   document.getElementById('rate-sel').onchange = e => video.playbackRate = parseFloat(e.target.value);
   document.getElementById('scrub').oninput = e => {
-    if (!video.duration) return;
-    video.currentTime = (e.target.value/100) * video.duration;
+    if (!video.duration || App.clipEndTime == null) return;
+    video.currentTime = App.clipStartTime + (e.target.value/100) * (App.clipEndTime - App.clipStartTime);
   };
   document.getElementById('step-back').onclick = () => stepFrame(-1);
   document.getElementById('step-fwd').onclick  = () => stepFrame(+1);
@@ -816,12 +831,12 @@ function bindControls() {
 }
 
 function stepFrame(dir) {
-  if (!video.duration) return;
+  if (!video.duration || App.clipEndFrame == null) return;
   video.pause();
   document.getElementById('play-btn').textContent = '▶';
-  const T = clipData.num_frames || 1;
-  const cur = Math.round(video.currentTime/video.duration * Math.max(T-1, 0));
-  const next = Math.max(0, Math.min(T-1, cur + dir));
+  const T = App.totalFrames;
+  const cur  = Math.round(video.currentTime/video.duration * Math.max(T-1, 0));
+  const next = Math.max(App.clipStartFrame, Math.min(App.clipEndFrame, cur + dir));
   video.currentTime = (next / Math.max(T-1, 1)) * video.duration;
 }
 
