@@ -239,8 +239,8 @@ const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 8;      // catmull-rom samples per interval (higher = smoother GT/Pred curves)
 const POINT_SUBSAMPLE    = 4;      // (legacy) — replaced by curated index lists below
 const N_GT_KEEP          = 22;     // GT/Pred points to render — biased toward smoothest, drop residual jumpy
-const N_RAW_KEEP         = 22;     // raw points to render — mostly cross-section, plus a few jumpy
-const N_RAW_JUMPY        = 5;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
+const N_RAW_KEEP         = 40;     // raw points to render — mostly cross-section, plus a few jumpy
+const N_RAW_JUMPY        = 8;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
 const PC_POINT_PIX       = 7.0;    // PC base pixel size
@@ -471,14 +471,16 @@ class Panel {
       pred: new THREE.Color(TRAIL_COLORS.pred),
     };
     // Raw-track material: same line weight + opacity as the filtered trails,
-    // but bright red and *no smoothing* — so the contrast between the noisy
-    // unprocessed signal and our clean Catmull-smoothed output reads at a
-    // glance. Sharp polyline through the raw frames; jagged is the point.
+    // but bright red, *no smoothing*, and a temporal pale-→-vivid gradient
+    // (vertex colors) so the contrast between the noisy unprocessed signal
+    // and our clean Catmull-smoothed output reads at a glance. Sharp
+    // polyline through the raw frames; the jaggedness is the point.
     this.rawLineMat = new LineMaterial({
-      color: TRAIL_COLORS.raw, vertexColors:false,
+      color: 0xffffff, vertexColors:true,
       linewidth: lw, transparent:true, opacity:0.92,
       depthTest:false, depthWrite:false, dashed:false,
     });
+    this.lineBaseCols.raw = new THREE.Color(TRAIL_COLORS.raw);
 
     this._setupInput();
     new ResizeObserver(() => { this.applyCamera(); this.render(); }).observe(this.canvas.parentElement);
@@ -662,26 +664,50 @@ class Panel {
     // sub-frame (no trajectory interpolation).
     const lastFi = Math.round(fiFrac);
 
-    // Raw layer first (drawn on top via renderOrder, but added before so the
-    // colored trails sit visually on top in case of equal z). Same trailing-
-    // window logic as the GT/Pred trails so it behaves like a sibling tail.
+    // Raw layer with the same trailing-window logic as the GT/Pred trails.
+    // Builds per-point sub-paths (split on visibility nulls) and emits a
+    // pale-→-vivid red temporal gradient via vertex colors — sharp (no
+    // smoothing) so the noise reads, but styled to match the filtered ones.
     if (this.opts.showRaw && clipData.raw_3d && clipData._rawIdx) {
       const rawStart = (lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - TRAIL_LEN);
       const rawEnd   = lastFi + 1;  // exclusive
       const segs = [];
+      const cols = [];
+      const baseR = this.lineBaseCols.raw;
+      const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
+      const MIX_LO = 0.18, MIX_HI = 1.00;
       for (const p of clipData._rawIdx) {
-        let prev = null;
+        // Collect contiguous visible sub-paths for this point in the window
+        let sp = [];
+        const subpaths = [];
         for (let t = rawStart; t < rawEnd; t++) {
           const pt = clipData.raw_3d[t]?.[p];
-          if (!pt || !Number.isFinite(pt[0])) { prev = null; continue; }
-          const cur = [pt[0], -pt[1], -pt[2]];
-          if (prev) { segs.push(prev[0], prev[1], prev[2], cur[0], cur[1], cur[2]); }
-          prev = cur;
+          if (!pt || !Number.isFinite(pt[0])) {
+            if (sp.length > 0) { subpaths.push(sp); sp = []; }
+            continue;
+          }
+          sp.push([pt[0], -pt[1], -pt[2]]);
+        }
+        if (sp.length > 0) subpaths.push(sp);
+        for (const path of subpaths) {
+          const m = path.length;
+          if (m < 2) continue;
+          for (let i = 0; i < m - 1; i++) {
+            const t0 = i / (m - 1);
+            const t1 = (i + 1) / (m - 1);
+            const k0 = MIX_LO + (MIX_HI - MIX_LO) * t0;
+            const k1 = MIX_LO + (MIX_HI - MIX_LO) * t1;
+            const a = path[i], b = path[i+1];
+            segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+            cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
+            cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
+          }
         }
       }
       if (segs.length) {
         const g = new LineSegmentsGeometry();
         g.setPositions(segs);
+        g.setColors(cols);
         this.dynGroup.add(new LineSegments2(g, this.rawLineMat));
       }
     }
@@ -982,37 +1008,55 @@ function ringDot(ctx, x, y, color, r) {
 }
 
 // Raw-track stroke: bright red, same line weight as the filtered trails,
-// but NO smoothing — sharp polyline straight through raw frames so the
-// jaggedness reads as a contrast against our Catmull-smoothed output.
-// Visibility nulls split the polyline so we don't draw across gaps.
-// `ptIdx` is the curated raw index list; `fStart..fEnd` is the trail window
-// (inclusive end). When fEnd is undefined we use the full clip.
+// pale-→-vivid temporal gradient like GT/Pred, but NO smoothing — sharp
+// polyline straight through raw frames so the jaggedness still reads as a
+// contrast against our Catmull-smoothed output. Visibility nulls split the
+// polyline so we don't draw across gaps. `ptIdx` is the curated raw index
+// list; `fStart..fEnd` is the trail window (inclusive end). When fEnd is
+// undefined we use the full clip.
 function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
-                   color = 'rgba(239,68,68,0.90)', lineWidth = 1.5) {
+                   baseRgb = [239, 68, 68], lineWidth = 1.5) {
   if (!raw2d || raw2d.length < 2 || !ptIdx || !ptIdx.length) return;
   const T = raw2d.length;
   const a0 = Math.max(0, fStart ?? 0);
   const a1 = Math.min(T - 1, fEnd ?? (T - 1));
   if (a1 < a0) return;
   ctx.setLineDash([]);
-  ctx.strokeStyle = color;
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  const MIX_LO = 0.18, MIX_HI = 1.00;
+  const A_LO = 0.55, A_HI = 0.95;
   for (const p of ptIdx) {
-    let inPath = false;
-    ctx.beginPath();
+    // Collect contiguous visible sub-paths for this point
+    let sp = [];
+    const subpaths = [];
     for (let t = a0; t <= a1; t++) {
       const pt = raw2d[t]?.[p];
       if (!pt || pt[0] == null || !Number.isFinite(pt[0])) {
-        if (inPath) { ctx.stroke(); ctx.beginPath(); inPath = false; }
+        if (sp.length > 0) { subpaths.push(sp); sp = []; }
         continue;
       }
-      const x = pt[0] * W, y = pt[1] * H;
-      if (!inPath) { ctx.moveTo(x, y); inPath = true; }
-      else         { ctx.lineTo(x, y); }
+      sp.push([pt[0] * W, pt[1] * H]);
     }
-    if (inPath) ctx.stroke();
+    if (sp.length > 0) subpaths.push(sp);
+    for (const path of subpaths) {
+      const m = path.length;
+      if (m < 2) continue;
+      for (let i = 0; i < m - 1; i++) {
+        const t = (i + 0.5) / Math.max(1, m - 1);
+        const k = MIX_LO + (MIX_HI - MIX_LO) * t;
+        const a = A_LO + (A_HI - A_LO) * t;
+        const r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
+        const g = Math.min(255, Math.round(baseRgb[1] * k + 255 * (1 - k)));
+        const b = Math.min(255, Math.round(baseRgb[2] * k + 255 * (1 - k)));
+        ctx.strokeStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(path[i][0], path[i][1]);
+        ctx.lineTo(path[i+1][0], path[i+1][1]);
+        ctx.stroke();
+      }
+    }
   }
 }
 
