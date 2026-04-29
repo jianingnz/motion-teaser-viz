@@ -198,6 +198,7 @@ footer a { color: #2563eb; text-decoration: none; }
         <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
         <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
         <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
+        <span><span class="sw" style="background:#ef4444"></span>raw tracks (unfiltered, unsmoothed)</span>
         <span><span class="sw" style="background:#fbbf24"></span>per-point dot color = sampled object RGB (frame 0)</span>
       </span>
     </div>
@@ -235,7 +236,7 @@ const CLIP_URL = new URLSearchParams(location.search).get('clip')
   }
 }
 const TRAIL_LEN          = 12;     // frames of trail to render at any time
-const SMOOTH_SAMPLES     = 2;      // catmull-rom samples per interval
+const SMOOTH_SAMPLES     = 8;      // catmull-rom samples per interval (higher = smoother GT/Pred curves)
 const POINT_SUBSAMPLE    = 4;      // show every Nth query point only (cleaner / less dense)
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
@@ -249,6 +250,7 @@ const TRAIL_COLORS = {
   hist: 0x0ea5e9,   // sky blue
   gt:   0x34d399,   // mint green
   pred: 0xf0529c,   // pink
+  raw:  0xef4444,   // red — unfiltered, unsmoothed contrast
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -401,11 +403,13 @@ class Panel {
       gt:   new THREE.Color(TRAIL_COLORS.gt),
       pred: new THREE.Color(TRAIL_COLORS.pred),
     };
-    // Raw-track material: thin, dim, no smoothing — purposely "ugly" so it
-    // reads as the unprocessed signal next to the clean GT/Pred trails.
+    // Raw-track material: same line weight + opacity as the filtered trails,
+    // but bright red and *no smoothing* — so the contrast between the noisy
+    // unprocessed signal and our clean Catmull-smoothed output reads at a
+    // glance. Sharp polyline through the raw frames; jagged is the point.
     this.rawLineMat = new LineMaterial({
-      color: 0x1f2937, vertexColors:false,
-      linewidth: 1.0, transparent:true, opacity:0.30,
+      color: TRAIL_COLORS.raw, vertexColors:false,
+      linewidth: lw, transparent:true, opacity:0.92,
       depthTest:false, depthWrite:false, dashed:false,
     });
 
@@ -904,11 +908,11 @@ function ringDot(ctx, x, y, color, r) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
 }
 
-// Plain raw-track stroke: no smoothing, no per-segment styling — just a
-// straight polyline through the raw 2D points (visibility nulls split the
-// polyline so we don't draw across gaps). Dim slate so it reads as the
-// unprocessed signal next to the colored, smoothed clip trails.
-function drawRaw2D(ctx, raw2d, W, H, color = 'rgba(31,41,55,0.30)', lineWidth = 0.8) {
+// Raw-track stroke: bright red, same line weight as the filtered trails,
+// but NO smoothing — sharp polyline straight through raw frames so the
+// jaggedness reads as a contrast against our Catmull-smoothed output.
+// Visibility nulls split the polyline so we don't draw across gaps.
+function drawRaw2D(ctx, raw2d, W, H, color = 'rgba(239,68,68,0.90)', lineWidth = 1.5) {
   if (!raw2d || raw2d.length < 2) return;
   const T = raw2d.length;
   const P = raw2d[0].length;
