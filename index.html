@@ -474,29 +474,6 @@ class Panel {
       const cx = (xs[0]+xs.at(-1))/2, cy = (ys[0]+ys.at(-1))/2, cz = (zs[0]+zs.at(-1))/2;
       const spread = Math.max(xs.at(-1)-xs[0], ys.at(-1)-ys[0], zs.at(-1)-zs[0], 0.15);
       this._layout = { cx, cy, cz, spread };
-
-      // Floor y in three.js coords (smallest y after Y/Z negation = world floor).
-      // Use the PC's min-y if available, else trajectory's min-y.
-      let floorY = ys[0];
-      if (clipData.pc_xyz) {
-        let minPCY = Infinity;
-        for (let i = 0; i < clipData.pc_xyz.length; i++) {
-          const yv = -clipData.pc_xyz[i][1];
-          if (Number.isFinite(yv) && yv < minPCY) minPCY = yv;
-        }
-        if (Number.isFinite(minPCY)) floorY = minPCY;
-      }
-      // Clean axis-aligned floor grid (paper-quality, like the reference matplotlib viz).
-      const halfExtent = spread * 1.6;
-      const gridSize = halfExtent * 2;
-      const cellSize = Math.max(0.05, Math.min(0.4, spread * 0.18));
-      const divisions = Math.max(8, Math.min(28, Math.round(gridSize / cellSize)));
-      const grid = new THREE.GridHelper(gridSize, divisions, 0xb5b5b5, 0xdedede);
-      grid.material.opacity = 0.55;
-      grid.material.transparent = true;
-      grid.material.depthWrite = false;
-      grid.position.set(cx, floorY - 0.003, cz);
-      this.staticGroup.add(grid);
     }
   }
 
