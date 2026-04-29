@@ -253,10 +253,14 @@ const N_RAW_JUMPY        = 8;      // of N_RAW_KEEP, this many must come from th
 // single static frame still communicates "look how noisy raw cotracker is".
 const N_RAW_PAPER        = 55;
 const N_RAW_PAPER_JUMPY  = 30;
-// Drop this many frames off the end of GT/Pred in the paper-figure panel —
-// the very last frames tend to carry residual track noise even after our
-// smoothing, so trimming them gives a cleaner reference curve in the still.
-const PAPER_GT_TAIL_DROP = 5;
+// Drop this many frames off the END of the GT trail in the paper-figure
+// panel (residual track noise at the trajectory tail otherwise pollutes the
+// still). Applies to GT only — Pred and Raw still span the full clip.
+const PAPER_GT_TAIL_DROP = 11;
+// Paper-mode gradient is more saturated than the live panels: the pale end
+// blends only PAPER_MIX_LO * white into the base color, so even the oldest
+// segment reads as a clear pink/green/red rather than near-white.
+const PAPER_MIX_LO       = 0.55;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
 const PC_POINT_PIX       = 7.0;    // PC base pixel size
@@ -618,14 +622,16 @@ class Panel {
   // the *vivid* base color (newest, current frame). The pale end blends toward
   // white instead of black so the gradient reads light → saturated rather than
   // dark → saturated, matching the light scene background.
-  _buildTrailLayer(pts3d, fStart, fEndExclusive, ptIdx, mat, baseColor, useGradient = true) {
+  _buildTrailLayer(pts3d, fStart, fEndExclusive, ptIdx, mat, baseColor, useGradient = true, mixLoOverride = null) {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
     // Mix fraction of base color: oldest = MIX_LO of base + (1-MIX_LO) of white,
     // newest = MIX_HI of base + (1-MIX_HI) of white. With useGradient=false the
-    // whole trail stays at full base color (no temporal fade).
-    const MIX_LO = useGradient ? 0.18 : 1.00;
+    // whole trail stays at full base color (no temporal fade). The paper-figure
+    // panel passes a higher mixLoOverride (PAPER_MIX_LO) so its gradient is
+    // more saturated than the live panels.
+    const MIX_LO = useGradient ? (mixLoOverride ?? 0.18) : 1.00;
     const MIX_HI = 1.00;
     for (const p of ptIdx) {
       const raw = [];
@@ -695,7 +701,8 @@ class Panel {
       const cols = [];
       const baseR = this.lineBaseCols.raw;
       const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
-      const MIX_LO = 0.18, MIX_HI = 1.00;
+      const MIX_LO = isPaper ? PAPER_MIX_LO : 0.18;
+      const MIX_HI = 1.00;
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -738,22 +745,23 @@ class Panel {
       const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, idx, this.lineMats.hist, this.lineBaseCols.hist, false);
       if (layer) this.dynGroup.add(layer);
     }
-    // Paper-mode end cap for GT/Pred: drop the last PAPER_GT_TAIL_DROP frames
-    // so residual track noise at the trajectory tail doesn't pollute the
-    // figure. Raw still spans the full clip — the noise there is the point.
+    // Paper-mode end cap: drop the last PAPER_GT_TAIL_DROP frames *only on
+    // GT* so residual smoothed-track noise at the trajectory tail doesn't
+    // pollute the figure. Pred and Raw still span the full clip.
     const paperGtEnd = Math.max(nHist, T_clip - PAPER_GT_TAIL_DROP);
+    const paperMix   = isPaper ? PAPER_MIX_LO : null;
     if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
       const trailStart = isPaper ? Math.max(0, nHist - 1)
                                  : Math.max(nHist - 1, lastFi - TRAIL_LEN);
       const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
-      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, trailEnd, idx, this.lineMats.gt, this.lineBaseCols.gt);
+      const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, trailEnd, idx, this.lineMats.gt, this.lineBaseCols.gt, true, paperMix);
       if (layer) this.dynGroup.add(layer);
     }
     if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
       const trailStart = isPaper ? Math.max(0, nHist - 1)
                                  : Math.max(nHist - 1, lastFi - TRAIL_LEN);
-      const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
-      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, trailEnd, idx, this.lineMats.pred, this.lineBaseCols.pred);
+      const trailEnd   = isPaper ? T_clip : (lastFi + 1);  // pred keeps full
+      const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, trailEnd, idx, this.lineMats.pred, this.lineBaseCols.pred, true, paperMix);
       if (layer) this.dynGroup.add(layer);
     }
     // PaperMode is a single still frame — no current-frame spheres or error
@@ -1282,11 +1290,12 @@ function toggleLayer(ev, layer, rebuildStatic = false) {
   btn.classList.toggle('on');
   const on = btn.classList.contains('on');
   const fi = App._lastFi >= 0 ? videoFrameToConfigFi(App._lastFi) : -1;
+  const paperFi = (clipData.num_frames || 1) - 1;
   for (const p of _togglePanels()) {
     p.opts[layer] = on;
     if (rebuildStatic) p.buildStatic(clipData, cfg);
-    if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1);
-    else                  p.updateDynamic(cfg, fi);
+    p.updateDynamic(cfg, p.opts.paperMode ? paperFi : fi);
+    p.applyCamera();   // ensure shared camState is reflected before flushing
     p.render();
   }
 }
@@ -1298,10 +1307,11 @@ function toggleRaw(ev) {
   btn.classList.toggle('on');
   App.showRaw = btn.classList.contains('on');
   const fi = App._lastFi >= 0 ? App._lastFi : -1;
+  const paperFi = (clipData.num_frames || 1) - 1;
   for (const p of _togglePanels()) {
     p.opts.showRaw = App.showRaw;
-    if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1);
-    else                  p.updateDynamic(cfg, fi);
+    p.updateDynamic(cfg, p.opts.paperMode ? paperFi : fi);
+    p.applyCamera();
     p.render();
   }
   drawVideoOverlay(App._lastFi >= 0 ? App._lastFi : 0);
