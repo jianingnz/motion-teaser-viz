@@ -1725,17 +1725,57 @@ function videoFrameToConfigFi(videoFrame) {
 // (full-video pipeline is filtered + smoothed, so all tracks are usable).
 // Stashed on Panel.cfgOverride so the panel renders against this cfg
 // instead of the per-clip cfg the rest of the page uses.
+// For each clip GT point, find the nearest 3D neighbour in full_video_3d at
+// the clip-start frame (= same physical point in world coordinates). Returns
+// a map clip_idx → full_idx so the alt panel can render the *same* physical
+// trajectories the clip panel renders, but spanning the whole video.
+function buildClipToFullPointMap(clipData, cfg) {
+  const clipPts0 = cfg.gt_3d?.[0];
+  const fullTracks = clipData.full_video_3d?.tracks;
+  const fullStart  = clipData.full_video?.src_clip_start ?? 0;
+  if (!clipPts0 || !fullTracks?.length) return null;
+  const fullPts = fullTracks[fullStart] || fullTracks[0];
+  if (!fullPts) return null;
+  const map = new Map();
+  for (let cp = 0; cp < clipPts0.length; cp++) {
+    const cpos = clipPts0[cp];
+    if (!cpos || !Number.isFinite(cpos[0])) continue;
+    let bestIdx = -1, bestDist = Infinity;
+    for (let fp = 0; fp < fullPts.length; fp++) {
+      const fpos = fullPts[fp];
+      if (!fpos || !Number.isFinite(fpos[0])) continue;
+      const dx = fpos[0] - cpos[0], dy = fpos[1] - cpos[1], dz = fpos[2] - cpos[2];
+      const d  = dx*dx + dy*dy + dz*dz;
+      if (d < bestDist) { bestDist = d; bestIdx = fp; }
+    }
+    if (bestIdx >= 0) map.set(cp, bestIdx);
+  }
+  return map;
+}
+
+function mapClipIdxToFullIdx(clipIdx, map) {
+  if (!map) return [];
+  const seen = new Set();
+  const out = [];
+  for (const ci of clipIdx) {
+    const fi = map.get(ci);
+    if (fi == null || seen.has(fi)) continue;
+    seen.add(fi); out.push(fi);
+  }
+  out.sort((a, b) => a - b);
+  return out;
+}
+
 function buildFullCfg(clipData) {
   const tracks = clipData.full_video_3d?.tracks || [];
   const T = tracks.length;
-  const N = (T > 0) ? (tracks[0]?.length || 0) : 0;
   const all = Array.from({ length: T }, (_, i) => i);
-  // Smoothest-first selection of FULL-video trajectories — matches the clip
-  // panel's curation style (selectSmoothestIdx of pointMaxJumpScores). Same
-  // count as Settings.nKeep so the live "# trajectories" slider drives both
-  // panels in lockstep.
-  const scores = pointMaxJumpScores(tracks);
-  const idx = selectSmoothestIdx(scores, Math.max(1, Math.min(N, Settings.nKeep | 0)));
+  // GT idx in full-video space = clip's _goodIdx mapped via 3D nearest
+  // neighbour at the clip-start frame. This way ③c renders the *same*
+  // physical trajectories the clip panel renders, just spanning the
+  // whole video. recomputeGtIdx re-runs this whenever nKeep changes.
+  const map = buildClipToFullPointMap(clipData, cfg);
+  const idx = mapClipIdxToFullIdx(cfg?._goodIdx || [], map);
   // Raw 3D = pre-smoothing P_original; same mixed-cross-section + jumpiest
   // curation as the clip panels so the full-video paper figure tells the
   // same "noisy raw vs clean smoothed" story as ③b does for the cut clip.
@@ -1765,7 +1805,7 @@ function buildFullCfg(clipData) {
     _goodIdx:      idx,
     _goodIdxPaper: idx,
     paperGtTailDrop: 0,    // no tail-noise mask — full-video tracks are clean
-    _scores: scores,        // cached so the live slider can re-rank without re-walking
+    _clipToFullMap: map,    // cached so recomputeGtIdx can re-map without redoing NN
   };
 }
 
@@ -2169,6 +2209,7 @@ function bindTrajectoryPickers() {
     if (!idx || idx.length === 0) return;
     cfg._goodIdx = idx;
     cfg._goodIdxPaper = idx;
+    syncAltPanelGtFromClip();
     rerenderAll();
   });
   document.getElementById('raw-pick')?.addEventListener('change', () => {
@@ -2179,7 +2220,7 @@ function bindTrajectoryPickers() {
     rerenderAll();
   });
   document.getElementById('gt-pick-reset')?.addEventListener('click', () => {
-    recomputeGtIdx(Settings.nKeep);
+    recomputeGtIdx(Settings.nKeep);   // already calls syncAltPanelGtFromClip
     fillTrajectoryPicker('gt-pick', gtScores, new Set(cfg._goodIdx || []), false);
     rerenderAll();
   });
@@ -2705,20 +2746,21 @@ function recomputeGtIdx(n) {
   cfg._goodIdxPaper = ranked.slice(0, Math.min(n, ranked.length))
                             .sort((a, b) => a - b);
 
-  // Mirror onto the alt-pc paper panel's full-video cfg so the slider
-  // controls both panels' trajectory counts together.
+  syncAltPanelGtFromClip();
+}
+
+// Re-map the clip's current _goodIdx onto the full-video alt-PC panel so
+// the SAME physical trajectories are rendered there, spanning the full
+// video. Called from every code path that mutates cfg._goodIdx (slider,
+// listbox change, reset).
+function syncAltPanelGtFromClip() {
   const altPanel = panels?.find(p => p.canvas?.id === 'canvas-altpc');
-  if (altPanel?.cfgOverride?.gt_3d) {
-    const co = altPanel.cfgOverride;
-    const Pf = co.gt_3d[0]?.length || 0;
-    if (Pf > 0) {
-      const nf = Math.max(1, Math.min(Pf, n));
-      const fullScores = co._scores || pointMaxJumpScores(co.gt_3d);
-      co._scores = fullScores;
-      co._goodIdx      = selectSmoothestIdx(fullScores, nf);
-      co._goodIdxPaper = co._goodIdx;
-    }
-  }
+  if (!altPanel?.cfgOverride?.gt_3d) return;
+  const co = altPanel.cfgOverride;
+  const map = co._clipToFullMap || (co._clipToFullMap = buildClipToFullPointMap(clipData, cfg));
+  const mapped = mapClipIdxToFullIdx(cfg._goodIdx || [], map);
+  co._goodIdx      = mapped;
+  co._goodIdxPaper = mapped;
 }
 
 // Helpers for the colour pickers. Each updates the canonical TRAIL_COLORS /
