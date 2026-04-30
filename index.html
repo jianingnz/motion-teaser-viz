@@ -259,6 +259,9 @@ footer a { color: #2563eb; text-decoration: none; }
       <label>Ball size</label>
       <input type="range" id="ball-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
       <span class="frame-lbl" id="ball-scale-lbl">1.0×</span>
+      <label style="margin-left:14px;">Endpoint size</label>
+      <input type="range" id="endpoint-scale" min="1" max="3.5" step="0.05" value="1.6" style="min-width:120px;" title="Multiplier (× largest trail ball) for the start/end object-colour markers.">
+      <span class="frame-lbl" id="endpoint-scale-lbl">1.6×</span>
       <label style="margin-left:14px;">Line width</label>
       <input type="range" id="line-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
       <span class="frame-lbl" id="line-scale-lbl">1.0×</span>
@@ -278,6 +281,7 @@ footer a { color: #2563eb; text-decoration: none; }
       <button class="btn" id="t-err">GT↔Pred error vectors</button>
       <button class="btn" id="t-raw">raw tracks (unfiltered, unsmoothed)</button>
       <button class="btn" id="t-balls">trajectory balls</button>
+      <button class="btn" id="t-endpoints">endpoint markers</button>
       <button class="btn" id="t-camera-reset">reset camera</button>
     </div>
     <div class="row-c">
@@ -407,6 +411,7 @@ const Settings = {
   tExp:       1.00,           // gradient curve exponent (live mode); <1 boosts early frames
   ballStride: 3,              // place a ball every Nth frame
   ballScale:  1.0,            // multiplier on per-panel ball radii
+  endpointScale: 1.6,         // multiplier on rMax for the start/end markers
   lineScale:  1.0,            // multiplier on trail line widths
   nKeep:      8,              // # of GT/Pred trajectories rendered
   // Rainbow mode for GT/Pred: hue cycles smoothly across time. Two roles
@@ -655,7 +660,7 @@ function polyToSegments(flat, into) {
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(RENDER_PIXEL_RATIO);
     this.renderer.setClearColor(BG_COLOR, 1);
@@ -957,6 +962,55 @@ class Panel {
     return [rMin * Settings.ballScale, rMax * Settings.ballScale];
   }
 
+  // Object-color highlights at the global start (frame 0) and global end
+  // (frame T-1) of each tracked point. The object's frame-0 sampled RGB
+  // (from cfg.pt_colors_rgb) lets the viewer link a trail back to its
+  // physical object — independent of the rainbow/role colour used along
+  // the trail. Drawn larger than the largest trail ball so they pop.
+  _addEndpointSpheres(cfg) {
+    const T_clip = cfg.gt_3d?.length || 0;
+    if (T_clip === 0) return;
+    const ptColors = cfg.pt_colors_rgb || [];
+    if (!ptColors.length) return;
+    const idx = (this.opts.paperMode && cfg._goodIdxPaper) ? cfg._goodIdxPaper
+                                                           : (cfg._goodIdx || []);
+    if (!idx.length) return;
+    const [, rMaxBase] = this._ballRadii();
+    const rEnd = rMaxBase * Settings.endpointScale;
+
+    const records = [];
+    const push = (pt, c) => {
+      if (!pt || !Number.isFinite(pt[0])) return;
+      records.push([pt[0], -pt[1], -pt[2], c[0]/255, c[1]/255, c[2]/255]);
+    };
+    for (const p of idx) {
+      const c = ptColors[p];
+      if (!c) continue;
+      // Global start = frame 0 of GT (= start of history). Tied to showHist
+      // since toggling history off reads as "no context, skip the start".
+      if (this.opts.showHist) push(cfg.gt_3d[0]?.[p], c);
+      // Global ends.
+      if (this.opts.showGT)   push(cfg.gt_3d[T_clip - 1]?.[p],   c);
+      if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p], c);
+    }
+    if (!records.length) return;
+    const geom = new THREE.SphereGeometry(rEnd, 14, 12);
+    const inst = new THREE.InstancedMesh(geom, this.sphereMat, records.length);
+    const colorAttr = new Float32Array(records.length * 3);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i];
+      dummy.position.set(r[0], r[1], r[2]);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      colorAttr[i*3]   = r[3];
+      colorAttr[i*3+1] = r[4];
+      colorAttr[i*3+2] = r[5];
+    }
+    inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+    this.dynGroup.add(inst);
+  }
+
   // Interpolate a 3D point at fractional frame fiFrac (used for current-dot motion)
   _interpPt(pts3d, fiFrac, p) {
     const f0 = Math.max(0, Math.floor(fiFrac));
@@ -1102,6 +1156,11 @@ class Panel {
           rMin, rMax, T_TOTAL, null, 'pred');
       }
     }
+    // Global start/end markers in the object's frame-0 sampled RGB. Drawn
+    // last so they sit on top of the trail balls + lines. Always evaluated
+    // (live and paper) — these are *global* anchors, independent of fiFrac.
+    if (this.opts.showEndpoints) this._addEndpointSpheres(cfg);
+
     // PaperMode is a single still frame — no error vectors (those concepts
     // only make sense during playback).
     if (isPaper) return;
@@ -1662,6 +1721,9 @@ function bindControls() {
   // Trajectory-balls button starts ON (defaults match panel opts)
   const tBalls = document.getElementById('t-balls');
   if (tBalls) { tBalls.classList.add('on'); tBalls.onclick = (e) => toggleLayer(e, 'showBalls'); }
+  // Endpoint markers — start (frame 0) + end (frame T-1) in object colour.
+  const tEnds = document.getElementById('t-endpoints');
+  if (tEnds) { tEnds.classList.add('on'); tEnds.onclick = (e) => toggleLayer(e, 'showEndpoints'); }
   document.getElementById('t-camera-reset').onclick = resetCamera;
   // History color selector — re-aim the history hue to follow GT or pred (or
   // its own baby-blue default).
@@ -1719,6 +1781,8 @@ function bindControls() {
              v => { Settings.ballStride = v|0; rerenderAll(); });
   wireSlider('ball-scale',  'ball-scale-lbl',  v => `${v.toFixed(2)}×`,
              v => { Settings.ballScale = v;    rerenderAll(); });
+  wireSlider('endpoint-scale', 'endpoint-scale-lbl', v => `${v.toFixed(2)}×`,
+             v => { Settings.endpointScale = v; rerenderAll(); });
   wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
              v => applyLineScale(v));
   wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
