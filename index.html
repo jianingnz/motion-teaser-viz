@@ -323,7 +323,7 @@ const PAPER_GT_TAIL_WINDOW = 6;
 const PAPER_GT_POOL_MULT   = 1.7;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
-const PC_POINT_PIX       = 4.5;    // PC base pixel size — applied constantly regardless of depth so foreground points don't blob and background points don't shrink to sub-pixel. Density still varies with 3D point spacing (intrinsic to the depth-backprojected cloud) but per-point footprint is uniform.
+const PC_POINT_PIX       = 12.0;   // PC base pixel size in DEVICE pixels (renderer uses ~2.5× pixelRatio, so divide by that for on-screen CSS px). Constant size regardless of depth — uniform footprint.
 const PC_DEPTH_SHADE     = 0.0;    // 0=no shading
 const TRAIL_LINE_PX_BIG  = 2.0;    // px linewidth in big panel (slightly thinner so balls dominate)
 const TRAIL_LINE_PX_SM   = 1.4;    // px linewidth in small panels
