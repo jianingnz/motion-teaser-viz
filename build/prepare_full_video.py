@@ -159,6 +159,35 @@ def load_full_2d_tracks(stem: str):
     return out, T, N, (H, W)
 
 
+def load_full_2d_raw_tracks(stem: str):
+    """Pre-filter, pre-smoothing 2D tracks (cotracker output, full video).
+
+    These are the noisy raw tracks demonstrating what the filtering +
+    smoothing stage cleans up. Indexed by their own P_total (different
+    cardinality than the kept-point set in final_tracks).
+    """
+    p = TRACK_ROOT / "track_output" / stem / f"{stem}_merged.npz"
+    if not p.exists():
+        raise RuntimeError(f"missing track_output merged: {p}")
+    d = np.load(p, allow_pickle=True)
+    tracks = d["tracks"]            # (T, P, 2) px
+    vis = d["visibility"]           # (T, P) bool
+    H, W = [int(x) for x in d["dim"]]
+    T, P, _ = tracks.shape
+    out = []
+    for t in range(T):
+        frame = []
+        for n in range(P):
+            if not bool(vis[t, n]):
+                frame.append(None)
+                continue
+            u = float(tracks[t, n, 0]) / max(W, 1)
+            v = float(tracks[t, n, 1]) / max(H, 1)
+            frame.append([u, v])
+        out.append(frame)
+    return out, T, P, (H, W)
+
+
 def load_full_3d_tracks(stem: str):
     """Filtered + smoothed full-video 3D tracks → list-of-frames [[x,y,z]|None]."""
     p = TRACK_ROOT / "final_tracks" / f"{stem}_3d.npz"
@@ -286,6 +315,24 @@ def main():
         "n_frames": int(T_tracks),
         "source": str(TRACK_ROOT / "final_tracks" / f"{stem}_3d.npz"),
         "note": "Filtered + smoothed full-video 3D tracks; aligned 1:1 with full_video_2d points.",
+    }
+
+    # Pre-filter, pre-smoothing 2D tracks (cotracker raw output) — used by
+    # the full-video panel's "Raw" overlay layer to demonstrate the
+    # filter+smooth cleanup. Indexed by its own P_total (≠ N_pts).
+    print("       loading full-video raw (pre-filter) 2D tracks …")
+    raw_2d_full, T_raw, P_raw, (Hr, Wr) = load_full_2d_raw_tracks(stem)
+    if T_raw != T_tracks:
+        T_use = min(T_raw, T_tracks)
+        raw_2d_full = raw_2d_full[:T_use]
+        T_raw = T_use
+    clip["full_video_raw_2d"] = {
+        "tracks": raw_2d_full,             # (T_video, P_raw) of [u,v] | null
+        "n_points": int(P_raw),
+        "n_frames": int(T_raw),
+        "video_dim_HW": [int(Hr), int(Wr)],
+        "source": str(TRACK_ROOT / "track_output" / stem / f"{stem}_merged.npz"),
+        "note": "Pre-filter, pre-smoothing 2D tracks — the noisy raw cotracker output.",
     }
 
     json_path.write_text(json.dumps(clip))

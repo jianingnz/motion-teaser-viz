@@ -343,8 +343,8 @@ footer a { color: #2563eb; text-decoration: none; }
       <input type="range" id="pred-lit" min="0.1" max="0.9" step="0.02" value="0.46" style="min-width:80px;">
       <span class="frame-lbl" id="pred-lit-lbl">0.46</span>
       <label style="margin-left:14px;" title="Saturation of the raw-trail's pink endpoint. 0 = pastel light pink, 1 = vivid hot pink.">Raw sat</label>
-      <input type="range" id="raw-sat" min="0" max="1" step="0.02" value="0.85" style="min-width:80px;">
-      <span class="frame-lbl" id="raw-sat-lbl">0.85</span>
+      <input type="range" id="raw-sat" min="0" max="1" step="0.02" value="0.10" style="min-width:80px;">
+      <span class="frame-lbl" id="raw-sat-lbl">0.10</span>
       <label style="margin-left:18px;"># trajectories</label>
       <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
       <span class="frame-lbl" id="n-keep-lbl">8</span>
@@ -401,6 +401,33 @@ footer a { color: #2563eb; text-decoration: none; }
       <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12" style="min-width:140px;">
       <span class="frame-lbl" id="pc-size-lbl">12.0</span>
       <label style="margin-left:18px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
+    </div>
+
+    <!-- Manual trajectory pickers — let the user override the auto-curated
+         GT and Raw subsets. Each listbox is populated with every valid
+         track index sorted by jump-score (smoothest-first for GT, jumpiest-
+         first for Raw). The "# trajectories" slider preselects the top-N;
+         user can ctrl/⌘-click to add/remove individual tracks. -->
+    <div class="row-c">
+      <label title="Pick which GT trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the smoothest-N driven by the # trajectories slider; manual changes override.">GT picks:</label>
+      <select id="gt-pick" multiple size="4" style="min-width:180px;font-family:monospace;font-size:.7rem;padding:2px 4px;"></select>
+      <button class="btn" id="gt-pick-reset" title="Reset selection to the smoothest-N (auto)" style="font-size:.7rem;">↺</button>
+      <label style="margin-left:14px;" title="Pick which raw trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the jumpiest-N; manual changes override.">Raw picks:</label>
+      <select id="raw-pick" multiple size="4" style="min-width:180px;font-family:monospace;font-size:.7rem;padding:2px 4px;"></select>
+      <button class="btn" id="raw-pick-reset" title="Reset selection to the jumpiest-N (auto)" style="font-size:.7rem;">↺</button>
+    </div>
+
+    <!-- Full-video panel layer toggles + colour pickers. Hidden when the
+         loaded clip ships no full_video bundle. -->
+    <div class="row-c" id="row-full-controls" style="display:none;">
+      <label>Full-video panel layers:</label>
+      <button class="btn on" id="t-full-gt">filtered GT</button>
+      <input type="color" id="full-gt-col" value="#22c55e" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Colour for the filtered/smoothed full-video tracks (GT-equivalent).">
+      <button class="btn on" id="t-full-raw">raw cotracker</button>
+      <input type="color" id="full-raw-col" value="#ef4444" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Base (oldest) colour for the raw cotracker tracks. End colour follows Settings.rawSat.">
+      <label style="margin-left:14px;" title="Saturation of the full-video raw layer's pink endpoint. 0 = pastel light pink, 1 = vivid hot pink. Independent from the clip Raw sat above.">Full Raw sat</label>
+      <input type="range" id="full-raw-sat" min="0" max="1" step="0.02" value="0.10" style="min-width:80px;">
+      <span class="frame-lbl" id="full-raw-sat-lbl">0.10</span>
     </div>
     <div class="row-c">
       <span class="legend">
@@ -539,7 +566,7 @@ const Settings = {
   rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
   gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
   predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
-  rawSat:  0.85,                  // saturation of the raw-trail's pink endpoint (0 = pastel, 1 = hot pink)
+  rawSat:  0.10,                  // saturation of the raw-trail's pink endpoint (0 = pastel light pink, 1 = hot pink)
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -1815,7 +1842,13 @@ function setupVideoOverlay() {
 // trajectory and a clip-cut bracket on a thin timeline strip. The bracket
 // (gold) marks frames raw_meta.src_clip_start..src_clip_end — i.e. the
 // window the rest of the page zooms into. EgoDex-only (gated on full_video).
-const FullApp = { fi: -1, T: 0, fps: 15, fullVideo: null, overlayCtx: null };
+const FullApp = {
+  fi: -1, T: 0, fps: 15, fullVideo: null, overlayCtx: null,
+  showGt: true, showRaw: true,
+  gtCol:  [34, 197, 94],   // emerald-500 — filtered/smoothed tracks
+  rawColOld: [239, 68, 68], // red — start of the raw gradient
+  rawSat: 0.10,            // 0 = pastel light pink, 1 = hot pink (independent slider from clip Raw sat)
+};
 
 function setupFullVideo() {
   if (!clipData.full_video) return;
@@ -1844,6 +1877,9 @@ function setupFullVideo() {
   document.getElementById('card-full-frames').style.display = '';
   buildVideoFrameStrip('full-raw-strip', clipData.full_video.url, 8)
     .catch(err => console.warn('full-video frame strip failed:', err));
+  // Reveal the full-video panel layer toggles + colour pickers row.
+  document.getElementById('row-full-controls').style.display = '';
+  bindFullVideoControls();
 }
 
 function tickFullVideo() {
@@ -1861,78 +1897,135 @@ function tickFullVideo() {
   requestAnimationFrame(tickFullVideo);
 }
 
+// Per-trajectory smoothest-first scoring + curation for the full-video panel.
+// Cached on clipData on first use; recomputeFullPicks() rebuilds when nKeep
+// changes or the user manually picks via the GT/Raw listboxes (handled
+// elsewhere). Returns { gtIdx, rawIdx } for the current overlay draw.
+function ensureFullPicks() {
+  const tracks2d = clipData.full_video_2d?.tracks;
+  if (!clipData._fullGoodIdx && tracks2d?.length) {
+    const T = tracks2d.length;
+    const P = tracks2d[0]?.length || 0;
+    const scores = new Float32Array(P);
+    for (let p = 0; p < P; p++) {
+      let prev = null, maxd = 0;
+      for (let t = 0; t < T; t++) {
+        const pt = tracks2d[t]?.[p];
+        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
+        if (prev) { const d = Math.hypot(pt[0] - prev[0], pt[1] - prev[1]); if (d > maxd) maxd = d; }
+        prev = pt;
+      }
+      scores[p] = maxd;
+    }
+    clipData._fullGtScores = scores;
+    const valid = [];
+    for (let i = 0; i < P; i++) if (scores[i] > 0) valid.push(i);
+    valid.sort((a, b) => scores[a] - scores[b]);
+    clipData._fullGoodIdx = valid.slice(0, Math.min(Settings.nKeep, valid.length))
+                                 .sort((a, b) => a - b);
+  }
+  const tracksR = clipData.full_video_raw_2d?.tracks;
+  if (!clipData._fullRawIdx && tracksR?.length) {
+    const T = tracksR.length;
+    const P = tracksR[0]?.length || 0;
+    const scores = new Float32Array(P);
+    for (let p = 0; p < P; p++) {
+      let prev = null, maxd = 0;
+      for (let t = 0; t < T; t++) {
+        const pt = tracksR[t]?.[p];
+        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
+        if (prev) { const d = Math.hypot(pt[0] - prev[0], pt[1] - prev[1]); if (d > maxd) maxd = d; }
+        prev = pt;
+      }
+      scores[p] = maxd;
+    }
+    clipData._fullRawScores = scores;
+    const valid = [];
+    for (let i = 0; i < P; i++) if (scores[i] > 0) valid.push(i);
+    valid.sort((a, b) => scores[b] - scores[a]);   // jumpiest first
+    clipData._fullRawIdx = valid.slice(0, Math.min(N_RAW_KEEP, valid.length))
+                                .sort((a, b) => a - b);
+  }
+}
+
 function drawFullVideoOverlay(fi) {
   const ctx = FullApp.overlayCtx;
   if (!ctx) return;
   const v = FullApp.fullVideo;
   const W = v.videoWidth, H = v.videoHeight;
   ctx.clearRect(0, 0, W, H);
-  const tracks = clipData.full_video_2d?.tracks;
-  if (!tracks || !tracks.length) return;
+  ensureFullPicks();
 
-  // Curated index list for the full-video tracks: smoothest-first 2D paths.
-  // Cached on first call so we don't re-rank every frame.
-  if (!clipData._fullGoodIdx) {
-    const T = tracks.length;
-    const P = tracks[0]?.length || 0;
-    const scores = new Float32Array(P);
-    for (let p = 0; p < P; p++) {
-      let prev = null, maxd = 0;
-      for (let t = 0; t < T; t++) {
-        const pt = tracks[t]?.[p];
-        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
-        if (prev) {
-          const dx = pt[0] - prev[0], dy = pt[1] - prev[1];
-          const d  = Math.hypot(dx, dy);
-          if (d > maxd) maxd = d;
-        }
-        prev = pt;
-      }
-      scores[p] = maxd;
-    }
-    const valid = [];
-    for (let i = 0; i < P; i++) if (scores[i] > 0) valid.push(i);
-    valid.sort((a, b) => scores[a] - scores[b]);
-    clipData._fullGoodIdx = valid.slice(0, Math.min(N_GT_KEEP, valid.length))
-                                 .sort((a, b) => a - b);
-  }
-  const idx = clipData._fullGoodIdx;
-  const T = tracks.length;
-  const Tdenom = Math.max(1, T - 1);
-
-  // Inside-clip-cut → gold; outside → cyan-ish so the cut is visually obvious.
-  const inStart = clipData.full_video.src_clip_start;
-  const inEnd   = clipData.full_video.src_clip_end;
-  const colInside  = [253, 224, 71];   // amber-300
-  const colOutside = [99, 179, 237];   // sky-400
-  const drawSegment = (a, b, isInside) => {
-    const c = isInside ? colInside : colOutside;
-    ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
-  };
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 1.6;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.setLineDash([]);
-  for (const p of idx) {
-    let prev = null, prevT = -1;
-    for (let t = 0; t <= fi; t++) {
-      const pt = tracks[t]?.[p];
-      if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
-      const xy = [pt[0] * W, pt[1] * H];
-      if (prev) {
-        const midT = 0.5 * (prevT + t);
-        drawSegment(prev, xy, midT >= inStart && midT <= inEnd);
+
+  // ── GT layer (filtered + smoothed full-video tracks) ──
+  const gtTracks = clipData.full_video_2d?.tracks;
+  const gtIdx    = clipData._fullGoodIdx || [];
+  if (FullApp.showGt && gtTracks && gtIdx.length) {
+    const c = FullApp.gtCol || [34, 197, 94];
+    ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
+    ctx.fillStyle   = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
+    ctx.lineWidth = 1.8;
+    for (const p of gtIdx) {
+      let prev = null;
+      for (let t = 0; t <= fi; t++) {
+        const pt = gtTracks[t]?.[p];
+        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
+        const xy = [pt[0] * W, pt[1] * H];
+        if (prev) { ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(xy[0], xy[1]); ctx.stroke(); }
+        prev = xy;
       }
-      prev = xy; prevT = t;
+      const cur = gtTracks[fi]?.[p];
+      if (cur && cur[0] != null && Number.isFinite(cur[0])) {
+        ctx.beginPath(); ctx.arc(cur[0] * W, cur[1] * H, 3.4, 0, Math.PI * 2); ctx.fill();
+      }
     }
   }
-  // Current position markers
-  for (const p of idx) {
-    const pt = tracks[fi]?.[p];
-    if (!pt || pt[0] == null || !Number.isFinite(pt[0])) continue;
-    const isInside = fi >= inStart && fi <= inEnd;
-    const c = isInside ? colInside : colOutside;
-    ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
-    ctx.beginPath(); ctx.arc(pt[0] * W, pt[1] * H, 3.2, 0, Math.PI * 2); ctx.fill();
+
+  // ── Raw layer (pre-filter cotracker tracks) — red → pink gradient
+  // honouring FullApp.rawColOld / FullApp.rawSat (independent from the clip
+  // panel's slider so the user can keep them tuned to different vibes). ──
+  const rawTracks = clipData.full_video_raw_2d?.tracks;
+  const rawIdx    = clipData._fullRawIdx || [];
+  if (FullApp.showRaw && rawTracks && rawIdx.length) {
+    const old = FullApp.rawColOld || [239, 68, 68];
+    const s   = Math.max(0, Math.min(1, FullApp.rawSat ?? 0.10));
+    const newC = [
+      Math.round(255 * (1 - s) + 255 * s),                     // 255 always
+      Math.round(209 * (1 - s) +  20 * s),
+      Math.round(220 * (1 - s) + 147 * s),
+    ];
+    const lerp = (a, b, t) => Math.round(a * (1 - t) + b * t);
+    ctx.lineWidth = 1.4;
+    for (const p of rawIdx) {
+      let sp = [];
+      const subpaths = [];
+      for (let t = 0; t <= fi; t++) {
+        const pt = rawTracks[t]?.[p];
+        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) {
+          if (sp.length) { subpaths.push(sp); sp = []; }
+          continue;
+        }
+        sp.push([pt[0] * W, pt[1] * H]);
+      }
+      if (sp.length) subpaths.push(sp);
+      for (const path of subpaths) {
+        const m = path.length;
+        if (m < 2) continue;
+        for (let i = 0; i < m - 1; i++) {
+          const u = (i + 0.5) / Math.max(1, m - 1);
+          const r = lerp(old[0], newC[0], u);
+          const g = lerp(old[1], newC[1], u);
+          const b = lerp(old[2], newC[2], u);
+          ctx.strokeStyle = `rgba(${r},${g},${b},0.92)`;
+          ctx.beginPath();
+          ctx.moveTo(path[i][0], path[i][1]);
+          ctx.lineTo(path[i+1][0], path[i+1][1]);
+          ctx.stroke();
+        }
+      }
+    }
   }
 }
 
@@ -1998,6 +2091,124 @@ function bindPcSourceSelector() {
     p.updateDynamic(cfg, fi);
     p.render();
   });
+}
+
+// ──────────── Full-video panel controls (⓪) ────────────
+// Layer toggles + colour pickers for the GT and Raw overlays drawn on the
+// full source video. Both layers are independent of the clip panels'
+// state — separate Show/Color, separate raw-saturation slider.
+function bindFullVideoControls() {
+  const gtBtn = document.getElementById('t-full-gt');
+  const rawBtn = document.getElementById('t-full-raw');
+  const gtCol  = document.getElementById('full-gt-col');
+  const rawCol = document.getElementById('full-raw-col');
+  const rawSat = document.getElementById('full-raw-sat');
+  const rawSatLbl = document.getElementById('full-raw-sat-lbl');
+  const redrawNow = () => {
+    if (FullApp.fi >= 0) drawFullVideoOverlay(FullApp.fi);
+  };
+  const hexToRgb = h => {
+    const v = parseInt(h.replace('#', ''), 16);
+    return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+  };
+  if (gtBtn) gtBtn.addEventListener('click', () => {
+    gtBtn.classList.toggle('on');
+    FullApp.showGt = gtBtn.classList.contains('on');
+    redrawNow();
+  });
+  if (rawBtn) rawBtn.addEventListener('click', () => {
+    rawBtn.classList.toggle('on');
+    FullApp.showRaw = rawBtn.classList.contains('on');
+    redrawNow();
+  });
+  if (gtCol) gtCol.addEventListener('input', () => {
+    FullApp.gtCol = hexToRgb(gtCol.value);
+    redrawNow();
+  });
+  if (rawCol) rawCol.addEventListener('input', () => {
+    FullApp.rawColOld = hexToRgb(rawCol.value);
+    redrawNow();
+  });
+  if (rawSat) rawSat.addEventListener('input', () => {
+    FullApp.rawSat = parseFloat(rawSat.value);
+    if (rawSatLbl) rawSatLbl.textContent = FullApp.rawSat.toFixed(2);
+    redrawNow();
+  });
+}
+
+// ──────────── Manual trajectory pickers (clip GT / Raw) ────────────
+// Auto-curated lists are still the default (smoothest-first for GT,
+// jumpiest-first for Raw). The pickers let the user override those choices
+// — ctrl/⌘-click to multi-select. The "↺" button restores the auto top-N.
+function fillTrajectoryPicker(selectId, scores, selectedSet,
+                              orderJumpiest = false) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  sel.innerHTML = '';
+  const valid = [];
+  for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
+  // Order: ascending score = smoothest first (GT), descending = jumpiest (raw).
+  valid.sort((a, b) => orderJumpiest ? scores[b] - scores[a] : scores[a] - scores[b]);
+  const frag = document.createDocumentFragment();
+  for (const i of valid) {
+    const o = document.createElement('option');
+    o.value = String(i);
+    o.textContent = `#${i.toString().padStart(3, ' ')}  s=${scores[i].toFixed(4)}`;
+    if (selectedSet.has(i)) o.selected = true;
+    frag.appendChild(o);
+  }
+  sel.appendChild(frag);
+}
+
+function readPickerSelection(selectId) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return null;
+  const out = [];
+  for (const opt of sel.selectedOptions) out.push(parseInt(opt.value, 10));
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+function bindTrajectoryPickers() {
+  // Build auto-derived score arrays once; reused on slider/reset/picker change.
+  const gtScores  = cfg?.gt_3d?.length ? pointMaxJumpScores(cfg.gt_3d) : new Float32Array(0);
+  const rawScores = clipData?.raw_3d?.length ? pointMaxJumpScores(clipData.raw_3d) : new Float32Array(0);
+  // Prime the listboxes with the current auto-selected indices.
+  fillTrajectoryPicker('gt-pick',  gtScores,  new Set(cfg._goodIdx || []),         /*jumpiest*/ false);
+  fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx || []),     /*jumpiest*/ true);
+
+  document.getElementById('gt-pick')?.addEventListener('change', () => {
+    const idx = readPickerSelection('gt-pick');
+    if (!idx || idx.length === 0) return;
+    cfg._goodIdx = idx;
+    cfg._goodIdxPaper = idx;
+    rerenderAll();
+  });
+  document.getElementById('raw-pick')?.addEventListener('change', () => {
+    const idx = readPickerSelection('raw-pick');
+    if (!idx || idx.length === 0) return;
+    clipData._rawIdx = idx;
+    clipData._rawIdxPaper = idx;
+    rerenderAll();
+  });
+  document.getElementById('gt-pick-reset')?.addEventListener('click', () => {
+    recomputeGtIdx(Settings.nKeep);
+    fillTrajectoryPicker('gt-pick', gtScores, new Set(cfg._goodIdx || []), false);
+    rerenderAll();
+  });
+  document.getElementById('raw-pick-reset')?.addEventListener('click', () => {
+    if (rawScores.length) {
+      clipData._rawIdx      = selectJumpiestIdx(rawScores, N_RAW_KEEP);
+      clipData._rawIdxPaper = selectJumpiestIdx(rawScores, N_RAW_PAPER);
+      fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx), true);
+    }
+    rerenderAll();
+  });
+
+  // Cache the score arrays for the # trajectories slider so it can re-prime
+  // the listbox when the auto-N changes.
+  clipData._gtScoresCached  = gtScores;
+  clipData._rawScoresCached = rawScores;
 }
 
 // ──────────── 2D track helpers ────────────
@@ -2414,7 +2625,21 @@ function bindControls() {
     };
   };
   wireSlider('n-keep',      'n-keep-lbl',      v => `${v|0}`,
-             v => { Settings.nKeep = v|0; recomputeGtIdx(v|0); rerenderAll(); });
+             v => {
+               Settings.nKeep = v|0;
+               recomputeGtIdx(v|0);
+               // Re-curate the raw indices to top-N jumpiest at the same N.
+               const rs = clipData?._rawScoresCached;
+               if (rs && rs.length) {
+                 clipData._rawIdx      = selectJumpiestIdx(rs, v|0);
+                 clipData._rawIdxPaper = selectJumpiestIdx(rs, Math.max(N_RAW_PAPER, v|0));
+               }
+               // Re-prime the listboxes so the user sees the new auto picks.
+               const gs = clipData?._gtScoresCached;
+               if (gs && gs.length) fillTrajectoryPicker('gt-pick', gs, new Set(cfg._goodIdx || []), false);
+               if (rs && rs.length) fillTrajectoryPicker('raw-pick', rs, new Set(clipData._rawIdx || []), true);
+               rerenderAll();
+             });
   wireSlider('ball-stride', 'ball-stride-lbl', v => `${v|0}`,
              v => { Settings.ballStride = v|0; rerenderAll(); });
   wireSlider('ball-scale',  'ball-scale-lbl',  v => `${v.toFixed(2)}×`,
@@ -2455,6 +2680,7 @@ function bindControls() {
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
   bindPcSourceSelector();
+  bindTrajectoryPickers();
 }
 
 // ──────────── History color routing ────────────
