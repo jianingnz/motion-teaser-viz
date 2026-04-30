@@ -786,7 +786,7 @@ class Panel {
         // Dense binary PC — share the typed arrays directly (no per-vertex JS loop)
         positions = clipData._pc.positions;
         colors    = clipData._pc.colors;
-        spacings  = clipData._pc.spacings;   // computed at load time
+        spacings  = clipData._pc.spacings;   // null until the worker finishes
       } else {
         const N = clipData.pc_xyz.length;
         positions = new Float32Array(N * 3);
@@ -799,11 +799,14 @@ class Panel {
           colors[i*3+1] = clipData.pc_colors[i][1] / 255;
           colors[i*3+2] = clipData.pc_colors[i][2] / 255;
         }
-        spacings = computePointSpacings(positions, N);
+        spacings = null;
       }
       const N = positions.length / 3;
-      // Fallback if spacings somehow missing — fill with median so nothing
-      // explodes; the perspective branch just becomes a no-op.
+      // Until the worker returns, every point gets the same nominal spacing
+      // (~1cm). The shader's perspective branch then renders all points at
+      // approximately the same screen size as the constant-pixel branch, so
+      // the PC looks fine immediately — uniform-density just kicks in
+      // a moment later when the real per-point spacings arrive.
       if (!spacings || spacings.length !== N) {
         spacings = new Float32Array(N).fill(0.01);
       }
@@ -811,6 +814,7 @@ class Panel {
       g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
       g.setAttribute('aSpacing', new THREE.BufferAttribute(spacings,  1));
+      this._pcGeom = g;   // saved so we can swap in real spacings later
       const m = makeDiscMaterial({ size: PC_POINT_PIX });
       m.uniforms.uViewport.value = this.canvas.height || 400;
       m.uniforms.uPerspMix.value = Settings.pcPerspMix ?? 1.0;
@@ -1201,22 +1205,25 @@ async function loadPCBinary(url) {
   const colorsU8 = new Uint8Array(buf, 4 + N * 12, N * 3);
   const colors = new Float32Array(N * 3);
   for (let i = 0; i < N * 3; i++) colors[i] = colorsU8[i] / 255;
-  // Precompute per-point local 3D spacing — used by the PC shader to render
-  // each point at a screen size proportional to its own neighbourhood, so
-  // density looks uniform regardless of the viewing angle. Without this,
-  // grazing-incidence surfaces in the original capture (floor, hands) appear
-  // sparse from any other angle while perpendicular surfaces look continuous.
-  const spacings = computePointSpacings(positions, N);
-  return { N, positions, colors, spacings };
+  // Spacings are deferred — computed in a Web Worker after the page paints
+  // (see queueSpacingsCompute). The PC renders immediately with a uniform
+  // default spacing; once the worker returns, the aSpacing attribute is
+  // swapped in place and uniform-density mode kicks in.
+  return { N, positions, colors, spacings: null };
 }
 
-// k-NN spacing via a uniform spatial hash. Returns Float32Array of length N
-// where spacings[i] = mean distance from point i to its K (≈4) nearest
-// neighbours in 3D world space. Cell size is set from the bbox so the search
-// neighbourhood (3³ cells) usually covers enough candidates without too much
-// overdraw. Time-budget on a 45k-point clip ≈ 100–250 ms in modern browsers.
-function computePointSpacings(positions, N, K = 4) {
-  if (N === 0) return new Float32Array(0);
+// Inlined Worker source: computes per-point 3D nearest-neighbour spacing on
+// a background thread so the main UI thread never blocks. Same algorithm as
+// before (uniform spatial hash + top-K insertion sort), but run off-thread
+// so the page is interactive immediately.
+const SPACING_WORKER_SRC = `
+self.onmessage = function(e) {
+  const data = e.data;
+  const positions = data.positions;
+  const N = data.N | 0;
+  const K = (data.K | 0) || 4;
+  const out = new Float32Array(N);
+  if (N === 0) { self.postMessage({ spacings: out }, [out.buffer]); return; }
   let xmin=Infinity,xmax=-Infinity, ymin=Infinity,ymax=-Infinity, zmin=Infinity,zmax=-Infinity;
   for (let i = 0; i < N; i++) {
     const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
@@ -1225,28 +1232,28 @@ function computePointSpacings(positions, N, K = 4) {
     if (z<zmin) zmin=z; if (z>zmax) zmax=z;
   }
   const diag = Math.hypot(xmax-xmin, ymax-ymin, zmax-zmin) || 1;
-  // Aim for ~80 cells across the diagonal so most point lookups span ≤ 3
-  // adjacent cells in each axis. For a typical 3-m room and 45k points this
-  // gives ≤ 30 candidates per query.
   const cell = Math.max(1e-4, diag / 80);
+  const inv  = 1 / cell;
+  // Bit-packed 16-bit-per-axis numeric key (fits in int53). Avoids string
+  // key hashing overhead, which dominates the runtime of the previous
+  // synchronous version.
+  const OFF = 32768;
+  const keyOf = (cx, cy, cz) => ((cx + OFF) * 4294967296) + ((cy + OFF) * 65536) + (cz + OFF);
   const grid = new Map();
-  const keyOf = (cx, cy, cz) => `${cx},${cy},${cz}`;
   for (let i = 0; i < N; i++) {
-    const cx = Math.floor(positions[i*3]   / cell);
-    const cy = Math.floor(positions[i*3+1] / cell);
-    const cz = Math.floor(positions[i*3+2] / cell);
+    const cx = Math.floor(positions[i*3]   * inv);
+    const cy = Math.floor(positions[i*3+1] * inv);
+    const cz = Math.floor(positions[i*3+2] * inv);
     const k = keyOf(cx, cy, cz);
     let bin = grid.get(k);
     if (!bin) { bin = []; grid.set(k, bin); }
     bin.push(i);
   }
-  const spacings = new Float32Array(N);
   const top = new Float64Array(K);
   for (let i = 0; i < N; i++) {
     const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
-    const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+    const cx = Math.floor(x * inv), cy = Math.floor(y * inv), cz = Math.floor(z * inv);
     for (let j = 0; j < K; j++) top[j] = Infinity;
-    // 3³ cell neighbourhood; widen to 5³ if we don't find enough candidates.
     for (let pass = 0; pass < 2; pass++) {
       const r = pass === 0 ? 1 : 2;
       let found = 0;
@@ -1260,7 +1267,6 @@ function computePointSpacings(positions, N, K = 4) {
           const ddy = positions[j*3+1] - y;
           const ddz = positions[j*3+2] - z;
           const d2 = ddx*ddx + ddy*ddy + ddz*ddz;
-          // Insert into top-K (kept ascending in `top`)
           if (d2 < top[K-1]) {
             let p = K - 1;
             while (p > 0 && top[p-1] > d2) { top[p] = top[p-1]; p--; }
@@ -1275,9 +1281,28 @@ function computePointSpacings(positions, N, K = 4) {
     for (let j = 0; j < K; j++) {
       if (top[j] < Infinity) { sum += Math.sqrt(top[j]); m++; }
     }
-    spacings[i] = m > 0 ? (sum / m) : cell;
+    out[i] = m > 0 ? (sum / m) : cell;
   }
-  return spacings;
+  self.postMessage({ spacings: out }, [out.buffer]);
+};
+`;
+
+// Async wrapper. Kicks off a worker, transfers a *copy* of positions (the
+// original stays on the main thread for rendering), and resolves with the
+// spacings Float32Array.
+function computeSpacingsAsync(positions, N) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(new Blob([SPACING_WORKER_SRC], {type:'text/javascript'}));
+    const worker = new Worker(url);
+    worker.onerror = (err) => { worker.terminate(); URL.revokeObjectURL(url); reject(err); };
+    worker.onmessage = (e) => {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      resolve(e.data.spacings);
+    };
+    const posCopy = new Float32Array(positions);
+    worker.postMessage({ positions: posCopy, N, K: 4 }, [posCopy.buffer]);
+  });
 }
 
 async function init() {
@@ -1361,6 +1386,23 @@ async function init() {
   // Render paper panel's full-clip composite once; tick() will keep the rest in sync.
   panels.forEach(p => { if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1); });
   panels.forEach(p => p.render());
+
+  // Kick off the per-point spacing computation off-thread. The PC is already
+  // visible (uniform 1cm placeholder spacing); when the worker returns we
+  // swap the aSpacing attribute on every panel's PC geometry so uniform-
+  // density mode kicks in without blocking the initial paint.
+  if (clipData._pc && !clipData._pc.spacings) {
+    computeSpacingsAsync(clipData._pc.positions, clipData._pc.N).then(spacings => {
+      clipData._pc.spacings = spacings;
+      for (const p of panels) {
+        if (!p._pcGeom) continue;
+        p._pcGeom.setAttribute('aSpacing', new THREE.BufferAttribute(spacings, 1));
+        p._pcGeom.attributes.aSpacing.needsUpdate = true;
+        p.render();
+      }
+      console.log(`PC spacings ready (${spacings.length} pts)`);
+    }).catch(err => console.warn('spacing worker failed:', err));
+  }
 
   video.addEventListener('loadedmetadata', () => {
     const T = clipData.num_frames || 1;
