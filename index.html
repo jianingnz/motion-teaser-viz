@@ -345,6 +345,9 @@ footer a { color: #2563eb; text-decoration: none; }
       <label style="margin-left:14px;" title="Saturation of the raw-trail's pink endpoint. 0 = pastel light pink, 1 = vivid hot pink.">Raw sat</label>
       <input type="range" id="raw-sat" min="0" max="1" step="0.02" value="0.10" style="min-width:80px;">
       <span class="frame-lbl" id="raw-sat-lbl">0.10</span>
+      <label style="margin-left:14px;" title="Strided subsample of ALL valid raw tracks. 1 = every track, 4 = every fourth, etc. — controls how dense the raw layer reads.">Raw stride</label>
+      <input type="range" id="raw-stride" min="1" max="30" step="1" value="4" style="min-width:80px;">
+      <span class="frame-lbl" id="raw-stride-lbl">4</span>
       <label style="margin-left:18px;"># trajectories</label>
       <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
       <span class="frame-lbl" id="n-keep-lbl">8</span>
@@ -428,6 +431,9 @@ footer a { color: #2563eb; text-decoration: none; }
       <label style="margin-left:14px;" title="Saturation of the full-video raw layer's pink endpoint. 0 = pastel light pink, 1 = vivid hot pink. Independent from the clip Raw sat above.">Full Raw sat</label>
       <input type="range" id="full-raw-sat" min="0" max="1" step="0.02" value="0.10" style="min-width:80px;">
       <span class="frame-lbl" id="full-raw-sat-lbl">0.10</span>
+      <label style="margin-left:14px;" title="Strided subsample of ALL valid full-video raw tracks. Independent from the clip Raw stride above.">Full Raw stride</label>
+      <input type="range" id="full-raw-stride" min="1" max="60" step="1" value="4" style="min-width:80px;">
+      <span class="frame-lbl" id="full-raw-stride-lbl">4</span>
     </div>
     <div class="row-c">
       <span class="legend">
@@ -567,6 +573,7 @@ const Settings = {
   gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
   predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
   rawSat:  0.10,                  // saturation of the raw-trail's pink endpoint (0 = pastel light pink, 1 = hot pink)
+  rawStride: 4,                   // strided subsample of all valid raw tracks (clip panels) — higher = sparser
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -682,11 +689,9 @@ function selectSmoothestIdx(scores, n_keep) {
   return out;
 }
 
-// Jumpiest-first selection (used for raw): keep only the top-N indices with
-// the LARGEST max-jump scores. The whole point of the raw layer is to
-// demonstrate the filtering + smoothing effect — showing a uniform
-// cross-section dilutes that contrast, so we pick the noisiest tracks where
-// the post-filter improvement is most visible.
+// Jumpiest-first selection: keep only the top-N indices with the LARGEST
+// max-jump scores. Kept around for one-off code paths; the raw layer no
+// longer uses it (defaults to a strided subsample of every valid track).
 function selectJumpiestIdx(scores, n_keep) {
   const valid = [];
   for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
@@ -694,6 +699,19 @@ function selectJumpiestIdx(scores, n_keep) {
   valid.sort((a, b) => scores[b] - scores[a]);
   const out = valid.slice(0, Math.min(n_keep, valid.length));
   out.sort((a, b) => a - b);
+  return out;
+}
+
+// Strided subsample of every valid (visibly-tracked-at-some-frame) index.
+// Used by the raw layer so the user sees a uniform cross-section of ALL
+// raw tracks, downsampled by `stride` so the figure stays legible. Stride 1
+// = every track, stride 4 = every fourth, etc. Returned ascending.
+function selectStridedIdx(scores, stride) {
+  const valid = [];
+  for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
+  const s = Math.max(1, stride | 0);
+  const out = [];
+  for (let i = 0; i < valid.length; i += s) out.push(valid[i]);
   return out;
 }
 
@@ -1546,8 +1564,8 @@ async function init() {
 
   if (clipData.raw_3d && clipData.raw_3d.length) {
     const rawScores = pointMaxJumpScores(clipData.raw_3d);
-    clipData._rawIdx      = selectJumpiestIdx(rawScores, N_RAW_KEEP);
-    clipData._rawIdxPaper = selectJumpiestIdx(rawScores, N_RAW_PAPER);
+    clipData._rawIdx      = selectStridedIdx(rawScores, Settings.rawStride);
+    clipData._rawIdxPaper = clipData._rawIdx;
   }
   console.log(`good GT idx:       ${cfg._goodIdx.length}/${cfg.gt_3d[0].length}`);
   console.log(`good GT idx (paper, tail-clean): ${cfg._goodIdxPaper.length}`);
@@ -1848,6 +1866,7 @@ const FullApp = {
   gtCol:  [34, 197, 94],   // emerald-500 — filtered/smoothed tracks
   rawColOld: [239, 68, 68], // red — start of the raw gradient
   rawSat: 0.10,            // 0 = pastel light pink, 1 = hot pink (independent slider from clip Raw sat)
+  rawStride: 4,            // strided subsample of all valid full-video raw tracks
 };
 
 function setupFullVideo() {
@@ -1940,11 +1959,9 @@ function ensureFullPicks() {
       scores[p] = maxd;
     }
     clipData._fullRawScores = scores;
-    const valid = [];
-    for (let i = 0; i < P; i++) if (scores[i] > 0) valid.push(i);
-    valid.sort((a, b) => scores[b] - scores[a]);   // jumpiest first
-    clipData._fullRawIdx = valid.slice(0, Math.min(N_RAW_KEEP, valid.length))
-                                .sort((a, b) => a - b);
+    // Show ALL valid raw tracks, subsampled by FullApp.rawStride so the panel
+    // stays legible. User can drag the stride slider to dial density.
+    clipData._fullRawIdx = selectStridedIdx(scores, FullApp.rawStride);
   }
 }
 
@@ -2198,8 +2215,8 @@ function bindTrajectoryPickers() {
   });
   document.getElementById('raw-pick-reset')?.addEventListener('click', () => {
     if (rawScores.length) {
-      clipData._rawIdx      = selectJumpiestIdx(rawScores, N_RAW_KEEP);
-      clipData._rawIdxPaper = selectJumpiestIdx(rawScores, N_RAW_PAPER);
+      clipData._rawIdx      = selectStridedIdx(rawScores, Settings.rawStride);
+      clipData._rawIdxPaper = clipData._rawIdx;
       fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx), true);
     }
     rerenderAll();
@@ -2628,17 +2645,32 @@ function bindControls() {
              v => {
                Settings.nKeep = v|0;
                recomputeGtIdx(v|0);
-               // Re-curate the raw indices to top-N jumpiest at the same N.
-               const rs = clipData?._rawScoresCached;
-               if (rs && rs.length) {
-                 clipData._rawIdx      = selectJumpiestIdx(rs, v|0);
-                 clipData._rawIdxPaper = selectJumpiestIdx(rs, Math.max(N_RAW_PAPER, v|0));
-               }
-               // Re-prime the listboxes so the user sees the new auto picks.
+               // Re-prime the GT listbox so the user sees the new auto picks.
                const gs = clipData?._gtScoresCached;
                if (gs && gs.length) fillTrajectoryPicker('gt-pick', gs, new Set(cfg._goodIdx || []), false);
-               if (rs && rs.length) fillTrajectoryPicker('raw-pick', rs, new Set(clipData._rawIdx || []), true);
                rerenderAll();
+             });
+  // Clip raw stride — show every Nth valid raw track. Re-primes the raw
+  // picker so the listbox reflects the live auto curation.
+  wireSlider('raw-stride', 'raw-stride-lbl', v => `${v|0}`,
+             v => {
+               Settings.rawStride = Math.max(1, v|0);
+               const rs = clipData?._rawScoresCached;
+               if (rs && rs.length) {
+                 clipData._rawIdx      = selectStridedIdx(rs, Settings.rawStride);
+                 clipData._rawIdxPaper = clipData._rawIdx;
+                 fillTrajectoryPicker('raw-pick', rs, new Set(clipData._rawIdx), /*jumpiest*/ true);
+               }
+               rerenderAll();
+             });
+  // Full-video raw stride — same idea but for the ⓪ panel. Drives the
+  // _fullRawIdx that drawFullVideoOverlay reads. Independent from the clip.
+  wireSlider('full-raw-stride', 'full-raw-stride-lbl', v => `${v|0}`,
+             v => {
+               FullApp.rawStride = Math.max(1, v|0);
+               const fs = clipData?._fullRawScores;
+               if (fs && fs.length) clipData._fullRawIdx = selectStridedIdx(fs, FullApp.rawStride);
+               if (FullApp.fi >= 0) drawFullVideoOverlay(FullApp.fi);
              });
   wireSlider('ball-stride', 'ball-stride-lbl', v => `${v|0}`,
              v => { Settings.ballStride = v|0; rerenderAll(); });
