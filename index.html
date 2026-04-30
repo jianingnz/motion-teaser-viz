@@ -177,13 +177,12 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </header>
 
-  <!-- Full source video + full-video trajectory + clip-cut bracket.
-       Tells the "we cut a clip out of this longer video" story: the gold
-       segment on the timeline strip = the clip-cut window the rest of the
-       page zooms in on. Hidden when the loaded clip has no full_video
-       bundle (DROID/DAVIS — only EgoDex clips ship one). -->
-  <section class="row" id="row-full-video" style="display:none;">
-    <div class="card video-card full-video-card">
+  <!-- Row 1: full source video alongside the cut clip — visual alignment
+       so the "we cut this short window out of that longer video" story
+       reads at a glance. Both cards are 50% width, share the .row.top grid.
+       The full-video card is hidden unless the bundle has full_video. -->
+  <section class="row top">
+    <div class="card video-card full-video-card" id="card-full-video" style="display:none;">
       <div class="ttl">
         <span>⓪ Full source video + full trajectory</span>
         <span class="lg-tag" id="full-vid-frame">frame 0</span>
@@ -194,29 +193,25 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
       <canvas id="full-timeline" class="timeline"></canvas>
     </div>
-  </section>
-
-  <!-- Frame strip for the full source video: same idea as panel ⑥ but
-       sampled across the WHOLE video so the reader can scan the clip-cut
-       context (frames before / inside / after the cut). -->
-  <section class="row" id="row-full-frames" style="display:none;">
-    <div class="card raw-strip-card">
-      <div class="ttl">
-        <span>⓪b Frames from full video</span>
-        <span class="lg-tag" id="full-raw-strip-tag">sampled across the full source video</span>
-      </div>
-      <div class="body raw-strip-body" id="full-raw-strip"></div>
-    </div>
-  </section>
-
-  <!-- Top row -->
-  <section class="row top">
     <div class="card video-card">
       <div class="ttl"><span>① RGB video + 2D tracks (cut clip)</span><span class="lg-tag" id="vid-frame">frame 0</span></div>
       <div class="body">
         <video id="rgb-video" muted loop playsinline preload="auto"></video>
         <canvas class="over" id="vid-overlay"></canvas>
       </div>
+    </div>
+  </section>
+
+  <!-- Row 2: full-video frame strip alongside the chrono. Same .row.top
+       50/50 grid so the row aligns with row 1 above. Frame strip card is
+       hidden unless the bundle ships full_video. -->
+  <section class="row top">
+    <div class="card raw-strip-card" id="card-full-frames" style="display:none;">
+      <div class="ttl">
+        <span>⓪b Frames from full video</span>
+        <span class="lg-tag" id="full-raw-strip-tag">sampled across the full source video</span>
+      </div>
+      <div class="body raw-strip-body" id="full-raw-strip"></div>
     </div>
     <div class="card chrono-card">
       <div class="ttl"><span>② Chronophotography (motion ghost) + 2D tracks</span><span class="lg-tag">all frames composited</span></div>
@@ -347,6 +342,9 @@ footer a { color: #2563eb; text-decoration: none; }
       <label>Pred lit</label>
       <input type="range" id="pred-lit" min="0.1" max="0.9" step="0.02" value="0.46" style="min-width:80px;">
       <span class="frame-lbl" id="pred-lit-lbl">0.46</span>
+      <label style="margin-left:14px;" title="Saturation of the raw-trail's pink endpoint. 0 = pastel light pink, 1 = vivid hot pink.">Raw sat</label>
+      <input type="range" id="raw-sat" min="0" max="1" step="0.02" value="0.85" style="min-width:80px;">
+      <span class="frame-lbl" id="raw-sat-lbl">0.85</span>
       <label style="margin-left:18px;"># trajectories</label>
       <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
       <span class="frame-lbl" id="n-keep-lbl">8</span>
@@ -409,7 +407,7 @@ footer a { color: #2563eb; text-decoration: none; }
         <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
         <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
         <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
-        <span><span class="sw" style="background:linear-gradient(90deg,#ef4444,#ffd1dc)"></span>raw tracks (unfiltered, unsmoothed) — red → light pink</span>
+        <span><span class="sw" style="background:linear-gradient(90deg,#ef4444,#ff1493)"></span>raw tracks (top-jumpiest, unfiltered, unsmoothed) — red → pink (sat slider)</span>
         <span><span class="sw" style="background:#fbbf24"></span>per-point dot color = sampled object RGB (frame 0)</span>
       </span>
     </div>
@@ -450,12 +448,11 @@ const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 8;      // catmull-rom samples per interval (higher = smoother GT/Pred curves)
 const POINT_SUBSAMPLE    = 4;      // (legacy) — replaced by curated index lists below
 const N_GT_KEEP          = 8;      // GT/Pred points to render — biased toward smoothest, drop residual jumpy
-const N_RAW_KEEP         = 18;     // raw points to render — mostly cross-section, plus a few jumpy
-const N_RAW_JUMPY        = 5;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
-// Paper-figure variant: denser AND much more biased toward jumpy ones, so a
-// single static frame still communicates "look how noisy raw cotracker is".
-const N_RAW_PAPER        = 28;
-const N_RAW_PAPER_JUMPY  = 14;
+// Raw-track selection — top-N jumpiest only. The raw layer's purpose is to
+// show "look how noisy the unfiltered tracks are vs our smoothed output", so
+// we drop the cross-sectional sample and just feature the loudest evidence.
+const N_RAW_KEEP         = 18;     // top-jumpiest raw points to render in live (trail-window) mode
+const N_RAW_PAPER        = 28;     // top-jumpiest raw points in the paper-figure composite
 // Drop this many frames off the END of the GT trail in the paper-figure
 // panel (residual track noise at the trajectory tail otherwise pollutes the
 // still). Applies to GT only — Pred and Raw still span the full clip.
@@ -542,6 +539,7 @@ const Settings = {
   rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
   gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
   predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
+  rawSat:  0.85,                  // saturation of the raw-trail's pink endpoint (0 = pastel, 1 = hot pink)
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -657,28 +655,19 @@ function selectSmoothestIdx(scores, n_keep) {
   return out;
 }
 
-// Mixed selection (used for raw): uniform stride for the cross-section,
-// plus the top-K jumpiest forced in for visual contrast. Dedup + sort.
-function selectMixedRawIdx(scores, n_total, n_jumpy) {
+// Jumpiest-first selection (used for raw): keep only the top-N indices with
+// the LARGEST max-jump scores. The whole point of the raw layer is to
+// demonstrate the filtering + smoothing effect — showing a uniform
+// cross-section dilutes that contrast, so we pick the noisiest tracks where
+// the post-filter improvement is most visible.
+function selectJumpiestIdx(scores, n_keep) {
   const valid = [];
   for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
   if (!valid.length) return [];
-  const byJump = [...valid].sort((a, b) => scores[b] - scores[a]);
-  const jumpy  = byJump.slice(0, Math.min(n_jumpy, valid.length));
-  const set    = new Set(jumpy);
-  const rest   = valid.filter(i => !set.has(i));
-  const need   = Math.max(0, n_total - jumpy.length);
-  const uniform = [];
-  if (rest.length && need > 0) {
-    const step = rest.length / need;
-    for (let k = 0; k < need; k++) {
-      const idx = Math.min(rest.length - 1, Math.floor(k * step + 0.5));
-      uniform.push(rest[idx]);
-    }
-  }
-  const merged = [...new Set([...jumpy, ...uniform])];
-  merged.sort((a, b) => a - b);
-  return merged;
+  valid.sort((a, b) => scores[b] - scores[a]);
+  const out = valid.slice(0, Math.min(n_keep, valid.length));
+  out.sort((a, b) => a - b);
+  return out;
 }
 
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
@@ -1220,12 +1209,13 @@ class Panel {
       const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
-      // Raw layer renders as a red → light pink gradient (oldest → newest)
-      // matching the 2D overlay's drawRaw2D. Hardcoded endpoints rather than
-      // tinting `lineBaseCols.raw` toward white so the "light pink" tone is
-      // explicit and stable across panels.
+      // Raw layer renders as a red → pink gradient (oldest → newest) matching
+      // the 2D overlay's drawRaw2D. The end colour follows Settings.rawSat
+      // (slider): 0 = pastel pink, 1 = vivid hot pink. Read live so the
+      // slider's effect propagates on every re-render.
       const COL_OLD = [239 / 255,  68 / 255,  68 / 255];
-      const COL_NEW = [255 / 255, 209 / 255, 220 / 255];
+      const _newCol = rawNewColor();
+      const COL_NEW = [_newCol[0] / 255, _newCol[1] / 255, _newCol[2] / 255];
       const T_EXP  = isPaper ? PAPER_T_EXP : 1.00;
       const lerp = (t, axis) => COL_OLD[axis] * (1 - t) + COL_NEW[axis] * t;
       for (const p of rawIdxList) {
@@ -1529,8 +1519,8 @@ async function init() {
 
   if (clipData.raw_3d && clipData.raw_3d.length) {
     const rawScores = pointMaxJumpScores(clipData.raw_3d);
-    clipData._rawIdx      = selectMixedRawIdx(rawScores, N_RAW_KEEP, N_RAW_JUMPY);
-    clipData._rawIdxPaper = selectMixedRawIdx(rawScores, N_RAW_PAPER, N_RAW_PAPER_JUMPY);
+    clipData._rawIdx      = selectJumpiestIdx(rawScores, N_RAW_KEEP);
+    clipData._rawIdxPaper = selectJumpiestIdx(rawScores, N_RAW_PAPER);
   }
   console.log(`good GT idx:       ${cfg._goodIdx.length}/${cfg.gt_3d[0].length}`);
   console.log(`good GT idx (paper, tail-clean): ${cfg._goodIdxPaper.length}`);
@@ -1692,7 +1682,12 @@ function buildFullCfg(clipData) {
   const T = tracks.length;
   const N = (T > 0) ? (tracks[0]?.length || 0) : 0;
   const all = Array.from({ length: T }, (_, i) => i);
-  const idx = Array.from({ length: N }, (_, i) => i);
+  // Smoothest-first selection of FULL-video trajectories — matches the clip
+  // panel's curation style (selectSmoothestIdx of pointMaxJumpScores). Same
+  // count as Settings.nKeep so the live "# trajectories" slider drives both
+  // panels in lockstep.
+  const scores = pointMaxJumpScores(tracks);
+  const idx = selectSmoothestIdx(scores, Math.max(1, Math.min(N, Settings.nKeep | 0)));
   // pred_3d aliased to the same array; showPred is off on the panel so it
   // never gets rendered, but _addEndpointSpheres reads pred_3d defensively.
   return {
@@ -1709,6 +1704,7 @@ function buildFullCfg(clipData) {
     _goodIdx:      idx,
     _goodIdxPaper: idx,
     paperGtTailDrop: 0,    // no tail-noise mask — full-video tracks are clean
+    _scores: scores,        // cached so the live slider can re-rank without re-walking
   };
 }
 
@@ -1823,9 +1819,9 @@ const FullApp = { fi: -1, T: 0, fps: 15, fullVideo: null, overlayCtx: null };
 
 function setupFullVideo() {
   if (!clipData.full_video) return;
-  const row = document.getElementById('row-full-video');
-  if (!row) return;
-  row.style.display = '';
+  const card = document.getElementById('card-full-video');
+  if (!card) return;
+  card.style.display = '';
   const v = document.getElementById('full-rgb-video');
   v.src = clipData.full_video.url;
   FullApp.fullVideo = v;
@@ -1845,7 +1841,7 @@ function setupFullVideo() {
   new ResizeObserver(drawFullTimeline).observe(timeline);
   // Frame strip ⓪b — sample 8 frames from across the full source video so the
   // reader can see the before / inside / after-clip-cut context.
-  document.getElementById('row-full-frames').style.display = '';
+  document.getElementById('card-full-frames').style.display = '';
   buildVideoFrameStrip('full-raw-strip', clipData.full_video.url, 8)
     .catch(err => console.warn('full-video frame strip failed:', err));
 }
@@ -2109,20 +2105,30 @@ function ringDot(ctx, x, y, color, r) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
 }
 
-// Raw-track stroke: gradient from saturated red (oldest, t=0) to light pink
-// (newest, t=1). NO smoothing — sharp polyline straight through raw frames so
-// the jaggedness still reads as a contrast against our Catmull-smoothed
-// output. Visibility nulls split the polyline so we don't draw across gaps.
-// `ptIdx` is the curated raw index list; `fStart..fEnd` is the trail window
-// (inclusive end). When fEnd is undefined we use the full clip.
-const RAW_COL_OLD = [239,  68,  68];   // red — oldest end of the trail
-const RAW_COL_NEW = [255, 209, 220];   // light pink — newest end of the trail
+// Raw-track stroke: gradient from red (oldest, t=0) to pink (newest, t=1).
+// The pink endpoint is interpolated between a low-saturation pastel pink
+// (sat=0) and a vivid hot pink (sat=1) via the Settings.rawSat slider, so
+// users can dial how loud the trail reads. NO smoothing — sharp polyline
+// straight through raw frames so the jaggedness still contrasts against
+// the Catmull-smoothed GT/Pred trails.
+const RAW_COL_OLD       = [239,  68,  68];   // red — oldest end of the trail
+const RAW_COL_NEW_LO    = [255, 209, 220];   // pastel light pink (low sat)
+const RAW_COL_NEW_HI    = [255,  20, 147];   // hot pink (high sat / DeepPink)
+function rawNewColor() {
+  const s = Math.max(0, Math.min(1, Settings.rawSat ?? 0.85));
+  return [
+    Math.round(RAW_COL_NEW_LO[0] * (1 - s) + RAW_COL_NEW_HI[0] * s),
+    Math.round(RAW_COL_NEW_LO[1] * (1 - s) + RAW_COL_NEW_HI[1] * s),
+    Math.round(RAW_COL_NEW_LO[2] * (1 - s) + RAW_COL_NEW_HI[2] * s),
+  ];
+}
 function rawGradientRgb(t) {
   const u = Math.max(0, Math.min(1, t));
+  const newCol = rawNewColor();
   return [
-    Math.round(RAW_COL_OLD[0] * (1 - u) + RAW_COL_NEW[0] * u),
-    Math.round(RAW_COL_OLD[1] * (1 - u) + RAW_COL_NEW[1] * u),
-    Math.round(RAW_COL_OLD[2] * (1 - u) + RAW_COL_NEW[2] * u),
+    Math.round(RAW_COL_OLD[0] * (1 - u) + newCol[0] * u),
+    Math.round(RAW_COL_OLD[1] * (1 - u) + newCol[1] * u),
+    Math.round(RAW_COL_OLD[2] * (1 - u) + newCol[2] * u),
   ];
 }
 function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
@@ -2440,6 +2446,11 @@ function bindControls() {
              v => { Settings.predSat = v; onRainbowKnob(); });
   wireSlider('pred-lit', 'pred-lit-lbl', v => v.toFixed(2),
              v => { Settings.predLit = v; onRainbowKnob(); });
+  // Raw-trail pink saturation. Affects 2D drawRaw2D (rawNewColor) and the
+  // 3D Settings.rawSat read inside Panel.updateDynamic. Re-render so live
+  // panels (and the static paper figure) pick up the new pink immediately.
+  wireSlider('raw-sat',  'raw-sat-lbl',  v => v.toFixed(2),
+             v => { Settings.rawSat = v;  rerenderAll(); });
 
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
@@ -2489,7 +2500,8 @@ function rerenderAll() {
 
 // Recompute the curated GT/Pred index lists when N_GT_KEEP changes. Mirrors
 // the original `init()` logic: smoothest-globally for live, plus a tail-clean
-// re-rank for the paper figure.
+// re-rank for the paper figure. Also re-curates the alt panel's full-video
+// cfg so ③c keeps the same trajectory count as the clip panel.
 function recomputeGtIdx(n) {
   if (!cfg?.gt_3d?.length) return;
   const P = cfg.gt_3d[0]?.length || 0;
@@ -2504,6 +2516,21 @@ function recomputeGtIdx(n) {
   const ranked = [...pool].sort((a, b) => tailScores[a] - tailScores[b]);
   cfg._goodIdxPaper = ranked.slice(0, Math.min(n, ranked.length))
                             .sort((a, b) => a - b);
+
+  // Mirror onto the alt-pc paper panel's full-video cfg so the slider
+  // controls both panels' trajectory counts together.
+  const altPanel = panels?.find(p => p.canvas?.id === 'canvas-altpc');
+  if (altPanel?.cfgOverride?.gt_3d) {
+    const co = altPanel.cfgOverride;
+    const Pf = co.gt_3d[0]?.length || 0;
+    if (Pf > 0) {
+      const nf = Math.max(1, Math.min(Pf, n));
+      const fullScores = co._scores || pointMaxJumpScores(co.gt_3d);
+      co._scores = fullScores;
+      co._goodIdx      = selectSmoothestIdx(fullScores, nf);
+      co._goodIdxPaper = co._goodIdx;
+    }
+  }
 }
 
 // Helpers for the colour pickers. Each updates the canonical TRAIL_COLORS /
