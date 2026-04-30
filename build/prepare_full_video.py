@@ -159,6 +159,42 @@ def load_full_2d_tracks(stem: str):
     return out, T, N, (H, W)
 
 
+def load_full_3d_tracks(stem: str):
+    """Filtered + smoothed full-video 3D tracks → list-of-frames [[x,y,z]|None]."""
+    p = TRACK_ROOT / "final_tracks" / f"{stem}_3d.npz"
+    if not p.exists():
+        raise RuntimeError(f"missing final_tracks 3d: {p}")
+    d = np.load(p, allow_pickle=True)
+    points = d["points_3d"]         # (N, T, 3) flat / dict
+    vis = d["visibility"]           # (N, T, 1) bool
+    if points.dtype == object:
+        points_d = points[()]
+        vis_d = vis[()]
+        all_p, all_v = [], []
+        for k in points_d.keys():
+            all_p.append(points_d[k])
+            all_v.append(vis_d[k])
+        points = np.concatenate(all_p, axis=0)
+        vis = np.concatenate(all_v, axis=0)
+    if vis.ndim == 3:
+        vis = vis.squeeze(-1)
+    N, T = points.shape[:2]
+    out = []
+    for t in range(T):
+        frame = []
+        for n in range(N):
+            if not bool(vis[n, t]):
+                frame.append(None)
+                continue
+            x = float(points[n, t, 0]); y = float(points[n, t, 1]); z = float(points[n, t, 2])
+            if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
+                frame.append(None)
+                continue
+            frame.append([x, y, z])
+        out.append(frame)
+    return out, T, N
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--clip-id", required=True,
@@ -195,14 +231,20 @@ def main():
     full_pc = args.out_dir / "static" / "data" / f"{args.clip_id}_full_pc.bin"
     write_pc_binary(full_pc, xyz0, col0)
 
-    # 3. Full-video 2D tracks
-    print(f"[3/3] loading full-video filtered 2D tracks …")
+    # 3. Full-video 2D + 3D tracks (filtered + smoothed; same kept-point set)
+    print(f"[3/3] loading full-video filtered 2D + 3D tracks …")
     full_2d, T_tracks, N_pts, (Ht, Wt) = load_full_2d_tracks(stem)
+    full_3d, T_tracks_3d, N_pts_3d = load_full_3d_tracks(stem)
+    if N_pts_3d != N_pts:
+        raise RuntimeError(f"2D/3D track point counts disagree: "
+                           f"2d N={N_pts}, 3d N={N_pts_3d} — pipeline mismatch.")
+    if T_tracks_3d != T_tracks:
+        T_use = min(T_tracks, T_tracks_3d)
+        full_2d = full_2d[:T_use]; full_3d = full_3d[:T_use]
+        T_tracks = T_use
     if T_tracks != T_video:
-        # Most clips have aligned T (final_tracks share the source video frame
-        # count). If not aligned, we use whichever is shorter to stay safe.
         T_use = min(T_tracks, T_video)
-        full_2d = full_2d[:T_use]
+        full_2d = full_2d[:T_use]; full_3d = full_3d[:T_use]
         T_tracks = T_use
 
     # Clip-cut window in original-video frame indices comes from raw_meta
@@ -237,6 +279,13 @@ def main():
         "video_dim_HW": [int(Ht), int(Wt)],
         "source": str(TRACK_ROOT / "final_tracks" / f"{stem}_2d.npz"),
         "note": "Filtered + smoothed full-video object tracks — same point set as the cut-clip's gt_2d/gt_3d.",
+    }
+    clip["full_video_3d"] = {
+        "tracks": full_3d,                 # (T_video, N) of [x,y,z] | null
+        "n_points": int(N_pts),
+        "n_frames": int(T_tracks),
+        "source": str(TRACK_ROOT / "final_tracks" / f"{stem}_3d.npz"),
+        "note": "Filtered + smoothed full-video 3D tracks; aligned 1:1 with full_video_2d points.",
     }
 
     json_path.write_text(json.dumps(clip))

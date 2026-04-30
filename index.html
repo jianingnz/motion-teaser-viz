@@ -196,6 +196,19 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </section>
 
+  <!-- Frame strip for the full source video: same idea as panel ⑥ but
+       sampled across the WHOLE video so the reader can scan the clip-cut
+       context (frames before / inside / after the cut). -->
+  <section class="row" id="row-full-frames" style="display:none;">
+    <div class="card raw-strip-card">
+      <div class="ttl">
+        <span>⓪b Frames from full video</span>
+        <span class="lg-tag" id="full-raw-strip-tag">sampled across the full source video</span>
+      </div>
+      <div class="body raw-strip-body" id="full-raw-strip"></div>
+    </div>
+  </section>
+
   <!-- Top row -->
   <section class="row top">
     <div class="card video-card">
@@ -864,6 +877,7 @@ class Panel {
   }
 
   buildStatic(clipData, cfg) {
+    if (this.cfgOverride) cfg = this.cfgOverride;
     while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
 
     if (this.opts.showPC && (clipData._pc || clipData._altPC || (clipData.pc_xyz && clipData.pc_colors))) {
@@ -1179,6 +1193,7 @@ class Panel {
   }
 
   updateDynamic(cfg, fiFrac) {
+    if (this.cfgOverride) cfg = this.cfgOverride;
     while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
     const isPaper = !!this.opts.paperMode;
     if (!isPaper && fiFrac < 0) return;
@@ -1275,8 +1290,12 @@ class Panel {
     }
     // Paper-mode end cap: drop the last PAPER_GT_TAIL_DROP frames *only on
     // GT* so residual smoothed-track noise at the trajectory tail doesn't
-    // pollute the figure. Pred and Raw still span the full clip.
-    const paperGtEnd = Math.max(nHist, T_clip - PAPER_GT_TAIL_DROP);
+    // pollute the figure. Pred and Raw still span the full clip. cfg may
+    // override this drop count (e.g. the full-video paper panel sets it to
+    // 0 — its tracks are already filtered + smoothed across the full video,
+    // so no tail-noise mask is needed).
+    const tailDrop = cfg.paperGtTailDrop ?? PAPER_GT_TAIL_DROP;
+    const paperGtEnd = Math.max(nHist, T_clip - tailDrop);
     if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
       // No more TRAIL_LEN sliding window — show the *full* GT trail from the
       // history boundary up to the current frame (live) or to paperGtEnd
@@ -1554,17 +1573,23 @@ async function init() {
     // standing in for time.
     new Panel('canvas-paper',{ showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:true, paperMode:true, lineWidth:TRAIL_LINE_PX_BIG }),
   ];
-  // ③c · alternate-PC big panel — same combined layers as ③ but the scene PC
-  // is sourced from `_altPC` (full-video frame 0) by default. Only built when
-  // the clip ships a `full_pc_bin` bundle. Toggling the dropdown flips
-  // useAltPC and rebuilds this panel's static layer in place.
+  // ③c · paper-figure panel for the FULL video. Static composite — every
+  // tracked point's full-video trajectory drawn at once, scene PC sourced
+  // from `_altPC` (full-video frame 0) by default. Uses ALL tracks, no
+  // smoothest-first subset, so the figure mirrors the clip-frame paper
+  // figure (③b) but expanded over the full source video.
   if (clipData._altPC) {
     document.getElementById('row-altpc').style.display = '';
-    panels.push(new Panel('canvas-altpc', {
-      showPC:true, showHist:true, showGT:true, showPred:true,
-      showErrors:false, showRaw:false, useAltPC:true,
+    const altPanel = new Panel('canvas-altpc', {
+      // showHist=true → endpoint marker at frame 0 of the full video gets
+      // drawn (the trail itself isn't rendered because n_hist=0).
+      showPC:true, showHist:true, showGT:true, showPred:false,
+      showErrors:false, showRaw:false, paperMode:true, useAltPC:true,
+      showBalls:true, showEndpoints:true,
       lineWidth:TRAIL_LINE_PX_BIG,
-    }));
+    });
+    altPanel.cfgOverride = buildFullCfg(clipData);
+    panels.push(altPanel);
   }
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
@@ -1656,6 +1681,83 @@ function videoFrameToConfigFi(videoFrame) {
   return lastFi;
 }
 
+// Synthetic cfg for the full-video paper-figure panel (③c). It exposes the
+// full_video_3d tracks where the regular cfg exposes gt_3d, with no history
+// boundary, no separate pred layer, and `_goodIdx` covering EVERY point
+// (full-video pipeline is filtered + smoothed, so all tracks are usable).
+// Stashed on Panel.cfgOverride so the panel renders against this cfg
+// instead of the per-clip cfg the rest of the page uses.
+function buildFullCfg(clipData) {
+  const tracks = clipData.full_video_3d?.tracks || [];
+  const T = tracks.length;
+  const N = (T > 0) ? (tracks[0]?.length || 0) : 0;
+  const all = Array.from({ length: T }, (_, i) => i);
+  const idx = Array.from({ length: N }, (_, i) => i);
+  // pred_3d aliased to the same array; showPred is off on the panel so it
+  // never gets rendered, but _addEndpointSpheres reads pred_3d defensively.
+  return {
+    gt_3d:  tracks,
+    pred_3d: tracks,
+    gt_2d: null, pred_2d: null,
+    n_hist: 0,
+    hist_frames: [],
+    future_frames: all,
+    all_frames: all,
+    obj_name: 'full_video',
+    pt_colors_rgb: [],
+    color_sample_frame: 0,
+    _goodIdx:      idx,
+    _goodIdxPaper: idx,
+    paperGtTailDrop: 0,    // no tail-noise mask — full-video tracks are clean
+  };
+}
+
+// Populate a frame-strip card with `N` thumbnails extracted from `mp4Url`
+// by seeking a hidden <video> and drawing each frame onto its own canvas.
+// Used for both the cut-clip strip (⑥) and the full-source-video strip (⓪b).
+async function buildVideoFrameStrip(hostId, mp4Url, N) {
+  const host = document.getElementById(hostId);
+  if (!host) return;
+  host.innerHTML = '';
+  const v = document.createElement('video');
+  v.src = mp4Url;
+  v.muted = true; v.preload = 'auto';
+  v.style.display = 'none';
+  document.body.appendChild(v);
+  await new Promise((res, rej) => {
+    v.addEventListener('loadedmetadata', res, { once: true });
+    v.addEventListener('error', rej, { once: true });
+  });
+  const W = v.videoWidth, H = v.videoHeight;
+  const dur = v.duration;
+  // Sample N evenly across the *time* range — works whether or not we know
+  // exact source-frame indices (full mp4 may have rounded fps differences).
+  const cells = [];
+  for (let i = 0; i < N; i++) {
+    const t = (N === 1) ? 0 : i * dur / (N - 1);
+    const cell = document.createElement('div');
+    cell.className = 'raw-thumb';
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    cell.appendChild(c);
+    const lbl = document.createElement('div');
+    lbl.className = 'raw-thumb-lbl';
+    lbl.textContent = `t = ${t.toFixed(2)}s`;
+    cell.appendChild(lbl);
+    host.appendChild(cell);
+    cells.push({ canvas: c, t });
+  }
+  for (let i = 0; i < N; i++) {
+    await new Promise(res => {
+      const onSeeked = () => { v.removeEventListener('seeked', onSeeked); res(); };
+      v.addEventListener('seeked', onSeeked);
+      v.currentTime = cells[i].t;
+    });
+    cells[i].canvas.getContext('2d').drawImage(v, 0, 0, W, H);
+  }
+  v.remove();
+}
+
 // Populate the raw-RGB strip (panel ⑥) with `N` thumbnails extracted from
 // the mp4 by seeking a hidden <video> and drawing each frame onto its own
 // canvas. Runs once per clip load; sequential seeks (browser doesn't
@@ -1741,6 +1843,11 @@ function setupFullVideo() {
   });
   // Re-draw the timeline strip when its CSS box resizes (responsive layout).
   new ResizeObserver(drawFullTimeline).observe(timeline);
+  // Frame strip ⓪b — sample 8 frames from across the full source video so the
+  // reader can see the before / inside / after-clip-cut context.
+  document.getElementById('row-full-frames').style.display = '';
+  buildVideoFrameStrip('full-raw-strip', clipData.full_video.url, 8)
+    .catch(err => console.warn('full-video frame strip failed:', err));
 }
 
 function tickFullVideo() {
