@@ -159,6 +159,38 @@ def load_full_2d_tracks(stem: str):
     return out, T, N, (H, W)
 
 
+def load_full_3d_raw_tracks(stem: str):
+    """Pre-smoothing 3D tracks (P_original from filter_meta), full video.
+
+    Indexed by the same P as the merged.npz raw 2D tracks. Used by the
+    static full-video scene (③c) to draw the red pale→vivid gradient raw
+    trails alongside the smoothed GT trails.
+    """
+    p = TRACK_ROOT / "final_tracks" / f"{stem}_filter_meta.npz"
+    if not p.exists():
+        raise RuntimeError(f"missing filter_meta: {p}")
+    d = np.load(p, allow_pickle=True)
+    P_orig = d["P_original"]                         # (P, T, 3)
+    vis    = d.get("visibility_all") if "visibility_all" in d.files else None
+    P, T, _ = P_orig.shape
+    out = []
+    for t in range(T):
+        frame = []
+        for p_idx in range(P):
+            if vis is not None and not bool(vis[p_idx, t]):
+                frame.append(None)
+                continue
+            x = float(P_orig[p_idx, t, 0])
+            y = float(P_orig[p_idx, t, 1])
+            z = float(P_orig[p_idx, t, 2])
+            if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
+                frame.append(None)
+                continue
+            frame.append([x, y, z])
+        out.append(frame)
+    return out, T, P
+
+
 def load_full_2d_raw_tracks(stem: str):
     """Pre-filter, pre-smoothing 2D tracks (cotracker output, full video).
 
@@ -333,6 +365,19 @@ def main():
         "video_dim_HW": [int(Hr), int(Wr)],
         "source": str(TRACK_ROOT / "track_output" / stem / f"{stem}_merged.npz"),
         "note": "Pre-filter, pre-smoothing 2D tracks — the noisy raw cotracker output.",
+    }
+
+    print("       loading full-video raw (pre-filter) 3D tracks …")
+    raw_3d_full, T_raw3, P_raw3 = load_full_3d_raw_tracks(stem)
+    if T_raw3 != T_tracks:
+        T_use = min(T_raw3, T_tracks)
+        raw_3d_full = raw_3d_full[:T_use]; T_raw3 = T_use
+    clip["full_video_raw_3d"] = {
+        "tracks": raw_3d_full,             # (T_video, P_raw) of [x,y,z] | null
+        "n_points": int(P_raw3),
+        "n_frames": int(T_raw3),
+        "source": str(TRACK_ROOT / "final_tracks" / f"{stem}_filter_meta.npz"),
+        "note": "Pre-smoothing 3D tracks (P_original) — same point set as full_video_raw_2d.",
     }
 
     json_path.write_text(json.dumps(clip))
