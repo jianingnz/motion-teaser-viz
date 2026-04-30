@@ -75,6 +75,26 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
 
+/* Raw-RGB thumbnail strip (panel ⑥). One canvas per sampled frame in a
+   horizontal flex row, equal width per cell. */
+.raw-strip-card .body { padding: 0; }
+.raw-strip-body {
+  display: flex; gap: 4px; padding: 6px;
+  align-items: stretch; min-height: 120px;
+}
+.raw-thumb {
+  flex: 1 1 0; min-width: 0;
+  display: flex; flex-direction: column; align-items: center;
+}
+.raw-thumb canvas {
+  width: 100%; height: auto; display: block;
+  background: #000; border-radius: 3px;
+}
+.raw-thumb .raw-thumb-lbl {
+  font-family: monospace; font-size: .65rem;
+  color: var(--text-muted); padding-top: 3px;
+}
+
 /* Time-horizon legend (companion strip explaining the trajectory-ball
    gradient: pale & small at start, vivid & large at end). */
 .time-card { padding: 0; }
@@ -197,6 +217,19 @@ footer a { color: #2563eb; text-decoration: none; }
     <div class="card panel-card">
       <div class="ttl"><span>④d · history + GT + pred + error</span></div>
       <div class="body"><canvas id="canvas-cmp"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Two new context panels: initial scene PC with object-RGB tracked-point
+       dots, and a strip of raw RGB frame thumbnails. -->
+  <section class="row top">
+    <div class="card panel-card">
+      <div class="ttl"><span>⑤ Initial scene PC + tracked-point initial positions (object RGB)</span><span class="lg-tag">drag/scroll/WASD shared with the other 3D panels</span></div>
+      <div class="body"><canvas id="canvas-pcrgb"></canvas></div>
+    </div>
+    <div class="card raw-strip-card">
+      <div class="ttl"><span>⑥ Raw RGB frames</span><span class="lg-tag" id="raw-strip-tag">sampled across the clip</span></div>
+      <div class="body raw-strip-body" id="raw-strip"></div>
     </div>
   </section>
 
@@ -664,7 +697,7 @@ function polyToSegments(flat, into) {
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, showInitialDots:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(RENDER_PIXEL_RATIO);
     this.renderer.setClearColor(BG_COLOR, 1);
@@ -966,6 +999,44 @@ class Panel {
     return [rMin * Settings.ballScale, rMax * Settings.ballScale];
   }
 
+  // Sparse "initial position" PC: every tracked point at frame 0, coloured
+  // by its sampled object RGB (cfg.pt_colors_rgb). Renders larger than the
+  // scene PC dots so the tracked points read as the picked dots, while the
+  // background scene PC keeps spatial context. Used by the dedicated
+  // initial-position panel; ignored on other panels (showInitialDots is
+  // off by default).
+  _addInitialDotsLayer(cfg) {
+    const ptColors = cfg.pt_colors_rgb || [];
+    if (!ptColors.length || !cfg.gt_3d?.length) return;
+    const P = cfg.gt_3d[0]?.length || 0;
+    if (!P) return;
+    const [, rMaxBase] = this._ballRadii();
+    const r = rMaxBase * 1.3;
+    const records = [];
+    for (let p = 0; p < P; p++) {
+      const pt = cfg.gt_3d[0]?.[p];
+      const c  = ptColors[p];
+      if (!pt || !Number.isFinite(pt[0]) || !c) continue;
+      records.push([pt[0], -pt[1], -pt[2], c[0]/255, c[1]/255, c[2]/255]);
+    }
+    if (!records.length) return;
+    const geom = new THREE.SphereGeometry(r, 14, 12);
+    const inst = new THREE.InstancedMesh(geom, this.sphereMat, records.length);
+    const colorAttr = new Float32Array(records.length * 3);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      dummy.position.set(rec[0], rec[1], rec[2]);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      colorAttr[i*3]   = rec[3];
+      colorAttr[i*3+1] = rec[4];
+      colorAttr[i*3+2] = rec[5];
+    }
+    inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+    this.dynGroup.add(inst);
+  }
+
   // Bright-accent highlights at the global start (frame 0) and global end
   // (frame T-1) of each tracked point. Uses Settings.endpointColor (user-
   // pickable) so the markers always pop against the rainbow trail and the
@@ -1161,6 +1232,9 @@ class Panel {
     // last so they sit on top of the trail balls + lines. Always evaluated
     // (live and paper) — these are *global* anchors, independent of fiFrac.
     if (this.opts.showEndpoints) this._addEndpointSpheres(cfg);
+    // Dedicated "initial-position" view: every tracked point at frame 0 in
+    // its own object RGB. Independent of trail/endpoint state.
+    if (this.opts.showInitialDots) this._addInitialDotsLayer(cfg);
 
     // PaperMode is a single still frame — no error vectors (those concepts
     // only make sense during playback).
@@ -1296,6 +1370,10 @@ async function init() {
     new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    // Initial-position panel (⑤): scene PC + tracked-point frame-0 dots in
+    // their object RGB. No trails, no balls, no endpoints — just the
+    // starting state of the scene.
+    new Panel('canvas-pcrgb',{ showPC:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
@@ -1327,6 +1405,8 @@ async function init() {
     video.pause();
     setupVideoOverlay();
     tick();
+    // Populate the raw-RGB strip panel with sampled frames from the mp4.
+    buildRawThumbs().catch(err => console.warn('raw-thumbs failed:', err));
   });
 
   bindControls();
@@ -1380,6 +1460,57 @@ function videoFrameToConfigFi(videoFrame) {
   let lastFi = -1;
   for (let i = 0; i < af.length; i++) if (af[i] <= videoFrame) lastFi = i;
   return lastFi;
+}
+
+// Populate the raw-RGB strip (panel ⑥) with `N` thumbnails extracted from
+// the mp4 by seeking a hidden <video> and drawing each frame onto its own
+// canvas. Runs once per clip load; sequential seeks (browser doesn't
+// guarantee parallel seek correctness) but typical clips are short.
+async function buildRawThumbs(N = 6) {
+  const host = document.getElementById('raw-strip');
+  if (!host) return;
+  host.innerHTML = '';
+  const T = clipData.num_frames || 1;
+  const fps = +(clipData.fps || 15);
+  const indices = [];
+  for (let i = 0; i < N; i++) {
+    indices.push(Math.round(i * (T - 1) / Math.max(1, N - 1)));
+  }
+  const base = CLIP_URL.split('/').pop().replace(/\.json$/, '');
+  const v = document.createElement('video');
+  v.src = `static/videos/${base}.mp4`;
+  v.muted = true; v.preload = 'auto';
+  v.style.display = 'none';
+  document.body.appendChild(v);
+  await new Promise((res, rej) => {
+    v.addEventListener('loadedmetadata', res, { once: true });
+    v.addEventListener('error', rej, { once: true });
+  });
+  const W = v.videoWidth, H = v.videoHeight;
+  const cells = [];
+  for (let i = 0; i < N; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'raw-thumb';
+    const c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    cell.appendChild(c);
+    const lbl = document.createElement('div');
+    lbl.className = 'raw-thumb-lbl';
+    lbl.textContent = `frame ${indices[i]}`;
+    cell.appendChild(lbl);
+    host.appendChild(cell);
+    cells.push({ canvas: c });
+  }
+  for (let i = 0; i < N; i++) {
+    await new Promise(res => {
+      const onSeeked = () => { v.removeEventListener('seeked', onSeeked); res(); };
+      v.addEventListener('seeked', onSeeked);
+      v.currentTime = indices[i] / fps;
+    });
+    const c = cells[i].canvas;
+    c.getContext('2d').drawImage(v, 0, 0, W, H);
+  }
+  v.remove();
 }
 
 function setupVideoOverlay() {
