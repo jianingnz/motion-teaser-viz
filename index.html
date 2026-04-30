@@ -290,6 +290,12 @@ footer a { color: #2563eb; text-decoration: none; }
       <label style="margin-left:18px;">PC size:</label>
       <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12" style="min-width:140px;">
       <span class="frame-lbl" id="pc-size-lbl">12.0</span>
+      <label style="margin-left:14px;" title="0 = constant pixel size everywhere (foreground gaps possible). 1 = per-point spacing perspective (uniform density from any view).">PC perspective</label>
+      <input type="range" id="pc-persp" min="0" max="1" step="0.05" value="1" style="min-width:100px;">
+      <span class="frame-lbl" id="pc-persp-lbl">1.00</span>
+      <label style="margin-left:8px;" title="Calibration: how many screen pixels one metre of 3D spacing produces at depth=1m. Tune if balls look too big or too small in perspective mode.">K</label>
+      <input type="range" id="pc-perspk" min="80" max="800" step="10" value="320" style="min-width:90px;">
+      <span class="frame-lbl" id="pc-perspk-lbl">320</span>
       <label style="margin-left:18px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
     </div>
     <div class="row-c">
@@ -419,6 +425,12 @@ const Settings = {
   rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
   gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
   predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
+  // PC point-size mode. pcPerspMix=0 → constant device-pixel size for every
+  // point (foreground gaps, dense background). pcPerspMix=1 → per-point
+  // size ∝ local 3D-spacing / depth (uniform-density appearance from any
+  // angle). pcPerspK calibrates the metres → pixels conversion.
+  pcPerspMix: 1.0,
+  pcPerspK:   320.0,
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -452,23 +464,35 @@ function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE } = {}) {
       uShade: { value: depthShade },
       uShadeNear: { value: 0.4 },   // depth (m) where shading starts
       uShadeFar:  { value: 4.0 },   // depth (m) where shading saturates
+      // Per-point uniform-density mode. uPerspMix=0 → constant pixel size,
+      // uPerspMix=1 → each point is sized by its own 3D spacing /current
+      // depth (so foreground gaps fill in and background overlaps don't
+      // explode). uPerspK is a focal-like calibration that maps
+      // metres-of-3D-spacing → pixels-on-screen.
+      uPerspMix: { value: 1.0 },
+      uPerspK:   { value: 320.0 },
     },
     vertexShader: `
       attribute vec3 color;
+      attribute float aSpacing;   // metres of nearest-neighbour spacing for THIS point
       varying vec3 vColor;
       varying float vDepth;
       uniform float uSize;
       uniform float uViewport;
+      uniform float uPerspMix;
+      uniform float uPerspK;
       void main() {
         vColor = color;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         float depth = max(0.05, -mv.z);
         vDepth = depth;
-        // Constant pixel size regardless of depth — prevents the
-        // "foreground blobs / background dots" perspective artifact in the
-        // depth-backprojected cloud. Density variation across depth is
-        // inherent to the data; we don't try to compensate it here.
-        gl_PointSize = uSize;
+        // Constant-pixel-size branch: every point is `uSize` device pixels.
+        float constPx = uSize;
+        // Per-point perspective branch: screen size ∝ 3D-spacing / depth →
+        // each ball fills exactly the area between it and its neighbours,
+        // so dense and sparse regions of the cloud both render seamlessly.
+        float perspPx = uSize * uPerspK * (aSpacing / depth);
+        gl_PointSize = mix(constPx, perspPx, uPerspMix);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -757,11 +781,12 @@ class Panel {
     while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
 
     if (this.opts.showPC && (clipData._pc || (clipData.pc_xyz && clipData.pc_colors))) {
-      let positions, colors;
+      let positions, colors, spacings;
       if (clipData._pc) {
         // Dense binary PC — share the typed arrays directly (no per-vertex JS loop)
         positions = clipData._pc.positions;
         colors    = clipData._pc.colors;
+        spacings  = clipData._pc.spacings;   // computed at load time
       } else {
         const N = clipData.pc_xyz.length;
         positions = new Float32Array(N * 3);
@@ -774,12 +799,22 @@ class Panel {
           colors[i*3+1] = clipData.pc_colors[i][1] / 255;
           colors[i*3+2] = clipData.pc_colors[i][2] / 255;
         }
+        spacings = computePointSpacings(positions, N);
+      }
+      const N = positions.length / 3;
+      // Fallback if spacings somehow missing — fill with median so nothing
+      // explodes; the perspective branch just becomes a no-op.
+      if (!spacings || spacings.length !== N) {
+        spacings = new Float32Array(N).fill(0.01);
       }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
+      g.setAttribute('aSpacing', new THREE.BufferAttribute(spacings,  1));
       const m = makeDiscMaterial({ size: PC_POINT_PIX });
       m.uniforms.uViewport.value = this.canvas.height || 400;
+      m.uniforms.uPerspMix.value = Settings.pcPerspMix ?? 1.0;
+      m.uniforms.uPerspK.value   = Settings.pcPerspK   ?? 320.0;
       this.pcMaterial = m;
       const pc = new THREE.Points(g, m);
       // Match the y/z-flip convention used elsewhere in the scene (world Y-up
@@ -1166,7 +1201,83 @@ async function loadPCBinary(url) {
   const colorsU8 = new Uint8Array(buf, 4 + N * 12, N * 3);
   const colors = new Float32Array(N * 3);
   for (let i = 0; i < N * 3; i++) colors[i] = colorsU8[i] / 255;
-  return { N, positions, colors };
+  // Precompute per-point local 3D spacing — used by the PC shader to render
+  // each point at a screen size proportional to its own neighbourhood, so
+  // density looks uniform regardless of the viewing angle. Without this,
+  // grazing-incidence surfaces in the original capture (floor, hands) appear
+  // sparse from any other angle while perpendicular surfaces look continuous.
+  const spacings = computePointSpacings(positions, N);
+  return { N, positions, colors, spacings };
+}
+
+// k-NN spacing via a uniform spatial hash. Returns Float32Array of length N
+// where spacings[i] = mean distance from point i to its K (≈4) nearest
+// neighbours in 3D world space. Cell size is set from the bbox so the search
+// neighbourhood (3³ cells) usually covers enough candidates without too much
+// overdraw. Time-budget on a 45k-point clip ≈ 100–250 ms in modern browsers.
+function computePointSpacings(positions, N, K = 4) {
+  if (N === 0) return new Float32Array(0);
+  let xmin=Infinity,xmax=-Infinity, ymin=Infinity,ymax=-Infinity, zmin=Infinity,zmax=-Infinity;
+  for (let i = 0; i < N; i++) {
+    const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
+    if (x<xmin) xmin=x; if (x>xmax) xmax=x;
+    if (y<ymin) ymin=y; if (y>ymax) ymax=y;
+    if (z<zmin) zmin=z; if (z>zmax) zmax=z;
+  }
+  const diag = Math.hypot(xmax-xmin, ymax-ymin, zmax-zmin) || 1;
+  // Aim for ~80 cells across the diagonal so most point lookups span ≤ 3
+  // adjacent cells in each axis. For a typical 3-m room and 45k points this
+  // gives ≤ 30 candidates per query.
+  const cell = Math.max(1e-4, diag / 80);
+  const grid = new Map();
+  const keyOf = (cx, cy, cz) => `${cx},${cy},${cz}`;
+  for (let i = 0; i < N; i++) {
+    const cx = Math.floor(positions[i*3]   / cell);
+    const cy = Math.floor(positions[i*3+1] / cell);
+    const cz = Math.floor(positions[i*3+2] / cell);
+    const k = keyOf(cx, cy, cz);
+    let bin = grid.get(k);
+    if (!bin) { bin = []; grid.set(k, bin); }
+    bin.push(i);
+  }
+  const spacings = new Float32Array(N);
+  const top = new Float64Array(K);
+  for (let i = 0; i < N; i++) {
+    const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
+    const cx = Math.floor(x / cell), cy = Math.floor(y / cell), cz = Math.floor(z / cell);
+    for (let j = 0; j < K; j++) top[j] = Infinity;
+    // 3³ cell neighbourhood; widen to 5³ if we don't find enough candidates.
+    for (let pass = 0; pass < 2; pass++) {
+      const r = pass === 0 ? 1 : 2;
+      let found = 0;
+      for (let dx = -r; dx <= r; dx++) for (let dy = -r; dy <= r; dy++) for (let dz = -r; dz <= r; dz++) {
+        const bin = grid.get(keyOf(cx+dx, cy+dy, cz+dz));
+        if (!bin) continue;
+        for (let bi = 0; bi < bin.length; bi++) {
+          const j = bin[bi];
+          if (j === i) continue;
+          const ddx = positions[j*3]   - x;
+          const ddy = positions[j*3+1] - y;
+          const ddz = positions[j*3+2] - z;
+          const d2 = ddx*ddx + ddy*ddy + ddz*ddz;
+          // Insert into top-K (kept ascending in `top`)
+          if (d2 < top[K-1]) {
+            let p = K - 1;
+            while (p > 0 && top[p-1] > d2) { top[p] = top[p-1]; p--; }
+            top[p] = d2;
+          }
+          found++;
+        }
+      }
+      if (found >= K) break;
+    }
+    let sum = 0, m = 0;
+    for (let j = 0; j < K; j++) {
+      if (top[j] < Infinity) { sum += Math.sqrt(top[j]); m++; }
+    }
+    spacings[i] = m > 0 ? (sum / m) : cell;
+  }
+  return spacings;
 }
 
 async function init() {
@@ -1678,6 +1789,35 @@ function bindControls() {
       if (pcSizeLbl) pcSizeLbl.textContent = v.toFixed(1);
       for (const p of panels) {
         if (p.pcMaterial) p.pcMaterial.uniforms.uSize.value = v;
+        p.render();
+      }
+    };
+  }
+  // PC perspective amount (0 = const pixel size, 1 = per-point spacing
+  // perspective for uniform density). Updates uPerspMix on every panel.
+  const pcPersp = document.getElementById('pc-persp');
+  const pcPerspLbl = document.getElementById('pc-persp-lbl');
+  if (pcPersp) {
+    pcPersp.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      Settings.pcPerspMix = v;
+      if (pcPerspLbl) pcPerspLbl.textContent = v.toFixed(2);
+      for (const p of panels) {
+        if (p.pcMaterial) p.pcMaterial.uniforms.uPerspMix.value = v;
+        p.render();
+      }
+    };
+  }
+  // PC perspective calibration K.
+  const pcPerspK = document.getElementById('pc-perspk');
+  const pcPerspKLbl = document.getElementById('pc-perspk-lbl');
+  if (pcPerspK) {
+    pcPerspK.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      Settings.pcPerspK = v;
+      if (pcPerspKLbl) pcPerspKLbl.textContent = `${v|0}`;
+      for (const p of panels) {
+        if (p.pcMaterial) p.pcMaterial.uniforms.uPerspK.value = v;
         p.render();
       }
     };
