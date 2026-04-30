@@ -65,6 +65,14 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .video-card video { width: 100%; display: block; background: #000; }
 .video-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
+/* Full-video card: video + full-clip-cut timeline strip below */
+.full-video-card .timeline {
+  width: 100%; height: 22px;
+  background: #f3f4f6;
+  border-top: 1px solid var(--border);
+  display: block;
+}
+
 /* Chrono card */
 .chrono-card .body { position: relative; width: 100%; }
 .chrono-card img { width: 100%; display: block; }
@@ -169,10 +177,29 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </header>
 
+  <!-- Full source video + full-video trajectory + clip-cut bracket.
+       Tells the "we cut a clip out of this longer video" story: the gold
+       segment on the timeline strip = the clip-cut window the rest of the
+       page zooms in on. Hidden when the loaded clip has no full_video
+       bundle (DROID/DAVIS — only EgoDex clips ship one). -->
+  <section class="row" id="row-full-video" style="display:none;">
+    <div class="card video-card full-video-card">
+      <div class="ttl">
+        <span>⓪ Full source video + full trajectory</span>
+        <span class="lg-tag" id="full-vid-frame">frame 0</span>
+      </div>
+      <div class="body">
+        <video id="full-rgb-video" muted loop playsinline preload="auto" autoplay></video>
+        <canvas class="over" id="full-vid-overlay"></canvas>
+      </div>
+      <canvas id="full-timeline" class="timeline"></canvas>
+    </div>
+  </section>
+
   <!-- Top row -->
   <section class="row top">
     <div class="card video-card">
-      <div class="ttl"><span>① RGB video + 2D tracks</span><span class="lg-tag" id="vid-frame">frame 0</span></div>
+      <div class="ttl"><span>① RGB video + 2D tracks (cut clip)</span><span class="lg-tag" id="vid-frame">frame 0</span></div>
       <div class="body">
         <video id="rgb-video" muted loop playsinline preload="auto"></video>
         <canvas class="over" id="vid-overlay"></canvas>
@@ -200,6 +227,25 @@ footer a { color: #2563eb; text-decoration: none; }
     <div class="card panel-card big">
       <div class="ttl"><span>③b 3D scene · paper figure (all frames at once, no playback)</span><span class="lg-tag">temporal gradient encodes time · denser raw with more jumpy points</span></div>
       <div class="body"><canvas id="canvas-paper"></canvas></div>
+    </div>
+  </section>
+
+  <!-- Alternate-PC big panel: same combined view as ③, but the scene PC is
+       sourced from a user-selectable frame (clip frame 0 vs full-video frame 0).
+       Hidden when the loaded clip has no full_pc_bin bundle. -->
+  <section class="row" id="row-altpc" style="display:none;">
+    <div class="card panel-card big">
+      <div class="ttl">
+        <span>
+          ③c 3D scene · scene PC source:
+          <select class="btn" id="pc-source-sel" style="font-size:.7rem;margin-left:8px;">
+            <option value="video" selected>video frame 0 (full-video PC)</option>
+            <option value="clip">clip frame 0 (default PC)</option>
+          </select>
+        </span>
+        <span class="lg-tag">drag to rotate · scroll to zoom</span>
+      </div>
+      <div class="body"><canvas id="canvas-altpc"></canvas></div>
     </div>
   </section>
 
@@ -350,7 +396,7 @@ footer a { color: #2563eb; text-decoration: none; }
         <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
         <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
         <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
-        <span><span class="sw" style="background:#ef4444"></span>raw tracks (unfiltered, unsmoothed)</span>
+        <span><span class="sw" style="background:linear-gradient(90deg,#ef4444,#ffd1dc)"></span>raw tracks (unfiltered, unsmoothed) — red → light pink</span>
         <span><span class="sw" style="background:#fbbf24"></span>per-point dot color = sampled object RGB (frame 0)</span>
       </span>
     </div>
@@ -820,16 +866,22 @@ class Panel {
   buildStatic(clipData, cfg) {
     while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
 
-    if (this.opts.showPC && (clipData._pc || (clipData.pc_xyz && clipData.pc_colors))) {
-      // Two source PCs: full scene (`_pc`) or object-only filtered subset
-      // (`_pcObject`). objectPCOnly panels prefer the filtered subset.
+    if (this.opts.showPC && (clipData._pc || clipData._altPC || (clipData.pc_xyz && clipData.pc_colors))) {
+      // Three source PCs: clip-frame-0 (`_pc`), full-video-frame-0 (`_altPC`,
+      // EgoDex only), or object-only filtered subset (`_pcObject`). Panels pick
+      // by setting useAltPC / objectPCOnly on opts.
       let positions, colors;
       const fullPC   = clipData._pc;
+      const altPC    = clipData._altPC;
       const objectPC = clipData._pcObject;
       const useObj   = !!this.opts.objectPCOnly && objectPC && objectPC.N > 0;
+      const useAlt   = !!this.opts.useAltPC && altPC && altPC.N > 0;
       if (useObj) {
         positions = objectPC.positions;
         colors    = objectPC.colors;
+      } else if (useAlt) {
+        positions = altPC.positions;
+        colors    = altPC.colors;
       } else if (fullPC) {
         positions = fullPC.positions;
         colors    = fullPC.colors;
@@ -1153,11 +1205,14 @@ class Panel {
       const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
-      const baseR = this.lineBaseCols.raw;
-      const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
-      const MIX_LO = isPaper ? PAPER_MIX_LO : 0.18;
-      const MIX_HI = 1.00;
+      // Raw layer renders as a red → light pink gradient (oldest → newest)
+      // matching the 2D overlay's drawRaw2D. Hardcoded endpoints rather than
+      // tinting `lineBaseCols.raw` toward white so the "light pink" tone is
+      // explicit and stable across panels.
+      const COL_OLD = [239 / 255,  68 / 255,  68 / 255];
+      const COL_NEW = [255 / 255, 209 / 255, 220 / 255];
       const T_EXP  = isPaper ? PAPER_T_EXP : 1.00;
+      const lerp = (t, axis) => COL_OLD[axis] * (1 - t) + COL_NEW[axis] * t;
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -1175,14 +1230,12 @@ class Panel {
           const m = path.length;
           if (m < 2) continue;
           for (let i = 0; i < m - 1; i++) {
-            const t0 = i / (m - 1);
-            const t1 = (i + 1) / (m - 1);
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
+            const u0 = Math.pow(i / (m - 1),       T_EXP);
+            const u1 = Math.pow((i + 1) / (m - 1), T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-            cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
-            cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
+            cols.push(lerp(u0, 0), lerp(u0, 1), lerp(u0, 2));
+            cols.push(lerp(u1, 0), lerp(u1, 1), lerp(u1, 2));
           }
         }
       }
@@ -1395,6 +1448,13 @@ async function init() {
   clipData = await resp.json();
   cfg = clipData.configs[0];
 
+  // Preload the alternate full-video PC if this clip ships one (EgoDex). We
+  // load it as a separate `_altPC` so panels can independently choose between
+  // it and the clip-frame-0 `_pc` based on `useAltPC`.
+  if (clipData.full_pc_bin) {
+    clipData._altPC = await loadPCBinary(clipData.full_pc_bin.url);
+    console.log(`alt PC (video frame 0): ${clipData._altPC.N} points from ${clipData.full_pc_bin.url}`);
+  }
   // Preload dense binary PC if available; falls back to pc_xyz/pc_colors otherwise
   if (clipData.pc_bin) {
     clipData._pc = await loadPCBinary(clipData.pc_bin.url);
@@ -1494,6 +1554,18 @@ async function init() {
     // standing in for time.
     new Panel('canvas-paper',{ showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:true, paperMode:true, lineWidth:TRAIL_LINE_PX_BIG }),
   ];
+  // ③c · alternate-PC big panel — same combined layers as ③ but the scene PC
+  // is sourced from `_altPC` (full-video frame 0) by default. Only built when
+  // the clip ships a `full_pc_bin` bundle. Toggling the dropdown flips
+  // useAltPC and rebuilds this panel's static layer in place.
+  if (clipData._altPC) {
+    document.getElementById('row-altpc').style.display = '';
+    panels.push(new Panel('canvas-altpc', {
+      showPC:true, showHist:true, showGT:true, showPred:true,
+      showErrors:false, showRaw:false, useAltPC:true,
+      lineWidth:TRAIL_LINE_PX_BIG,
+    }));
+  }
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
@@ -1523,6 +1595,13 @@ async function init() {
     // Populate the raw-RGB strip panel with sampled frames from the mp4.
     buildRawThumbs().catch(err => console.warn('raw-thumbs failed:', err));
   });
+
+  // Full-source video setup (EgoDex only — gated by the bundle's full_video).
+  // The full mp4 plays independently of the clip mp4 (different timeline);
+  // the clip-cut window from raw_meta is rendered as a gold bracket on the
+  // timeline strip below the video so the "we cut a clip out of this longer
+  // video" point reads at a glance.
+  setupFullVideo();
 
   bindControls();
 
@@ -1633,6 +1712,191 @@ function setupVideoOverlay() {
   vidOver.height = video.videoHeight;
 }
 
+// ──────────── Full-source video panel ────────────
+// Shows the *whole* untrimmed source video alongside its full-video object
+// trajectory and a clip-cut bracket on a thin timeline strip. The bracket
+// (gold) marks frames raw_meta.src_clip_start..src_clip_end — i.e. the
+// window the rest of the page zooms into. EgoDex-only (gated on full_video).
+const FullApp = { fi: -1, T: 0, fps: 15, fullVideo: null, overlayCtx: null };
+
+function setupFullVideo() {
+  if (!clipData.full_video) return;
+  const row = document.getElementById('row-full-video');
+  if (!row) return;
+  row.style.display = '';
+  const v = document.getElementById('full-rgb-video');
+  v.src = clipData.full_video.url;
+  FullApp.fullVideo = v;
+  FullApp.fps = +clipData.full_video.fps || 15;
+  FullApp.T   = +clipData.full_video.n_frames || 1;
+  const overlay = document.getElementById('full-vid-overlay');
+  FullApp.overlayCtx = overlay.getContext('2d');
+  const timeline = document.getElementById('full-timeline');
+  v.addEventListener('loadedmetadata', () => {
+    overlay.width  = v.videoWidth;
+    overlay.height = v.videoHeight;
+    drawFullTimeline();
+    v.play().catch(() => { /* autoplay sometimes blocked; user-resumable */ });
+    requestAnimationFrame(tickFullVideo);
+  });
+  // Re-draw the timeline strip when its CSS box resizes (responsive layout).
+  new ResizeObserver(drawFullTimeline).observe(timeline);
+}
+
+function tickFullVideo() {
+  const v = FullApp.fullVideo;
+  if (v && v.duration) {
+    const fi = Math.max(0, Math.min(FullApp.T - 1,
+                Math.round(v.currentTime * FullApp.fps)));
+    if (fi !== FullApp.fi) {
+      FullApp.fi = fi;
+      document.getElementById('full-vid-frame').textContent = `frame ${fi}/${FullApp.T - 1}`;
+      drawFullVideoOverlay(fi);
+      drawFullTimeline();
+    }
+  }
+  requestAnimationFrame(tickFullVideo);
+}
+
+function drawFullVideoOverlay(fi) {
+  const ctx = FullApp.overlayCtx;
+  if (!ctx) return;
+  const v = FullApp.fullVideo;
+  const W = v.videoWidth, H = v.videoHeight;
+  ctx.clearRect(0, 0, W, H);
+  const tracks = clipData.full_video_2d?.tracks;
+  if (!tracks || !tracks.length) return;
+
+  // Curated index list for the full-video tracks: smoothest-first 2D paths.
+  // Cached on first call so we don't re-rank every frame.
+  if (!clipData._fullGoodIdx) {
+    const T = tracks.length;
+    const P = tracks[0]?.length || 0;
+    const scores = new Float32Array(P);
+    for (let p = 0; p < P; p++) {
+      let prev = null, maxd = 0;
+      for (let t = 0; t < T; t++) {
+        const pt = tracks[t]?.[p];
+        if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
+        if (prev) {
+          const dx = pt[0] - prev[0], dy = pt[1] - prev[1];
+          const d  = Math.hypot(dx, dy);
+          if (d > maxd) maxd = d;
+        }
+        prev = pt;
+      }
+      scores[p] = maxd;
+    }
+    const valid = [];
+    for (let i = 0; i < P; i++) if (scores[i] > 0) valid.push(i);
+    valid.sort((a, b) => scores[a] - scores[b]);
+    clipData._fullGoodIdx = valid.slice(0, Math.min(N_GT_KEEP, valid.length))
+                                 .sort((a, b) => a - b);
+  }
+  const idx = clipData._fullGoodIdx;
+  const T = tracks.length;
+  const Tdenom = Math.max(1, T - 1);
+
+  // Inside-clip-cut → gold; outside → cyan-ish so the cut is visually obvious.
+  const inStart = clipData.full_video.src_clip_start;
+  const inEnd   = clipData.full_video.src_clip_end;
+  const colInside  = [253, 224, 71];   // amber-300
+  const colOutside = [99, 179, 237];   // sky-400
+  const drawSegment = (a, b, isInside) => {
+    const c = isInside ? colInside : colOutside;
+    ctx.strokeStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  };
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = 1.6;
+  ctx.setLineDash([]);
+  for (const p of idx) {
+    let prev = null, prevT = -1;
+    for (let t = 0; t <= fi; t++) {
+      const pt = tracks[t]?.[p];
+      if (!pt || pt[0] == null || !Number.isFinite(pt[0])) { prev = null; continue; }
+      const xy = [pt[0] * W, pt[1] * H];
+      if (prev) {
+        const midT = 0.5 * (prevT + t);
+        drawSegment(prev, xy, midT >= inStart && midT <= inEnd);
+      }
+      prev = xy; prevT = t;
+    }
+  }
+  // Current position markers
+  for (const p of idx) {
+    const pt = tracks[fi]?.[p];
+    if (!pt || pt[0] == null || !Number.isFinite(pt[0])) continue;
+    const isInside = fi >= inStart && fi <= inEnd;
+    const c = isInside ? colInside : colOutside;
+    ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},0.95)`;
+    ctx.beginPath(); ctx.arc(pt[0] * W, pt[1] * H, 3.2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawFullTimeline() {
+  const tl = document.getElementById('full-timeline');
+  if (!tl || !clipData.full_video) return;
+  const css = getComputedStyle(tl);
+  const W = tl.clientWidth, H = parseFloat(css.height) || 22;
+  tl.width = W * (window.devicePixelRatio || 1);
+  tl.height = H * (window.devicePixelRatio || 1);
+  const ctx = tl.getContext('2d');
+  ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+  // Background
+  ctx.fillStyle = '#f3f4f6';
+  ctx.fillRect(0, 0, W, H);
+
+  const T = FullApp.T;
+  const s = clipData.full_video.src_clip_start;
+  const e = clipData.full_video.src_clip_end;
+  const x0 = (s / Math.max(1, T - 1)) * W;
+  const x1 = (e / Math.max(1, T - 1)) * W;
+
+  // Clip-cut segment (gold)
+  ctx.fillStyle = 'rgba(253, 224, 71, 0.85)';
+  ctx.fillRect(x0, 4, Math.max(2, x1 - x0), H - 8);
+
+  // Border around clip-cut
+  ctx.strokeStyle = '#b45309';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x0 + 0.5, 4.5, Math.max(2, x1 - x0) - 1, H - 9);
+
+  // Current playhead
+  if (FullApp.fi >= 0) {
+    const xp = (FullApp.fi / Math.max(1, T - 1)) * W;
+    ctx.strokeStyle = '#16a34a';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(xp, 0); ctx.lineTo(xp, H); ctx.stroke();
+  }
+
+  // Caption text
+  ctx.fillStyle = '#374151';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`clip cut: frames ${s}–${e} of ${T - 1}`, 6, H / 2);
+}
+
+// ──────────── Alternate-PC source selector (③c) ────────────
+// Toggles the dedicated "alternate" big panel between full-video frame 0
+// (clipData._altPC) and clip frame 0 (clipData._pc) without touching any
+// of the other panels.
+function bindPcSourceSelector() {
+  const sel = document.getElementById('pc-source-sel');
+  if (!sel) return;
+  sel.addEventListener('change', () => {
+    const useAlt = sel.value === 'video';
+    const p = panels.find(p => p.canvas?.id === 'canvas-altpc');
+    if (!p) return;
+    p.opts.useAltPC = useAlt;
+    p.buildStatic(clipData, cfg);
+    p.applyCamera();
+    const fi = (App && App._lastFi >= 0) ? App._lastFi : -1;
+    p.updateDynamic(cfg, fi);
+    p.render();
+  });
+}
+
 // ──────────── 2D track helpers ────────────
 function pickHex(rgb) {
   if (!rgb) return '#999';
@@ -1738,15 +2002,24 @@ function ringDot(ctx, x, y, color, r) {
   ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
 }
 
-// Raw-track stroke: bright red, same line weight as the filtered trails,
-// pale-→-vivid temporal gradient like GT/Pred, but NO smoothing — sharp
-// polyline straight through raw frames so the jaggedness still reads as a
-// contrast against our Catmull-smoothed output. Visibility nulls split the
-// polyline so we don't draw across gaps. `ptIdx` is the curated raw index
-// list; `fStart..fEnd` is the trail window (inclusive end). When fEnd is
-// undefined we use the full clip.
+// Raw-track stroke: gradient from saturated red (oldest, t=0) to light pink
+// (newest, t=1). NO smoothing — sharp polyline straight through raw frames so
+// the jaggedness still reads as a contrast against our Catmull-smoothed
+// output. Visibility nulls split the polyline so we don't draw across gaps.
+// `ptIdx` is the curated raw index list; `fStart..fEnd` is the trail window
+// (inclusive end). When fEnd is undefined we use the full clip.
+const RAW_COL_OLD = [239,  68,  68];   // red — oldest end of the trail
+const RAW_COL_NEW = [255, 209, 220];   // light pink — newest end of the trail
+function rawGradientRgb(t) {
+  const u = Math.max(0, Math.min(1, t));
+  return [
+    Math.round(RAW_COL_OLD[0] * (1 - u) + RAW_COL_NEW[0] * u),
+    Math.round(RAW_COL_OLD[1] * (1 - u) + RAW_COL_NEW[1] * u),
+    Math.round(RAW_COL_OLD[2] * (1 - u) + RAW_COL_NEW[2] * u),
+  ];
+}
 function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
-                   baseRgb = [239, 68, 68], lineWidth = 1.5) {
+                   baseRgb = null, lineWidth = 1.5) {
   if (!raw2d || raw2d.length < 2 || !ptIdx || !ptIdx.length) return;
   const T = raw2d.length;
   const a0 = Math.max(0, fStart ?? 0);
@@ -1756,8 +2029,6 @@ function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  const MIX_LO = 0.18, MIX_HI = 1.00;
-  const A_LO = 0.55, A_HI = 0.95;
   for (const p of ptIdx) {
     // Collect contiguous visible sub-paths for this point
     let sp = [];
@@ -1776,12 +2047,8 @@ function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
       if (m < 2) continue;
       for (let i = 0; i < m - 1; i++) {
         const t = (i + 0.5) / Math.max(1, m - 1);
-        const k = MIX_LO + (MIX_HI - MIX_LO) * t;
-        const a = A_LO + (A_HI - A_LO) * t;
-        const r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
-        const g = Math.min(255, Math.round(baseRgb[1] * k + 255 * (1 - k)));
-        const b = Math.min(255, Math.round(baseRgb[2] * k + 255 * (1 - k)));
-        ctx.strokeStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
+        const [r, g, b] = rawGradientRgb(t);
+        ctx.strokeStyle = `rgba(${r},${g},${b},0.92)`;
         ctx.beginPath();
         ctx.moveTo(path[i][0], path[i][1]);
         ctx.lineTo(path[i+1][0], path[i+1][1]);
@@ -2069,6 +2336,7 @@ function bindControls() {
 
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
+  bindPcSourceSelector();
 }
 
 // ──────────── History color routing ────────────
