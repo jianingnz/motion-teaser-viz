@@ -236,6 +236,18 @@ footer a { color: #2563eb; text-decoration: none; }
       <label style="font-size:.72rem; margin-left:10px;">Pred</label>
       <input type="color" id="col-pred" value="#34d399" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
       <button class="btn on" id="t-rainbow" style="margin-left:10px;" title="Cycle hue across time for GT/Pred (muted, distinguishable).">rainbow GT/Pred</button>
+      <label style="margin-left:14px;">GT sat</label>
+      <input type="range" id="gt-sat" min="0" max="1" step="0.02" value="0.50" style="min-width:80px;" title="Saturation of GT's rainbow (0=grey, 1=vivid).">
+      <span class="frame-lbl" id="gt-sat-lbl">0.50</span>
+      <label>GT lit</label>
+      <input type="range" id="gt-lit" min="0.1" max="0.9" step="0.02" value="0.62" style="min-width:80px;" title="Lightness of GT's rainbow (low=dark, high=pale/white).">
+      <span class="frame-lbl" id="gt-lit-lbl">0.62</span>
+      <label>Pred sat</label>
+      <input type="range" id="pred-sat" min="0" max="1" step="0.02" value="0.62" style="min-width:80px;">
+      <span class="frame-lbl" id="pred-sat-lbl">0.62</span>
+      <label>Pred lit</label>
+      <input type="range" id="pred-lit" min="0.1" max="0.9" step="0.02" value="0.46" style="min-width:80px;">
+      <span class="frame-lbl" id="pred-lit-lbl">0.46</span>
       <label style="margin-left:18px;"># trajectories</label>
       <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
       <span class="frame-lbl" id="n-keep-lbl">8</span>
@@ -400,10 +412,13 @@ const Settings = {
   // Rainbow mode for GT/Pred: hue cycles smoothly across time. Two roles
   // share the same hue progression but differ in saturation/lightness so
   // they remain visually distinguishable when overlaid. Muted by design
-  // ("don't too bright" — user spec).
+  // ("don't too bright" — user spec). Sat/Lit are exposed as live sliders
+  // so the user can dial how vivid vs how faded each role reads.
   rainbow:          true,
   rainbowHueStart:   0,        // degrees, hue at t=0
   rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
+  gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
+  predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -569,9 +584,12 @@ function _hslToRgb01(h, s, l) {
 function _rainbowProfile(role) {
   const effective = (role === 'hist' && (_histColorMode === 'gt' || _histColorMode === 'pred'))
     ? _histColorMode : role;
-  // Pred → deeper, slightly more saturated; GT → lighter pastel. Both muted.
-  if (effective === 'pred') return { s: 0.62, l: 0.46 };
-  return                            { s: 0.50, l: 0.62 };
+  // Pred → deeper / richer; GT → lighter / paler. Both fully user-tunable
+  // via the rainbow sat/lit sliders so the two roles can be made as bright
+  // or as faded as needed (e.g. raise predSat to make pred pop more, lower
+  // gtSat to fade GT into the background).
+  if (effective === 'pred') return { s: Settings.predSat, l: Settings.predLit };
+  return                            { s: Settings.gtSat,   l: Settings.gtLit   };
 }
 function rainbowRgb01(t, role) {
   const { s, l } = _rainbowProfile(role);
@@ -1707,6 +1725,17 @@ function bindControls() {
              v => { Settings.mixLo = v;        rerenderAll(); });
   wireSlider('t-exp',       't-exp-lbl',       v => v.toFixed(2),
              v => { Settings.tExp = v;         rerenderAll(); });
+  // Rainbow saturation/lightness per role — let the user dial how bright vs
+  // how faded each of GT and Pred reads.
+  const onRainbowKnob = () => { buildTimeLegend(); rerenderAll(); };
+  wireSlider('gt-sat',   'gt-sat-lbl',   v => v.toFixed(2),
+             v => { Settings.gtSat = v;   onRainbowKnob(); });
+  wireSlider('gt-lit',   'gt-lit-lbl',   v => v.toFixed(2),
+             v => { Settings.gtLit = v;   onRainbowKnob(); });
+  wireSlider('pred-sat', 'pred-sat-lbl', v => v.toFixed(2),
+             v => { Settings.predSat = v; onRainbowKnob(); });
+  wireSlider('pred-lit', 'pred-lit-lbl', v => v.toFixed(2),
+             v => { Settings.predLit = v; onRainbowKnob(); });
 
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
@@ -1831,7 +1860,9 @@ function buildTimeLegend() {
       g = Math.round(base[1] * k + 255 * (1 - k));
       b = Math.round(base[2] * k + 255 * (1 - k));
     }
-    const px = 5 + 11 * t;              // 5..16 px diameter
+    // Equal-size dots — the strip encodes time via *colour*, not size, so
+    // the user can read the rainbow palette without size as a confound.
+    const px = 12;
     const dot = document.createElement('span');
     dot.className = 't-dot';
     dot.style.width = `${px}px`;
