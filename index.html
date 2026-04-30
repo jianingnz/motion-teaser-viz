@@ -71,7 +71,7 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .chrono-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* 3D card */
-.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #000; }
+.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #1a1a1a; }
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
 
@@ -471,7 +471,7 @@ const Settings = {
 const ERR_COLOR = 0x6b7280; // soft gray
 
 // Background
-const BG_COLOR = 0x000000;   // 3D scene background — black makes the rainbow trails + RGB PC pop
+const BG_COLOR = 0x1a1a1a;   // 3D scene background — dark grey (softer than pure black, still high-contrast for rainbow trails + RGB PC)
 
 // ──────────── Shared camera state ────────────
 const camState = {
