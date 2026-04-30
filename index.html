@@ -230,6 +230,34 @@ footer a { color: #2563eb; text-decoration: none; }
       <span class="frame-lbl" id="frame-lbl">frame 0/0</span>
     </div>
     <div class="row-c">
+      <label>Colors:</label>
+      <label style="font-size:.72rem;">GT</label>
+      <input type="color" id="col-gt" value="#f0529c" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
+      <label style="font-size:.72rem; margin-left:10px;">Pred</label>
+      <input type="color" id="col-pred" value="#34d399" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
+      <button class="btn on" id="t-rainbow" style="margin-left:10px;" title="Cycle hue across time for GT/Pred (muted, distinguishable).">rainbow GT/Pred</button>
+      <label style="margin-left:18px;"># trajectories</label>
+      <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
+      <span class="frame-lbl" id="n-keep-lbl">8</span>
+      <label style="margin-left:14px;">Ball stride</label>
+      <input type="range" id="ball-stride" min="1" max="10" step="1" value="3" style="min-width:90px;">
+      <span class="frame-lbl" id="ball-stride-lbl">3</span>
+    </div>
+    <div class="row-c">
+      <label>Ball size</label>
+      <input type="range" id="ball-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
+      <span class="frame-lbl" id="ball-scale-lbl">1.0×</span>
+      <label style="margin-left:14px;">Line width</label>
+      <input type="range" id="line-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
+      <span class="frame-lbl" id="line-scale-lbl">1.0×</span>
+      <label style="margin-left:14px;">Gradient floor</label>
+      <input type="range" id="mix-lo" min="0" max="0.95" step="0.02" value="0.18" style="min-width:120px;" title="0 = oldest is white, 1 = no gradient">
+      <span class="frame-lbl" id="mix-lo-lbl">0.18</span>
+      <label style="margin-left:14px;">Gradient curve</label>
+      <input type="range" id="t-exp" min="0.2" max="2" step="0.05" value="1" style="min-width:120px;" title="<1 boosts saturation of early frames">
+      <span class="frame-lbl" id="t-exp-lbl">1.0</span>
+    </div>
+    <div class="row-c">
       <label>Toggle layers in big panel:</label>
       <button class="btn on" id="t-pc">scene point cloud</button>
       <button class="btn on" id="t-hist">history</button>
@@ -355,6 +383,27 @@ const TRAIL_COLORS = {
   gt:   0xf0529c,   // pink — ground truth (swapped from prior)
   pred: 0x34d399,   // mint green — prediction (swapped from prior)
   raw:  0xef4444,   // red — unfiltered, unsmoothed contrast
+};
+
+// ──────────── Live settings (mutated by UI controls) ────────────
+// Initial values mirror the constants above; UI sliders/colour-pickers mutate
+// this object in place and trigger a re-render. Read-at-draw-time so changes
+// flow through immediately. Paper-mode overrides (PAPER_MIX_LO / PAPER_T_EXP)
+// are still hardcoded — paper figures are tuned separately.
+const Settings = {
+  mixLo:      0.18,           // gradient pale floor (live mode); 0 = oldest is white, 1 = no gradient
+  tExp:       1.00,           // gradient curve exponent (live mode); <1 boosts early frames
+  ballStride: 3,              // place a ball every Nth frame
+  ballScale:  1.0,            // multiplier on per-panel ball radii
+  lineScale:  1.0,            // multiplier on trail line widths
+  nKeep:      8,              // # of GT/Pred trajectories rendered
+  // Rainbow mode for GT/Pred: hue cycles smoothly across time. Two roles
+  // share the same hue progression but differ in saturation/lightness so
+  // they remain visually distinguishable when overlaid. Muted by design
+  // ("don't too bright" — user spec).
+  rainbow:          true,
+  rainbowHueStart:   0,        // degrees, hue at t=0
+  rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -492,6 +541,53 @@ function selectMixedRawIdx(scores, n_total, n_jumpy) {
   const merged = [...new Set([...jumpy, ...uniform])];
   merged.sort((a, b) => a - b);
   return merged;
+}
+
+// ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
+// Standard HSL→RGB. h in degrees, s/l in 0..1. Returns [r,g,b] in 0..1
+// (shader-ready). Used for the rainbow gradient mode: same hue progression
+// for GT and Pred, but role-specific saturation/lightness keeps them
+// distinguishable when overlaid.
+function _hslToRgb01(h, s, l) {
+  h = ((h % 360) + 360) % 360;
+  const C = (1 - Math.abs(2*l - 1)) * s;
+  const X = C * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - C/2;
+  let r, g, b;
+  if      (h < 60)  { r=C; g=X; b=0; }
+  else if (h < 120) { r=X; g=C; b=0; }
+  else if (h < 180) { r=0; g=C; b=X; }
+  else if (h < 240) { r=0; g=X; b=C; }
+  else if (h < 300) { r=X; g=0; b=C; }
+  else              { r=C; g=0; b=X; }
+  return [r + m, g + m, b + m];
+}
+
+// `t` in 0..1 (fraction of clip), `role` is 'gt'/'pred'/'hist'. History
+// inherits the matched role's profile (so a hist-matches-gt config still
+// reads as a single sweep flowing into the GT trail).
+function _rainbowProfile(role) {
+  const effective = (role === 'hist' && (_histColorMode === 'gt' || _histColorMode === 'pred'))
+    ? _histColorMode : role;
+  // Pred → deeper, slightly more saturated; GT → lighter pastel. Both muted.
+  if (effective === 'pred') return { s: 0.62, l: 0.46 };
+  return                            { s: 0.50, l: 0.62 };
+}
+function rainbowRgb01(t, role) {
+  const { s, l } = _rainbowProfile(role);
+  const h = Settings.rainbowHueStart + Math.max(0, Math.min(1, t)) * Settings.rainbowHueRange;
+  return _hslToRgb01(h, s, l);
+}
+// 0..255 variant for canvas / rgba strings.
+function rainbowRgb255(t, role) {
+  const c = rainbowRgb01(t, role);
+  return [Math.round(c[0]*255), Math.round(c[1]*255), Math.round(c[2]*255)];
+}
+function _useRainbowFor(role) {
+  if (!Settings.rainbow) return false;
+  if (role === 'gt' || role === 'pred') return true;
+  if (role === 'hist' && (_histColorMode === 'gt' || _histColorMode === 'pred')) return true;
+  return false;
 }
 
 // ──────────── Catmull-Rom smoothing ────────────
@@ -714,16 +810,17 @@ class Panel {
   // change" property and lets history → GT → pred read as one continuous
   // gradient flowing from start to end.
   _buildTrailLayer(pts3d, fStart, fEndExclusive, ptIdx, mat, baseColor,
-                   useGradient = true, mixLoOverride = null, T_total = null) {
+                   useGradient = true, mixLoOverride = null, T_total = null,
+                   role = null) {
     const segs = [];
     const cols = [];
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
-    const MIX_LO = useGradient ? (mixLoOverride ?? 0.18) : 1.00;
+    const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 1.00;
     const MIX_HI = 1.00;
     const isPaperGrad = mixLoOverride !== null;
-    const T_EXP = isPaperGrad ? PAPER_T_EXP : 1.00;
+    const T_EXP = isPaperGrad ? PAPER_T_EXP : Settings.tExp;
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
-    const SAMPLES = SMOOTH_SAMPLES;
+    const useRainbow = _useRainbowFor(role);
     for (const p of ptIdx) {
       const raw = [];           // flat positions (x,-y,-z) for visible frames
       const rawT = [];          // global gradient t for each visible frame
@@ -751,12 +848,20 @@ class Panel {
       };
       for (let i = 0; i < m - 1; i++) {
         const t0g = tAt(i), t1g = tAt(i + 1);
-        const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0g, T_EXP);
-        const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1g, T_EXP);
+        let cR0, cG0, cB0, cR1, cG1, cB1;
+        if (useRainbow) {
+          // Hue cycles with time → no pale-mix needed (hue itself encodes time).
+          [cR0, cG0, cB0] = rainbowRgb01(t0g, role);
+          [cR1, cG1, cB1] = rainbowRgb01(t1g, role);
+        } else {
+          const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0g, T_EXP);
+          const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1g, T_EXP);
+          cR0 = r0*k0 + (1-k0); cG0 = g0*k0 + (1-k0); cB0 = b0*k0 + (1-k0);
+          cR1 = r0*k1 + (1-k1); cG1 = g0*k1 + (1-k1); cB1 = b0*k1 + (1-k1);
+        }
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
-        cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
-        cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
+        cols.push(cR0, cG0, cB0, cR1, cG1, cB1);
       }
     }
     if (segs.length === 0) return null;
@@ -774,13 +879,15 @@ class Panel {
   // change.
   _addTrailBallsLayer(pts3d, fStart, fEndExclusive, ptIdx, baseColor,
                      useGradient, mixLoOverride, rMin, rMax,
-                     T_total = null, stride = TRAIL_BALL_FRAME_STRIDE) {
+                     T_total = null, stride = null, role = null) {
+    if (stride == null) stride = Math.max(1, Settings.ballStride | 0);
     const isPaperGrad = mixLoOverride !== null;
-    const MIX_LO = useGradient ? (mixLoOverride ?? 0.20) : 0.92;
+    const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 0.92;
     const MIX_HI = 1.00;
-    const T_EXP  = isPaperGrad ? PAPER_T_EXP : 1.00;
+    const T_EXP  = isPaperGrad ? PAPER_T_EXP : Settings.tExp;
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
+    const useRainbow = _useRainbowFor(role);
 
     const records = [];
     for (const p of ptIdx) {
@@ -789,11 +896,15 @@ class Panel {
         const pt = pts3d[fi]?.[p];
         if (!pt || !Number.isFinite(pt[0])) continue;
         const t = fi / Tdenom;            // global, fixed-once-set
-        const k = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t, T_EXP);
         const radius = rMin + (rMax - rMin) * Math.pow(t, T_EXP);
-        records.push([pt[0], -pt[1], -pt[2],
-                      r0*k + (1-k), g0*k + (1-k), b0*k + (1-k),
-                      radius]);
+        let cR, cG, cB;
+        if (useRainbow) {
+          [cR, cG, cB] = rainbowRgb01(t, role);
+        } else {
+          const k = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t, T_EXP);
+          cR = r0*k + (1-k); cG = g0*k + (1-k); cB = b0*k + (1-k);
+        }
+        records.push([pt[0], -pt[1], -pt[2], cR, cG, cB, radius]);
       }
     }
     if (!records.length) return;
@@ -821,9 +932,11 @@ class Panel {
   _ballRadii() {
     const isPaper = !!this.opts.paperMode;
     const isBig   = this.opts.lineWidth >= TRAIL_LINE_PX_BIG - 0.01;
-    if (isPaper) return [TRAIL_BALL_R_MIN_PAPER, TRAIL_BALL_R_MAX_PAPER];
-    if (isBig)   return [TRAIL_BALL_R_MIN_BIG,   TRAIL_BALL_R_MAX_BIG];
-    return [TRAIL_BALL_R_MIN_SM, TRAIL_BALL_R_MAX_SM];
+    let rMin, rMax;
+    if (isPaper)    { rMin = TRAIL_BALL_R_MIN_PAPER; rMax = TRAIL_BALL_R_MAX_PAPER; }
+    else if (isBig) { rMin = TRAIL_BALL_R_MIN_BIG;   rMax = TRAIL_BALL_R_MAX_BIG; }
+    else            { rMin = TRAIL_BALL_R_MIN_SM;    rMax = TRAIL_BALL_R_MAX_SM; }
+    return [rMin * Settings.ballScale, rMax * Settings.ballScale];
   }
 
   // Interpolate a 3D point at fractional frame fiFrac (used for current-dot motion)
@@ -922,13 +1035,13 @@ class Panel {
       const layer = this._buildTrailLayer(
         cfg.gt_3d, 0, histEnd + 1, idx,
         this.lineMats.hist, this.lineBaseCols.hist,
-        true, paperMix, T_TOTAL);
+        true, paperMix, T_TOTAL, 'hist');
       if (layer) this.dynGroup.add(layer);
       if (this.opts.showBalls && histEnd >= 0) {
         this._addTrailBallsLayer(
           cfg.gt_3d, 0, histEnd + 1, idx,
           this.lineBaseCols.hist, true, paperMix,
-          rMin, rMax, T_TOTAL);
+          rMin, rMax, T_TOTAL, null, 'hist');
       }
     }
     // Paper-mode end cap: drop the last PAPER_GT_TAIL_DROP frames *only on
@@ -945,13 +1058,13 @@ class Panel {
       const layer = this._buildTrailLayer(
         cfg.gt_3d, trailStart, trailEnd, idx,
         this.lineMats.gt, this.lineBaseCols.gt,
-        true, paperMix, T_TOTAL);
+        true, paperMix, T_TOTAL, 'gt');
       if (layer) this.dynGroup.add(layer);
       if (this.opts.showBalls) {
         this._addTrailBallsLayer(
           cfg.gt_3d, trailStart, trailEnd, idx,
           this.lineBaseCols.gt, true, paperMix,
-          rMin, rMax, T_TOTAL);
+          rMin, rMax, T_TOTAL, null, 'gt');
       }
     }
     if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
@@ -962,13 +1075,13 @@ class Panel {
       const layer = this._buildTrailLayer(
         cfg.pred_3d, trailStart, trailEnd, idx,
         this.lineMats.pred, this.lineBaseCols.pred,
-        true, paperMix, T_TOTAL);
+        true, paperMix, T_TOTAL, 'pred');
       if (layer) this.dynGroup.add(layer);
       if (this.opts.showBalls) {
         this._addTrailBallsLayer(
           cfg.pred_3d, trailStart, trailEnd, idx,
           this.lineBaseCols.pred, true, paperMix,
-          rMin, rMax, T_TOTAL);
+          rMin, rMax, T_TOTAL, null, 'pred');
       }
     }
     // PaperMode is a single still frame — no error vectors (those concepts
@@ -1214,6 +1327,13 @@ function collectPath(pts2d, p, fStart, fEnd, W, H) {
   return out;
 }
 
+// Live-color helper: derive an `rgba(r,g,b,a)` string from a 3-element
+// 0–255 RGB array. Lets the 2D overlays follow runtime colour changes
+// without hardcoding hex literals.
+function rgbaFrom(rgb, alpha = 0.95) {
+  return `rgba(${rgb[0]|0},${rgb[1]|0},${rgb[2]|0},${alpha})`;
+}
+
 // Solid stroke (no gradient) — used for history trails so they read as a
 // constant context line, not a fade.
 function strokeSolidPath(ctx, pts, color, lineWidth, dash=null) {
@@ -1231,10 +1351,14 @@ function strokeSolidPath(ctx, pts, color, lineWidth, dash=null) {
   ctx.setLineDash([]);
 }
 
-// Per-segment gradient stroke: oldest → pale tint, newest → vivid (motion
-// direction reads as a light → saturated gradient, not dark → saturated).
-// `baseRgb` = [r, g, b] in 0–255. Optional `dash` keeps the dashed-pred look.
-function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
+// Per-segment gradient stroke. When `role` triggers rainbow mode the segment
+// colour cycles through the rainbow profile for that role; otherwise the
+// classic pale-tint → vivid mix is applied. `tStart`/`tEnd` are the global
+// gradient fractions (0..1) at the start and end of the polyline; pass them
+// when you want the 2D rainbow to align with the 3D one. Defaults to 0..1
+// (treat the polyline as the full clip).
+function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null,
+                            role=null, tStart=0, tEnd=1) {
   if (pts.length < 2) return;
   const smooth = smoothPath2D(pts);
   const m = smooth.length;
@@ -1243,17 +1367,23 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
   ctx.lineWidth = lineWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  // mix fraction of base color (rest is white) and alpha at each end
+  const useRainbow = _useRainbowFor(role);
   const MIX_LO = 0.18, MIX_HI = 1.00;
   const A_LO = 0.55, A_HI = 0.95;
   for (let i = 0; i < m - 1; i++) {
-    const t = (i + 0.5) / Math.max(1, m - 1);
-    const k = MIX_LO + (MIX_HI - MIX_LO) * t;
-    const a = A_LO + (A_HI - A_LO) * t;
-    // rgb = base * k + white * (1 - k)
-    const r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
-    const g = Math.min(255, Math.round(baseRgb[1] * k + 255 * (1 - k)));
-    const b = Math.min(255, Math.round(baseRgb[2] * k + 255 * (1 - k)));
+    const u = (i + 0.5) / Math.max(1, m - 1);  // 0..1 along visible path
+    const tg = tStart + u * (tEnd - tStart);    // global gradient fraction
+    let r, g, b;
+    if (useRainbow) {
+      const c = rainbowRgb255(tg, role);
+      r = c[0]; g = c[1]; b = c[2];
+    } else {
+      const k = MIX_LO + (MIX_HI - MIX_LO) * tg;
+      r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
+      g = Math.min(255, Math.round(baseRgb[1] * k + 255 * (1 - k)));
+      b = Math.min(255, Math.round(baseRgb[2] * k + 255 * (1 - k)));
+    }
+    const a = A_LO + (A_HI - A_LO) * u;
     ctx.strokeStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
     ctx.beginPath();
     ctx.moveTo(smooth[i][0], smooth[i][1]);
@@ -1371,25 +1501,37 @@ function drawVideoOverlay(fiFrac) {
     const histEnd = Math.min(nHist - 1, lastFi);
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSolidPath(ctx, pts, 'rgba(143,217,248,0.95)', 1.4);
+      strokeSolidPath(ctx, pts, rgbaFrom(TRAIL_RGB.hist, 0.95), 1.4);
     }
   }
+  // GT/Pred 2D trails: extend from history boundary to current frame (no
+  // sliding window — matches the 3D unified-gradient behaviour). Pass
+  // tStart/tEnd as global clip fractions so the rainbow lines up with the
+  // 3D one when rainbow mode is on.
+  const T_clip = (cfg.gt_3d?.length || cfg.pred_3d?.length || 1);
+  const Tdenom = Math.max(1, T_clip - 1);
   if (cfg.gt_2d && lastFi >= nHist) {
-    const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+    const fStart = Math.max(0, nHist - 1);
+    const tS = fStart / Tdenom, tE = lastFi / Tdenom;
     for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, tStart, lastFi, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.5);
+      const pts = collectPath(cfg.gt_2d, p, fStart, lastFi, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.5, null, 'gt', tS, tE);
     }
   }
   if (cfg.pred_2d && lastFi >= nHist) {
-    const tStart = Math.max(nHist - 1, lastFi - TRAIL_LEN);
+    const fStart = Math.max(0, nHist - 1);
+    const tS = fStart / Tdenom, tE = lastFi / Tdenom;
     for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, tStart, lastFi, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.5, [4, 3]);
+      const pts = collectPath(cfg.pred_2d, p, fStart, lastFi, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.5, [4, 3], 'pred', tS, tE);
     }
   }
 
-  // Current-frame dots — INTERPOLATED so they track the smooth video motion
+  // Current-frame dots — INTERPOLATED so they track the smooth video motion.
+  // Under rainbow mode, the pred ringDot picks up the rainbow colour at the
+  // current global-t so it matches the trail head.
+  const tCur = Math.max(0, Math.min(1, fiFrac / Tdenom));
+  const predRgb = _useRainbowFor('pred') ? rainbowRgb255(tCur, 'pred') : TRAIL_RGB.pred;
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d) {
@@ -1401,7 +1543,7 @@ function drawVideoOverlay(fiFrac) {
     if (cfg.pred_2d && fiFrac >= nHist) {
       const pt = interp2d(cfg.pred_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(52,211,153,0.95)', 5.0);
+        ringDot(ctx, pt[0]*W, pt[1]*H, rgbaFrom(predRgb, 0.95), 5.0);
       }
     }
   }
@@ -1429,22 +1571,33 @@ function drawChronoOverlay() {
   if (cfg.gt_2d && nHist > 0) {
     for (const p of idx) {
       const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSolidPath(ctx, pts, 'rgba(143,217,248,0.95)', 1.2);
+      strokeSolidPath(ctx, pts, rgbaFrom(TRAIL_RGB.hist, 0.95), 1.2);
     }
   }
+  // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
+  const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
+  const Tdenom2 = Math.max(1, T_clip2 - 1);
+  const tHistEdge = Math.max(0, nHist - 1) / Tdenom2;
   if (cfg.gt_2d) {
+    const fE = cfg.gt_2d.length - 1;
+    const tE = fE / Tdenom2;
     for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), cfg.gt_2d.length - 1, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3);
+      const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), fE, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3, null, 'gt', tHistEdge, tE);
     }
   }
   if (cfg.pred_2d) {
+    const fE = cfg.pred_2d.length - 1;
+    const tE = fE / Tdenom2;
     for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), cfg.pred_2d.length - 1, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3]);
+      const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), fE, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3], 'pred', tHistEdge, tE);
     }
   }
-  // Endpoint markers — drawn last so they sit on top of the trails (object stays in front)
+  // Endpoint markers — drawn last so they sit on top of the trails. Under
+  // rainbow mode the end ring picks up the rainbow colour at t=1.
+  const gtEndRgb   = _useRainbowFor('gt')   ? rainbowRgb255(1.0, 'gt')   : TRAIL_RGB.gt;
+  const predEndRgb = _useRainbowFor('pred') ? rainbowRgb255(1.0, 'pred') : TRAIL_RGB.pred;
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d) {
@@ -1456,14 +1609,14 @@ function drawChronoOverlay() {
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;
         softDot(ctx, x, y, ptColor, 3.4);
-        ctx.strokeStyle = 'rgba(240,82,156,0.95)'; ctx.lineWidth = 1.0;
+        ctx.strokeStyle = rgbaFrom(gtEndRgb, 0.95); ctx.lineWidth = 1.0;
         ctx.beginPath(); ctx.arc(x, y, 5.2, 0, Math.PI*2); ctx.stroke();
       }
     }
     if (cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
-        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(52,211,153,0.95)', 5.2);
+        ringDot(ctx, e[0]*W, e[1]*H, rgbaFrom(predEndRgb, 0.95), 5.2);
       }
     }
   }
@@ -1511,48 +1664,173 @@ function bindControls() {
       }
     };
   }
+  // Colour pickers for GT and Pred. History tracks one of these via the
+  // history-color dropdown.
+  const colGt = document.getElementById('col-gt');
+  if (colGt) colGt.oninput = (e) => setRoleColor('gt', e.target.value);
+  const colPred = document.getElementById('col-pred');
+  if (colPred) colPred.oninput = (e) => setRoleColor('pred', e.target.value);
+  // Rainbow GT/Pred toggle.
+  const tRainbow = document.getElementById('t-rainbow');
+  if (tRainbow) {
+    tRainbow.onclick = () => {
+      Settings.rainbow = !Settings.rainbow;
+      tRainbow.classList.toggle('on', Settings.rainbow);
+      buildTimeLegend();
+      // History inherits via setHistoryColor → re-trigger so the hist
+      // material updates if rainbow toggling changes its effective look.
+      setHistoryColor(_histColorMode);
+      rerenderAll();
+    };
+  }
+
+  // Helper to wire a numeric slider with a live label and a settings effect.
+  const wireSlider = (id, lblId, format, onChange) => {
+    const el  = document.getElementById(id);
+    const lbl = document.getElementById(lblId);
+    if (!el) return;
+    el.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      if (lbl) lbl.textContent = format(v);
+      onChange(v);
+    };
+  };
+  wireSlider('n-keep',      'n-keep-lbl',      v => `${v|0}`,
+             v => { Settings.nKeep = v|0; recomputeGtIdx(v|0); rerenderAll(); });
+  wireSlider('ball-stride', 'ball-stride-lbl', v => `${v|0}`,
+             v => { Settings.ballStride = v|0; rerenderAll(); });
+  wireSlider('ball-scale',  'ball-scale-lbl',  v => `${v.toFixed(2)}×`,
+             v => { Settings.ballScale = v;    rerenderAll(); });
+  wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
+             v => applyLineScale(v));
+  wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
+             v => { Settings.mixLo = v;        rerenderAll(); });
+  wireSlider('t-exp',       't-exp-lbl',       v => v.toFixed(2),
+             v => { Settings.tExp = v;         rerenderAll(); });
+
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
 }
 
 // ──────────── History color routing ────────────
-// Update every panel's `lineBaseCols.hist` and the underlying lineMats colour
-// so that history balls + line follow the chosen reference (gt / pred / own).
+// Update every panel's `lineBaseCols.hist`, the TRAIL_RGB lookup used by the
+// 2D overlays, and the CSS variable that backs the legend swatch — so the
+// chosen mode (match GT / match Pred / own baby blue) flows through every
+// surface that draws history.
+let _histColorMode = 'gt';
 function setHistoryColor(mode) {
-  const map = {
-    gt:   { hex: TRAIL_COLORS.gt,   col: new THREE.Color(TRAIL_COLORS.gt) },
-    pred: { hex: TRAIL_COLORS.pred, col: new THREE.Color(TRAIL_COLORS.pred) },
-    own:  { hex: TRAIL_COLORS.hist, col: new THREE.Color(TRAIL_COLORS.hist) },
-  };
-  const target = map[mode] || map.gt;
-  for (const p of panels) p.lineBaseCols.hist = target.col.clone();
-  // CSS legend swatch → keep in sync via CSS variable. The history legend swatch
-  // reads `var(--c-hist)`, so writing the variable updates it everywhere.
+  _histColorMode = mode;
+  const baseHex = (mode === 'pred') ? TRAIL_COLORS.pred
+                : (mode === 'own')  ? TRAIL_COLORS.hist
+                : TRAIL_COLORS.gt;
+  const col = new THREE.Color(baseHex);
+  // 3D side: every panel's history line/balls reads from lineBaseCols.hist
+  for (const p of panels) p.lineBaseCols.hist = col.clone();
+  // 2D side: drawVideoOverlay / drawChronoOverlay read TRAIL_RGB.hist
+  TRAIL_RGB.hist = [Math.round(col.r * 255),
+                    Math.round(col.g * 255),
+                    Math.round(col.b * 255)];
+  // CSS legend swatch
   document.documentElement.style.setProperty('--c-hist',
-    '#' + target.col.getHexString());
-  // Re-render: paper panel uses last frame, live panel uses current fi.
-  const fi = App._lastFi >= 0 ? App._lastFi : -1;
+    '#' + col.getHexString());
+  rerenderAll();
+}
+
+// ──────────── Time-horizon legend ────────────
+// ──────────── Live re-render + colour/index helpers ────────────
+// Centralised "everything dirty" refresh — used by every settings handler so
+// the live big panel, the small analysis panels, the static paper figure,
+// AND the 2D video/chrono overlays all stay in sync after a tweak.
+function rerenderAll() {
+  if (!panels || !cfg) return;
+  const fi = (typeof App !== 'undefined' && App._lastFi >= 0) ? App._lastFi : -1;
   const paperFi = (clipData?.num_frames || 1) - 1;
   for (const p of panels) {
     p.updateDynamic(cfg, p.opts.paperMode ? paperFi : fi);
     p.applyCamera(); p.render();
   }
+  if (App?._lastFi >= 0) drawVideoOverlay(App._lastFi);
+  drawChronoOverlay();
 }
 
-// ──────────── Time-horizon legend ────────────
+// Recompute the curated GT/Pred index lists when N_GT_KEEP changes. Mirrors
+// the original `init()` logic: smoothest-globally for live, plus a tail-clean
+// re-rank for the paper figure.
+function recomputeGtIdx(n) {
+  if (!cfg?.gt_3d?.length) return;
+  const P = cfg.gt_3d[0]?.length || 0;
+  if (!P) return;
+  n = Math.max(1, Math.min(P, n | 0));
+  cfg._goodIdx = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), n);
+  const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - PAPER_GT_TAIL_DROP);
+  const poolSize   = Math.min(P, Math.ceil(n * PAPER_GT_POOL_MULT));
+  const pool       = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), poolSize);
+  const tailScores = pointMaxJumpScores(cfg.gt_3d,
+    Math.max(0, paperGtEnd - PAPER_GT_TAIL_WINDOW), paperGtEnd);
+  const ranked = [...pool].sort((a, b) => tailScores[a] - tailScores[b]);
+  cfg._goodIdxPaper = ranked.slice(0, Math.min(n, ranked.length))
+                            .sort((a, b) => a - b);
+}
+
+// Helpers for the colour pickers. Each updates the canonical TRAIL_COLORS /
+// TRAIL_RGB dictionaries, the CSS variable backing the legend swatch, every
+// panel's lineBaseCols, and (if history is mirroring this role) the history
+// colour too. The lineMats use vertexColors so they pick up new tints on the
+// next updateDynamic without explicit material reseating.
+function _hexToRgb(hex) {
+  const v = parseInt(hex.replace('#',''), 16);
+  return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
+}
+function setRoleColor(role, hex) {
+  const rgb = _hexToRgb(hex);
+  TRAIL_COLORS[role] = parseInt(hex.replace('#',''), 16);
+  TRAIL_RGB[role]    = rgb;
+  document.documentElement.style.setProperty(`--c-${role}`, hex);
+  const col = new THREE.Color(TRAIL_COLORS[role]);
+  for (const p of panels) {
+    if (p.lineBaseCols[role]) p.lineBaseCols[role].copy(col);
+  }
+  // History inherits from this role → propagate.
+  if (_histColorMode === role) setHistoryColor(role);
+  // Time legend uses GT's hue
+  if (role === 'gt') buildTimeLegend();
+  rerenderAll();
+}
+
+// Scale every panel's trail line widths in place — LineMaterial exposes
+// `linewidth` as a writable uniform-backed setter, so no material rebuild is
+// needed; just bump the value and re-render.
+function applyLineScale(scale) {
+  Settings.lineScale = scale;
+  for (const p of panels) {
+    const baseLW = p.opts.lineWidth || TRAIL_LINE_PX_BIG;
+    for (const k of ['hist','gt','pred','err']) {
+      if (p.lineMats[k]) p.lineMats[k].linewidth = baseLW * scale;
+    }
+    if (p.rawLineMat) p.rawLineMat.linewidth = baseLW * scale;
+  }
+  rerenderAll();
+}
+
 function buildTimeLegend() {
   const host = document.getElementById('time-dots');
   if (!host) return;
   host.innerHTML = '';
-  // Dots use GT's hue (most prominent layer). Size 5px → 16px, opacity 0.30 → 1.0.
-  const base = TRAIL_RGB.gt;
   const N = TIME_LEGEND_DOTS;
+  const rainbow = Settings.rainbow;
+  const base = TRAIL_RGB.gt;
   for (let i = 0; i < N; i++) {
     const t = i / (N - 1);
-    const k = 0.20 + 0.80 * t;          // mix toward white at oldest
-    const r = Math.round(base[0] * k + 255 * (1 - k));
-    const g = Math.round(base[1] * k + 255 * (1 - k));
-    const b = Math.round(base[2] * k + 255 * (1 - k));
+    let r, g, b;
+    if (rainbow) {
+      // Show the actual GT-rainbow profile users will see in the trails.
+      [r, g, b] = rainbowRgb255(t, 'gt');
+    } else {
+      const k = 0.20 + 0.80 * t;
+      r = Math.round(base[0] * k + 255 * (1 - k));
+      g = Math.round(base[1] * k + 255 * (1 - k));
+      b = Math.round(base[2] * k + 255 * (1 - k));
+    }
     const px = 5 + 11 * t;              // 5..16 px diameter
     const dot = document.createElement('span');
     dot.className = 't-dot';
