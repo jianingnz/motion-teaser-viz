@@ -17,10 +17,12 @@
   --text-secondary: #6b7280;
   --text-muted: #9ca3af;
 
-  /* Trail colors — bright + saturated */
+  /* Trail colors — bright + saturated.
+     NOTE: gt/pred values were swapped from a prior version, so callsite
+     references to gt/pred stay symbolic but render with the new hues. */
   --c-hist: #8fd9f8;     /* baby blue — context */
-  --c-gt:   #34d399;     /* mint green — ground truth */
-  --c-pred: #f0529c;     /* pink — prediction */
+  --c-gt:   #f0529c;     /* pink — ground truth */
+  --c-pred: #34d399;     /* mint green — prediction */
 }
 html, body {
   background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
@@ -72,6 +74,29 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #ffffff; }
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
+
+/* Time-horizon legend (companion strip explaining the trajectory-ball
+   gradient: pale & small at start, vivid & large at end). */
+.time-card { padding: 0; }
+.time-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px;
+}
+.time-row .t-label {
+  font-size: .68rem; color: var(--text-muted); font-family: monospace;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.time-row .t-arrow {
+  font-size: .72rem; color: var(--text-secondary); font-family: monospace;
+  margin-left: 4px;
+}
+.t-dots {
+  display: flex; align-items: center; gap: 10px; flex: 1;
+}
+.t-dot {
+  border-radius: 50%; display: inline-block;
+  background: var(--c-gt);
+}
 
 /* Footer controls */
 .controls-card { padding: 12px 16px; }
@@ -176,6 +201,19 @@ footer a { color: #2563eb; text-decoration: none; }
   </section>
 
 
+  <!-- Time-horizon legend: shows the pale→vivid + small→large temporal
+       gradient explicitly so a reader knows the sequence of balls along a
+       trajectory encodes time. Uses GT's hue (most prominent layer). -->
+  <div class="card time-card">
+    <div class="ttl"><span>time encoding</span><span class="lg-tag">pale &amp; small → vivid &amp; large = time progression</span></div>
+    <div class="time-row">
+      <span class="t-label">start</span>
+      <div class="t-dots" id="time-dots"></div>
+      <span class="t-label">end</span>
+      <span class="t-arrow">time →</span>
+    </div>
+  </div>
+
   <!-- Controls -->
   <div class="card controls-card">
     <div class="row-c">
@@ -199,7 +237,17 @@ footer a { color: #2563eb; text-decoration: none; }
       <button class="btn on" id="t-pred">prediction</button>
       <button class="btn" id="t-err">GT↔Pred error vectors</button>
       <button class="btn" id="t-raw">raw tracks (unfiltered, unsmoothed)</button>
+      <button class="btn" id="t-balls">trajectory balls</button>
       <button class="btn" id="t-camera-reset">reset camera</button>
+    </div>
+    <div class="row-c">
+      <label>History color:</label>
+      <select class="btn" id="hist-color-sel" style="font-size:.72rem;">
+        <option value="gt" selected>match GT</option>
+        <option value="pred">match prediction</option>
+        <option value="own">own (baby blue)</option>
+      </select>
+      <label style="margin-left:24px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
     </div>
     <div class="row-c">
       <span class="legend">
@@ -246,13 +294,13 @@ const CLIP_URL = new URLSearchParams(location.search).get('clip')
 const TRAIL_LEN          = 12;     // frames of trail to render at any time
 const SMOOTH_SAMPLES     = 8;      // catmull-rom samples per interval (higher = smoother GT/Pred curves)
 const POINT_SUBSAMPLE    = 4;      // (legacy) — replaced by curated index lists below
-const N_GT_KEEP          = 22;     // GT/Pred points to render — biased toward smoothest, drop residual jumpy
-const N_RAW_KEEP         = 40;     // raw points to render — mostly cross-section, plus a few jumpy
-const N_RAW_JUMPY        = 8;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
+const N_GT_KEEP          = 8;      // GT/Pred points to render — biased toward smoothest, drop residual jumpy
+const N_RAW_KEEP         = 18;     // raw points to render — mostly cross-section, plus a few jumpy
+const N_RAW_JUMPY        = 5;      // of N_RAW_KEEP, this many must come from the top-jumpiest set
 // Paper-figure variant: denser AND much more biased toward jumpy ones, so a
 // single static frame still communicates "look how noisy raw cotracker is".
-const N_RAW_PAPER        = 55;
-const N_RAW_PAPER_JUMPY  = 30;
+const N_RAW_PAPER        = 28;
+const N_RAW_PAPER_JUMPY  = 14;
 // Drop this many frames off the END of the GT trail in the paper-figure
 // panel (residual track noise at the trajectory tail otherwise pollutes the
 // still). Applies to GT only — Pred and Raw still span the full clip.
@@ -275,16 +323,34 @@ const PAPER_GT_TAIL_WINDOW = 6;
 const PAPER_GT_POOL_MULT   = 1.7;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
 const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
-const PC_POINT_PIX       = 7.0;    // PC base pixel size
+const PC_POINT_PIX       = 3.5;    // PC base pixel size (smaller for paper readability)
 const PC_DEPTH_SHADE     = 0.0;    // 0=no shading
-const TRAIL_LINE_PX_BIG  = 2.4;    // px linewidth in big panel
-const TRAIL_LINE_PX_SM   = 1.7;    // px linewidth in small panels
+const TRAIL_LINE_PX_BIG  = 2.0;    // px linewidth in big panel (slightly thinner so balls dominate)
+const TRAIL_LINE_PX_SM   = 1.4;    // px linewidth in small panels
 const RENDER_PIXEL_RATIO = Math.min(2.5, (window.devicePixelRatio || 1) * 2);
 
+// Trajectory balls: one instanced sphere per integer frame within the trail
+// window, per tracked point. Radius and tint both ramp pale-small (oldest)
+// → vivid-large (newest), matching the screenshot reference figure.
+const TRAIL_BALL_R_MIN_BIG    = 0.0055;   // oldest ball radius (big panel)
+const TRAIL_BALL_R_MAX_BIG    = 0.0115;   // newest ball radius (big panel)
+const TRAIL_BALL_R_MIN_SM     = 0.0040;
+const TRAIL_BALL_R_MAX_SM     = 0.0080;
+const TRAIL_BALL_R_MIN_PAPER  = 0.0050;
+const TRAIL_BALL_R_MAX_PAPER  = 0.0105;
+const TRAIL_BALL_FRAME_STRIDE = 1;        // 1 = ball at every frame
+
+// Camera fly-around (WASD pan, E up, C down). Speed scales with current zoom
+// so it feels consistent at any distance.
+const KEY_PAN_RATE_PER_SEC = 0.9;  // fraction of camState.dist per second held
+
+// Time-legend strip: small static row of dots showing the temporal gradient.
+const TIME_LEGEND_DOTS    = 9;
+
 const TRAIL_COLORS = {
-  hist: 0x8fd9f8,   // baby blue
-  gt:   0x34d399,   // mint green
-  pred: 0xf0529c,   // pink
+  hist: 0x8fd9f8,   // baby blue (default; can be re-mapped to gt/pred via UI)
+  gt:   0xf0529c,   // pink — ground truth (swapped from prior)
+  pred: 0x34d399,   // mint green — prediction (swapped from prior)
   raw:  0xef4444,   // red — unfiltered, unsmoothed contrast
 };
 const ERR_COLOR = 0x6b7280; // soft gray
@@ -470,7 +536,7 @@ function polyToSegments(flat, into) {
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(RENDER_PIXEL_RATIO);
     this.renderer.setClearColor(BG_COLOR, 1);
@@ -681,6 +747,63 @@ class Panel {
     return new LineSegments2(g, mat);
   }
 
+  // Place a ball (instanced sphere) at every integer frame in [fStart, fEnd)
+  // for each ptIdx — colors and radii ramp pale-small (oldest, t=0) → vivid-
+  // large (newest, t=1) along the same temporal scheme as the trail line.
+  // The newest ball is therefore visually the "current frame" indicator.
+  _addTrailBallsLayer(pts3d, fStart, fEndExclusive, ptIdx, baseColor,
+                     useGradient, mixLoOverride, rMin, rMax, stride = TRAIL_BALL_FRAME_STRIDE) {
+    const span = Math.max(1, fEndExclusive - 1 - fStart);
+    const isPaperGrad = mixLoOverride !== null;
+    const MIX_LO = useGradient ? (mixLoOverride ?? 0.20) : 0.92;
+    const MIX_HI = 1.00;
+    const T_EXP  = isPaperGrad ? PAPER_T_EXP : 1.00;
+    const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
+
+    const records = [];
+    for (const p of ptIdx) {
+      for (let fi = fStart; fi < fEndExclusive; fi += stride) {
+        if (fi < 0 || fi >= pts3d.length) continue;
+        const pt = pts3d[fi]?.[p];
+        if (!pt || !Number.isFinite(pt[0])) continue;
+        const t = span > 0 ? (fi - fStart) / span : 1.0;
+        const k = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t, T_EXP);
+        const radius = rMin + (rMax - rMin) * Math.pow(t, T_EXP);
+        records.push([pt[0], -pt[1], -pt[2],
+                      r0*k + (1-k), g0*k + (1-k), b0*k + (1-k),
+                      radius]);
+      }
+    }
+    if (!records.length) return;
+
+    // Unit sphere + per-instance scale via the matrix → one InstancedMesh covers
+    // every ball for this trail layer, regardless of size.
+    const geom = new THREE.SphereGeometry(1.0, 12, 10);
+    const inst = new THREE.InstancedMesh(geom, this.sphereMat, records.length);
+    const colorAttr = new Float32Array(records.length * 3);
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      dummy.position.set(rec[0], rec[1], rec[2]);
+      dummy.scale.set(rec[6], rec[6], rec[6]);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      colorAttr[i*3]   = rec[3];
+      colorAttr[i*3+1] = rec[4];
+      colorAttr[i*3+2] = rec[5];
+    }
+    inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+    this.dynGroup.add(inst);
+  }
+
+  _ballRadii() {
+    const isPaper = !!this.opts.paperMode;
+    const isBig   = this.opts.lineWidth >= TRAIL_LINE_PX_BIG - 0.01;
+    if (isPaper) return [TRAIL_BALL_R_MIN_PAPER, TRAIL_BALL_R_MAX_PAPER];
+    if (isBig)   return [TRAIL_BALL_R_MIN_BIG,   TRAIL_BALL_R_MAX_BIG];
+    return [TRAIL_BALL_R_MIN_SM, TRAIL_BALL_R_MAX_SM];
+  }
+
   // Interpolate a 3D point at fractional frame fiFrac (used for current-dot motion)
   _interpPt(pts3d, fiFrac, p) {
     const f0 = Math.max(0, Math.floor(fiFrac));
@@ -760,11 +883,20 @@ class Panel {
       }
     }
 
+    const [rMin, rMax] = this._ballRadii();
+
     if (this.opts.showHist && nHist > 0) {
       const histEnd = isPaper ? (nHist - 1) : Math.min(nHist - 1, lastFi);
-      // Solid sky-blue history (no temporal gradient — only GT/pred fade).
+      // History line: solid (no temporal gradient — only GT/pred fade).
       const layer = this._buildTrailLayer(cfg.gt_3d, 0, histEnd + 1, idx, this.lineMats.hist, this.lineBaseCols.hist, false);
       if (layer) this.dynGroup.add(layer);
+      // History balls: small fixed size, solid color, drawn at every history
+      // frame so the user sees the discrete time samples that fed prediction.
+      if (this.opts.showBalls && histEnd >= 0) {
+        this._addTrailBallsLayer(cfg.gt_3d, 0, histEnd + 1, idx,
+                                 this.lineBaseCols.hist, false, null,
+                                 rMin, rMin + (rMax - rMin) * 0.5);
+      }
     }
     // Paper-mode end cap: drop the last PAPER_GT_TAIL_DROP frames *only on
     // GT* so residual smoothed-track noise at the trajectory tail doesn't
@@ -777,6 +909,11 @@ class Panel {
       const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
       const layer = this._buildTrailLayer(cfg.gt_3d, trailStart, trailEnd, idx, this.lineMats.gt, this.lineBaseCols.gt, true, paperMix);
       if (layer) this.dynGroup.add(layer);
+      if (this.opts.showBalls) {
+        this._addTrailBallsLayer(cfg.gt_3d, trailStart, trailEnd, idx,
+                                 this.lineBaseCols.gt, true, paperMix,
+                                 rMin, rMax);
+      }
     }
     if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
       const trailStart = isPaper ? Math.max(0, nHist - 1)
@@ -784,9 +921,14 @@ class Panel {
       const trailEnd   = isPaper ? T_clip : (lastFi + 1);  // pred keeps full
       const layer = this._buildTrailLayer(cfg.pred_3d, trailStart, trailEnd, idx, this.lineMats.pred, this.lineBaseCols.pred, true, paperMix);
       if (layer) this.dynGroup.add(layer);
+      if (this.opts.showBalls) {
+        this._addTrailBallsLayer(cfg.pred_3d, trailStart, trailEnd, idx,
+                                 this.lineBaseCols.pred, true, paperMix,
+                                 rMin, rMax);
+      }
     }
-    // PaperMode is a single still frame — no current-frame spheres or error
-    // vectors (those concepts only make sense during playback).
+    // PaperMode is a single still frame — no error vectors (those concepts
+    // only make sense during playback).
     if (isPaper) return;
 
     // Error vectors — interpolated to follow current motion
@@ -804,17 +946,9 @@ class Panel {
         this.dynGroup.add(new LineSegments2(g, this.lineMats.err));
       }
     }
-
-    // Current-frame spheres — INTERPOLATED at fiFrac to match the smooth video
-    if (nHist > 0 && this.opts.showHist && fiFrac < nHist) {
-      this._addSphereLayerFrac(cfg.gt_3d, fiFrac, ptColors, idx, ANCHOR_SPHERE_R, 1.0);
-    }
-    if (this.opts.showGT && fiFrac >= nHist) {
-      this._addSphereLayerFrac(cfg.gt_3d, fiFrac, ptColors, idx, POINT_SPHERE_R, 1.0);
-    }
-    if (this.opts.showPred && fiFrac >= nHist) {
-      this._addSphereLayerFrac(cfg.pred_3d, fiFrac, ptColors, idx, POINT_SPHERE_R, 0.85);
-    }
+    // Note: per-point object-color current-frame spheres were replaced by the
+    // trail ball layer above. The newest ball (largest + most vivid) at
+    // `lastFi` serves as the "current frame" indicator on the trajectory.
   }
 
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
@@ -935,6 +1069,9 @@ async function init() {
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
+  // Default history color → match GT (history flows naturally into ground truth).
+  setHistoryColor('gt');
+  buildTimeLegend();
   // Render paper panel's full-clip composite once; tick() will keep the rest in sync.
   panels.forEach(p => { if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1); });
   panels.forEach(p => p.render());
@@ -960,6 +1097,10 @@ async function init() {
   bindControls();
 
   function tick() {
+    // Continuous WASD/EC camera pan — runs every animation frame so motion is
+    // smooth while a key is held. processKeyboardCamera() returns true when it
+    // mutated camState; in that case the panels were already re-rendered.
+    processKeyboardCamera(performance.now());
     if (video.duration && App.clipEndTime != null) {
       if (video.currentTime > App.clipEndTime + 0.5 / App.fps) {
         video.currentTime = App.clipStartTime;
@@ -1078,11 +1219,12 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null) {
   ctx.setLineDash([]);
 }
 
-// Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars.
+// Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars (gt/pred
+// swapped from a prior version: gt is now pink, pred is now mint).
 const TRAIL_RGB = {
   hist: [143, 217, 248],
-  gt:   [ 52, 211, 153],
-  pred: [240,  82, 156],
+  gt:   [240,  82, 156],
+  pred: [ 52, 211, 153],
 };
 
 function softDot(ctx, x, y, color, r) {
@@ -1215,7 +1357,7 @@ function drawVideoOverlay(fiFrac) {
     if (cfg.pred_2d && fiFrac >= nHist) {
       const pt = interp2d(cfg.pred_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
-        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(240,82,156,0.95)', 5.0);
+        ringDot(ctx, pt[0]*W, pt[1]*H, 'rgba(52,211,153,0.95)', 5.0);
       }
     }
   }
@@ -1270,14 +1412,14 @@ function drawChronoOverlay() {
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
         const x = e[0]*W, y = e[1]*H;
         softDot(ctx, x, y, ptColor, 3.4);
-        ctx.strokeStyle = 'rgba(52,211,153,0.95)'; ctx.lineWidth = 1.0;
+        ctx.strokeStyle = 'rgba(240,82,156,0.95)'; ctx.lineWidth = 1.0;
         ctx.beginPath(); ctx.arc(x, y, 5.2, 0, Math.PI*2); ctx.stroke();
       }
     }
     if (cfg.pred_2d) {
       const e = cfg.pred_2d[cfg.pred_2d.length-1]?.[p];
       if (e && Number.isFinite(e[0]) && e[0]>=0 && e[0]<=1) {
-        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(240,82,156,0.95)', 5.2);
+        ringDot(ctx, e[0]*W, e[1]*H, 'rgba(52,211,153,0.95)', 5.2);
       }
     }
   }
@@ -1302,8 +1444,104 @@ function bindControls() {
   document.getElementById('t-pred').onclick   = (e) => toggleLayer(e, 'showPred');
   document.getElementById('t-err').onclick    = (e) => toggleLayer(e, 'showErrors');
   document.getElementById('t-raw').onclick    = (e) => toggleRaw(e);
+  // Trajectory-balls button starts ON (defaults match panel opts)
+  const tBalls = document.getElementById('t-balls');
+  if (tBalls) { tBalls.classList.add('on'); tBalls.onclick = (e) => toggleLayer(e, 'showBalls'); }
   document.getElementById('t-camera-reset').onclick = resetCamera;
+  // History color selector — re-aim the history hue to follow GT or pred (or
+  // its own baby-blue default).
+  const histSel = document.getElementById('hist-color-sel');
+  if (histSel) histSel.onchange = (e) => setHistoryColor(e.target.value);
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
+  bindKeyboardCamera();
+}
+
+// ──────────── History color routing ────────────
+// Update every panel's `lineBaseCols.hist` and the underlying lineMats colour
+// so that history balls + line follow the chosen reference (gt / pred / own).
+function setHistoryColor(mode) {
+  const map = {
+    gt:   { hex: TRAIL_COLORS.gt,   col: new THREE.Color(TRAIL_COLORS.gt) },
+    pred: { hex: TRAIL_COLORS.pred, col: new THREE.Color(TRAIL_COLORS.pred) },
+    own:  { hex: TRAIL_COLORS.hist, col: new THREE.Color(TRAIL_COLORS.hist) },
+  };
+  const target = map[mode] || map.gt;
+  for (const p of panels) p.lineBaseCols.hist = target.col.clone();
+  // CSS legend swatch → keep in sync via CSS variable. The history legend swatch
+  // reads `var(--c-hist)`, so writing the variable updates it everywhere.
+  document.documentElement.style.setProperty('--c-hist',
+    '#' + target.col.getHexString());
+  // Re-render: paper panel uses last frame, live panel uses current fi.
+  const fi = App._lastFi >= 0 ? App._lastFi : -1;
+  const paperFi = (clipData?.num_frames || 1) - 1;
+  for (const p of panels) {
+    p.updateDynamic(cfg, p.opts.paperMode ? paperFi : fi);
+    p.applyCamera(); p.render();
+  }
+}
+
+// ──────────── Time-horizon legend ────────────
+function buildTimeLegend() {
+  const host = document.getElementById('time-dots');
+  if (!host) return;
+  host.innerHTML = '';
+  // Dots use GT's hue (most prominent layer). Size 5px → 16px, opacity 0.30 → 1.0.
+  const base = TRAIL_RGB.gt;
+  const N = TIME_LEGEND_DOTS;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const k = 0.20 + 0.80 * t;          // mix toward white at oldest
+    const r = Math.round(base[0] * k + 255 * (1 - k));
+    const g = Math.round(base[1] * k + 255 * (1 - k));
+    const b = Math.round(base[2] * k + 255 * (1 - k));
+    const px = 5 + 11 * t;              // 5..16 px diameter
+    const dot = document.createElement('span');
+    dot.className = 't-dot';
+    dot.style.width = `${px}px`;
+    dot.style.height = `${px}px`;
+    dot.style.background = `rgb(${r},${g},${b})`;
+    host.appendChild(dot);
+  }
+}
+
+// ──────────── WASD pan + E/C up/down camera controls ────────────
+const _keyState = {};
+function bindKeyboardCamera() {
+  window.addEventListener('keydown', e => {
+    if (['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    const k = e.key.toLowerCase();
+    if ('wasdec'.includes(k)) {
+      _keyState[k] = true;
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', e => {
+    const k = e.key.toLowerCase();
+    if ('wasdec'.includes(k)) _keyState[k] = false;
+  });
+}
+
+let _keyLastTs = 0;
+function processKeyboardCamera(now) {
+  const dt = _keyLastTs ? Math.min(0.1, (now - _keyLastTs) / 1000) : 0;
+  _keyLastTs = now;
+  let dx = 0, dy = 0, dz = 0;
+  if (_keyState['w']) dz += 1;   // forward
+  if (_keyState['s']) dz -= 1;
+  if (_keyState['d']) dx += 1;   // strafe right
+  if (_keyState['a']) dx -= 1;
+  if (_keyState['e']) dy += 1;   // up (world Y)
+  if (_keyState['c']) dy -= 1;
+  if (!dx && !dy && !dz) return false;
+  const speed = KEY_PAN_RATE_PER_SEC * Math.max(0.1, camState.dist) * dt;
+  // Camera basis in world (Y up). Forward = (-sin yaw, 0, -cos yaw),
+  // Right = (cos yaw, 0, -sin yaw). Y axis is world-up.
+  const cy = Math.cos(camState.yaw), sy = Math.sin(camState.yaw);
+  camState.target.x += (dx * cy + dz * (-sy)) * speed;
+  camState.target.z += (dx * (-sy) + dz * (-cy)) * speed;
+  camState.target.y += dy * speed;
+  panels.forEach(p => { p.applyCamera(); p.render(); });
+  return true;
 }
 
 function stepFrame(dir) {
