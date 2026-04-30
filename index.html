@@ -236,6 +236,9 @@ footer a { color: #2563eb; text-decoration: none; }
       <label style="font-size:.72rem; margin-left:10px;">Pred</label>
       <input type="color" id="col-pred" value="#34d399" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
       <button class="btn on" id="t-rainbow" style="margin-left:10px;" title="Cycle hue across time for GT/Pred (muted, distinguishable).">rainbow GT/Pred</button>
+      <label style="font-size:.72rem; margin-left:14px;">Endpoint</label>
+      <input type="color" id="col-endpoint" value="#fde047" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Bright accent for the start/end markers (defaults to vivid yellow).">
+
       <label style="margin-left:14px;">GT sat</label>
       <input type="range" id="gt-sat" min="0" max="1" step="0.02" value="0.50" style="min-width:80px;" title="Saturation of GT's rainbow (0=grey, 1=vivid).">
       <span class="frame-lbl" id="gt-sat-lbl">0.50</span>
@@ -412,6 +415,7 @@ const Settings = {
   ballStride: 3,              // place a ball every Nth frame
   ballScale:  1.0,            // multiplier on per-panel ball radii
   endpointScale: 1.6,         // multiplier on rMax for the start/end markers
+  endpointColor: '#fde047',   // bright accent for start/end (user-pickable; default vivid yellow)
   lineScale:  1.0,            // multiplier on trail line widths
   nKeep:      8,              // # of GT/Pred trajectories rendered
   // Rainbow mode for GT/Pred: hue cycles smoothly across time. Two roles
@@ -962,36 +966,33 @@ class Panel {
     return [rMin * Settings.ballScale, rMax * Settings.ballScale];
   }
 
-  // Object-color highlights at the global start (frame 0) and global end
-  // (frame T-1) of each tracked point. The object's frame-0 sampled RGB
-  // (from cfg.pt_colors_rgb) lets the viewer link a trail back to its
-  // physical object — independent of the rainbow/role colour used along
-  // the trail. Drawn larger than the largest trail ball so they pop.
+  // Bright-accent highlights at the global start (frame 0) and global end
+  // (frame T-1) of each tracked point. Uses Settings.endpointColor (user-
+  // pickable) so the markers always pop against the rainbow trail and the
+  // PC, regardless of the object's local appearance. Drawn larger than the
+  // largest trail ball so they read as the trajectory's anchors.
   _addEndpointSpheres(cfg) {
     const T_clip = cfg.gt_3d?.length || 0;
     if (T_clip === 0) return;
-    const ptColors = cfg.pt_colors_rgb || [];
-    if (!ptColors.length) return;
     const idx = (this.opts.paperMode && cfg._goodIdxPaper) ? cfg._goodIdxPaper
                                                            : (cfg._goodIdx || []);
     if (!idx.length) return;
     const [, rMaxBase] = this._ballRadii();
     const rEnd = rMaxBase * Settings.endpointScale;
+    const c = new THREE.Color(Settings.endpointColor);
 
-    const records = [];
-    const push = (pt, c) => {
+    const records = [];   // each entry = [x, y, z]
+    const push = (pt) => {
       if (!pt || !Number.isFinite(pt[0])) return;
-      records.push([pt[0], -pt[1], -pt[2], c[0]/255, c[1]/255, c[2]/255]);
+      records.push([pt[0], -pt[1], -pt[2]]);
     };
     for (const p of idx) {
-      const c = ptColors[p];
-      if (!c) continue;
       // Global start = frame 0 of GT (= start of history). Tied to showHist
       // since toggling history off reads as "no context, skip the start".
-      if (this.opts.showHist) push(cfg.gt_3d[0]?.[p], c);
+      if (this.opts.showHist) push(cfg.gt_3d[0]?.[p]);
       // Global ends.
-      if (this.opts.showGT)   push(cfg.gt_3d[T_clip - 1]?.[p],   c);
-      if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p], c);
+      if (this.opts.showGT)   push(cfg.gt_3d[T_clip - 1]?.[p]);
+      if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p]);
     }
     if (!records.length) return;
     const geom = new THREE.SphereGeometry(rEnd, 14, 12);
@@ -1003,9 +1004,9 @@ class Panel {
       dummy.position.set(r[0], r[1], r[2]);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
-      colorAttr[i*3]   = r[3];
-      colorAttr[i*3+1] = r[4];
-      colorAttr[i*3+2] = r[5];
+      colorAttr[i*3]   = c.r;
+      colorAttr[i*3+1] = c.g;
+      colorAttr[i*3+2] = c.b;
     }
     inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
     this.dynGroup.add(inst);
@@ -1750,6 +1751,12 @@ function bindControls() {
   if (colGt) colGt.oninput = (e) => setRoleColor('gt', e.target.value);
   const colPred = document.getElementById('col-pred');
   if (colPred) colPred.oninput = (e) => setRoleColor('pred', e.target.value);
+  // Endpoint accent color (start/end spheres). Live-applied to all panels.
+  const colEnd = document.getElementById('col-endpoint');
+  if (colEnd) colEnd.oninput = (e) => {
+    Settings.endpointColor = e.target.value;
+    rerenderAll();
+  };
   // Rainbow GT/Pred toggle.
   const tRainbow = document.getElementById('t-rainbow');
   if (tRainbow) {
