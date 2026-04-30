@@ -71,7 +71,7 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .chrono-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* 3D card */
-.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #888; }
+.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #555; }
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
 
@@ -273,6 +273,8 @@ footer a { color: #2563eb; text-decoration: none; }
       <button class="btn on" id="t-rainbow" style="margin-left:10px;" title="Cycle hue across time for GT/Pred (muted, distinguishable).">rainbow GT/Pred</button>
       <label style="font-size:.72rem; margin-left:14px;">Endpoint</label>
       <input type="color" id="col-endpoint" value="#fde047" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Bright accent for the start/end markers (defaults to vivid yellow).">
+      <label style="font-size:.72rem; margin-left:14px;">3D bg</label>
+      <input type="color" id="col-bg" value="#555555" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Background colour for every 3D panel (and the CSS fallback).">
 
       <label style="margin-left:14px;">GT sat</label>
       <input type="range" id="gt-sat" min="0" max="1" step="0.02" value="0.50" style="min-width:80px;" title="Saturation of GT's rainbow (0=grey, 1=vivid).">
@@ -471,7 +473,7 @@ const Settings = {
 const ERR_COLOR = 0x6b7280; // soft gray
 
 // Background
-const BG_COLOR = 0x888888;   // 3D scene background — mid-grey
+const BG_COLOR = 0x555555;   // 3D scene background — mid-grey (darker)
 
 // ──────────── Shared camera state ────────────
 const camState = {
@@ -1972,6 +1974,11 @@ function bindControls() {
     Settings.endpointColor = e.target.value;
     rerenderAll();
   };
+  // 3D scene background colour. Updates each panel's WebGL clearColor in
+  // place so all 3D panels switch instantly; also writes the CSS fallback
+  // so the loading state matches.
+  const colBg = document.getElementById('col-bg');
+  if (colBg) colBg.oninput = (e) => setBgColor(e.target.value);
   // Rainbow GT/Pred toggle.
   const tRainbow = document.getElementById('t-rainbow');
   if (tRainbow) {
@@ -2110,6 +2117,22 @@ function setRoleColor(role, hex) {
   // Time legend uses GT's hue
   if (role === 'gt') buildTimeLegend();
   rerenderAll();
+}
+
+// Apply a new 3D scene background colour to every panel renderer + the CSS
+// fallback. Hex string like "#1a1a1a".
+function setBgColor(hex) {
+  const c = new THREE.Color(hex);
+  for (const p of panels) {
+    p.renderer.setClearColor(c, 1);
+  }
+  // Update CSS fallback so the loading state matches the WebGL bg.
+  const card = document.querySelector('.panel-card .body');
+  if (card) {
+    document.querySelectorAll('.panel-card .body').forEach(el => el.style.background = hex);
+  }
+  // Re-render now (no scene-tree change, just a clear-colour bump).
+  for (const p of panels) p.render();
 }
 
 // Scale every panel's trail line widths in place — LineMaterial exposes
