@@ -71,7 +71,7 @@ header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospa
 .chrono-card canvas.over { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
 
 /* 3D card */
-.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #ffffff; }
+.panel-card .body { width: 100%; flex: 1; min-height: 320px; position: relative; background: #000; }
 .panel-card.big .body { min-height: 480px; }
 .panel-card .body canvas { display: block; width: 100%; height: 100%; }
 
@@ -224,7 +224,7 @@ footer a { color: #2563eb; text-decoration: none; }
        dots, and a strip of raw RGB frame thumbnails. -->
   <section class="row top">
     <div class="card panel-card">
-      <div class="ttl"><span>⑤ Initial scene PC + tracked-point initial positions (object RGB)</span><span class="lg-tag">drag/scroll/WASD shared with the other 3D panels</span></div>
+      <div class="ttl"><span>⑤ Initial object PC (RGB)</span><span class="lg-tag">scene PC filtered to points near frame-0 tracked points — dense object surfaces, no background</span></div>
       <div class="body"><canvas id="canvas-pcrgb"></canvas></div>
     </div>
     <div class="card raw-strip-card">
@@ -449,6 +449,10 @@ const Settings = {
   ballScale:  1.0,            // multiplier on per-panel ball radii
   endpointScale: 1.6,         // multiplier on rMax for the start/end markers
   endpointColor: '#fde047',   // bright accent for start/end (user-pickable; default vivid yellow)
+  // Object-only PC filter (panel ⑤). Keep scene-PC points within
+  // `objectFilterR` metres of any tracked point at frame 0 — drops the
+  // background and leaves the dense object surfaces.
+  objectFilterR: 0.08,
   lineScale:  1.0,            // multiplier on trail line widths
   nKeep:      8,              // # of GT/Pred trajectories rendered
   // Rainbow mode for GT/Pred: hue cycles smoothly across time. Two roles
@@ -465,7 +469,7 @@ const Settings = {
 const ERR_COLOR = 0x6b7280; // soft gray
 
 // Background
-const BG_COLOR = 0xffffff;
+const BG_COLOR = 0x000000;   // 3D scene background — black makes the rainbow trails + RGB PC pop
 
 // ──────────── Shared camera state ────────────
 const camState = {
@@ -697,7 +701,7 @@ function polyToSegments(flat, into) {
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, showInitialDots:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
+    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, showInitialDots:false, objectPCOnly:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(RENDER_PIXEL_RATIO);
     this.renderer.setClearColor(BG_COLOR, 1);
@@ -799,11 +803,18 @@ class Panel {
     while (this.staticGroup.children.length) this.staticGroup.remove(this.staticGroup.children[0]);
 
     if (this.opts.showPC && (clipData._pc || (clipData.pc_xyz && clipData.pc_colors))) {
+      // Two source PCs: full scene (`_pc`) or object-only filtered subset
+      // (`_pcObject`). objectPCOnly panels prefer the filtered subset.
       let positions, colors;
-      if (clipData._pc) {
-        // Dense binary PC — share the typed arrays directly (no per-vertex JS loop)
-        positions = clipData._pc.positions;
-        colors    = clipData._pc.colors;
+      const fullPC   = clipData._pc;
+      const objectPC = clipData._pcObject;
+      const useObj   = !!this.opts.objectPCOnly && objectPC && objectPC.N > 0;
+      if (useObj) {
+        positions = objectPC.positions;
+        colors    = objectPC.colors;
+      } else if (fullPC) {
+        positions = fullPC.positions;
+        colors    = fullPC.colors;
       } else {
         const N = clipData.pc_xyz.length;
         positions = new Float32Array(N * 3);
@@ -1290,6 +1301,49 @@ let panels = [];
 let clipData = null, cfg = null;
 let video, vidOver, vidOverCtx, chronoOver, chronoOverCtx;
 
+// Object-only PC filter: keep scene-PC points within `R` metres of any
+// tracked point at frame 0. Removes background (walls/floor) and leaves a
+// dense PC of just the moving object surfaces. Returns a new {N, positions,
+// colors} bundle (or null if everything filtered out). O(N · P) — runs once
+// per clip load on the main thread; ~30–80ms for 45k points × ~100 tracks.
+function filterObjectPC(positions, colors, trackedPtsAtT0, R) {
+  if (!positions || !trackedPtsAtT0) return null;
+  const N = positions.length / 3;
+  const trackXYZ = [];
+  for (const pt of trackedPtsAtT0) {
+    if (pt && Number.isFinite(pt[0])) trackXYZ.push(pt[0], pt[1], pt[2]);
+  }
+  const M = trackXYZ.length / 3;
+  if (M === 0 || N === 0) return null;
+  const R2 = R * R;
+  const keep = new Uint8Array(N);
+  let kept = 0;
+  for (let i = 0; i < N; i++) {
+    const x = positions[i*3], y = positions[i*3+1], z = positions[i*3+2];
+    for (let j = 0; j < M; j++) {
+      const dx = trackXYZ[j*3]   - x;
+      const dy = trackXYZ[j*3+1] - y;
+      const dz = trackXYZ[j*3+2] - z;
+      if (dx*dx + dy*dy + dz*dz <= R2) { keep[i] = 1; kept++; break; }
+    }
+  }
+  if (!kept) return null;
+  const outPos = new Float32Array(kept * 3);
+  const outCol = new Float32Array(kept * 3);
+  let k = 0;
+  for (let i = 0; i < N; i++) {
+    if (!keep[i]) continue;
+    outPos[k*3]   = positions[i*3];
+    outPos[k*3+1] = positions[i*3+1];
+    outPos[k*3+2] = positions[i*3+2];
+    outCol[k*3]   = colors[i*3];
+    outCol[k*3+1] = colors[i*3+1];
+    outCol[k*3+2] = colors[i*3+2];
+    k++;
+  }
+  return { N: kept, positions: outPos, colors: outCol };
+}
+
 async function loadPCBinary(url) {
   const buf = await fetch(url + '?v=' + Date.now()).then(r => r.arrayBuffer());
   const dv = new DataView(buf);
@@ -1312,6 +1366,33 @@ async function init() {
   if (clipData.pc_bin) {
     clipData._pc = await loadPCBinary(clipData.pc_bin.url);
     console.log(`PC: ${clipData._pc.N} points loaded from ${clipData.pc_bin.url}`);
+  } else if (clipData.pc_xyz && clipData.pc_colors) {
+    // JSON-fallback PC (DROID/DAVIS source clips that don't ship a separate
+    // bin file). Inflate into typed arrays so downstream code (filter, panel
+    // rendering) can use the same `_pc.positions / .colors` interface.
+    const N = clipData.pc_xyz.length;
+    const positions = new Float32Array(N * 3);
+    const colors    = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) {
+      positions[i*3]   = clipData.pc_xyz[i][0];
+      positions[i*3+1] = clipData.pc_xyz[i][1];
+      positions[i*3+2] = clipData.pc_xyz[i][2];
+      colors[i*3]   = clipData.pc_colors[i][0] / 255;
+      colors[i*3+1] = clipData.pc_colors[i][1] / 255;
+      colors[i*3+2] = clipData.pc_colors[i][2] / 255;
+    }
+    clipData._pc = { N, positions, colors, spacings: null };
+    console.log(`PC: ${N} points inflated from JSON pc_xyz/pc_colors`);
+  }
+  // Filter scene PC to "objects only" by proximity to frame-0 tracked points
+  // — gives panel ⑤ a dense object-surface PC without the background scene.
+  if (clipData._pc && cfg?.gt_3d?.[0]?.length) {
+    clipData._pcObject = filterObjectPC(
+      clipData._pc.positions, clipData._pc.colors,
+      cfg.gt_3d[0], Settings.objectFilterR);
+    if (clipData._pcObject) {
+      console.log(`PC objectFilter @R=${Settings.objectFilterR}m: ${clipData._pcObject.N}/${clipData._pc.N} kept`);
+    }
   }
 
   // Curated index lists (computed once per clip): GT/Pred = smoothest first,
@@ -1370,10 +1451,11 @@ async function init() {
     new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
-    // Initial-position panel (⑤): scene PC + tracked-point frame-0 dots in
-    // their object RGB. No trails, no balls, no endpoints — just the
-    // starting state of the scene.
-    new Panel('canvas-pcrgb',{ showPC:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    // Initial-position panel (⑤): dense object-only PC at frame 0 (scene PC
+    // filtered to keep only points within R metres of any tracked point).
+    // No background, no trails, no overlays — just the moving objects in
+    // their starting positions.
+    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
