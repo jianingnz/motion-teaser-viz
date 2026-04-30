@@ -247,7 +247,10 @@ footer a { color: #2563eb; text-decoration: none; }
         <option value="pred">match prediction</option>
         <option value="own">own (baby blue)</option>
       </select>
-      <label style="margin-left:24px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
+      <label style="margin-left:18px;">PC size:</label>
+      <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12" style="min-width:140px;">
+      <span class="frame-lbl" id="pc-size-lbl">12.0</span>
+      <label style="margin-left:18px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
     </div>
     <div class="row-c">
       <span class="legend">
@@ -1493,6 +1496,21 @@ function bindControls() {
   // its own baby-blue default).
   const histSel = document.getElementById('hist-color-sel');
   if (histSel) histSel.onchange = (e) => setHistoryColor(e.target.value);
+  // PC point-size slider — different clips have different scene scale, so a
+  // single global constant doesn't fit all. Wire the slider to update the
+  // uSize uniform on every panel's pcMaterial live.
+  const pcSize = document.getElementById('pc-size');
+  const pcSizeLbl = document.getElementById('pc-size-lbl');
+  if (pcSize) {
+    pcSize.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      if (pcSizeLbl) pcSizeLbl.textContent = v.toFixed(1);
+      for (const p of panels) {
+        if (p.pcMaterial) p.pcMaterial.uniforms.uSize.value = v;
+        p.render();
+      }
+    };
+  }
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
 }
