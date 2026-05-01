@@ -17,20 +17,30 @@
   --text-secondary: #6b7280;
   --text-muted: #9ca3af;
 
+  /* Page background gradient (live-tunable from the sidebar). */
+  --page-bg-top:    #ffffff;
+  --page-bg-bottom: #f3f4f6;
+
   /* Trail colors — bright + saturated.
      NOTE: gt/pred values were swapped from a prior version, so callsite
      references to gt/pred stay symbolic but render with the new hues. */
   --c-hist: #8fd9f8;     /* baby blue — context */
   --c-gt:   #f0529c;     /* pink — ground truth */
   --c-pred: #34d399;     /* mint green — prediction */
+
+  /* Sidebar geometry */
+  --sb-width: 340px;
 }
 html, body {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
+  background: linear-gradient(180deg, var(--page-bg-top) 0%, var(--page-bg-bottom) 100%);
   min-height: 100vh;
   font-family: 'Inter', sans-serif;
   color: var(--text);
   line-height: 1.5;
 }
+body { padding-right: 0; transition: padding-right .25s ease; }
+body.sb-open { padding-right: var(--sb-width); }
+
 .page { max-width: 1500px; margin: 0 auto; padding: 24px; }
 
 header.masthead {
@@ -40,6 +50,15 @@ header.masthead {
 header h1 { font-family: 'Playfair Display', serif; font-size: 1.7rem; color: var(--text-heading); }
 header .sub { font-size: .8rem; color: var(--text-secondary); margin-top: 4px; }
 header .meta { font-size: .75rem; color: var(--text-muted); font-family: monospace; }
+header .hdr-actions { display:flex; gap:8px; align-items:center; }
+.icon-btn {
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+  padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: .72rem;
+  font-family: inherit; line-height: 1;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.icon-btn:hover { background: #f3f4f6; }
+.icon-btn .ic { font-size: .9rem; }
 
 .row { display: grid; gap: 16px; margin-bottom: 16px; }
 .row.top { grid-template-columns: 1fr 1fr; }
@@ -147,6 +166,193 @@ input[type=range] { flex: 1; min-width: 200px; accent-color: #1f2937; }
 
 footer.foot { text-align: center; font-size: .7rem; color: var(--text-muted); margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--border); }
 footer a { color: #2563eb; text-decoration: none; }
+
+/* ─────────────────────────────────────────────────────────────────
+   Sidebar control panel — replaces the cluttered bottom controls.
+   Sections are collapsible accordions; whole panel slides off-screen
+   when toggled. Floats over the page when narrow, pushes content
+   when wide (body.sb-open adds padding-right).
+   ───────────────────────────────────────────────────────────────── */
+.sidebar {
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: var(--sb-width);
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 28px rgba(15,23,42,0.06);
+  display: flex; flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .25s ease;
+  z-index: 50;
+  font-size: .78rem;
+}
+.sidebar.open { transform: translateX(0); }
+
+.sidebar .sb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #fafafa 0%, #ffffff 100%);
+  position: sticky; top: 0; z-index: 2;
+}
+.sidebar .sb-head h2 {
+  font-family: 'Playfair Display', serif; font-size: 1rem; color: var(--text-heading);
+  font-weight: 700; letter-spacing: .01em;
+}
+.sidebar .sb-head .sb-head-actions { display:flex; gap:6px; }
+.sidebar .sb-body {
+  flex: 1; overflow-y: auto; overscroll-behavior: contain;
+  padding: 4px 0 24px 0;
+}
+.sidebar .sb-body::-webkit-scrollbar { width: 8px; }
+.sidebar .sb-body::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
+.sidebar .sb-body::-webkit-scrollbar-track { background: transparent; }
+
+.sb-section { border-bottom: 1px solid var(--border); }
+.sb-section:last-child { border-bottom: 0; }
+.sb-section > summary {
+  list-style: none;
+  cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+  padding: 11px 16px;
+  font-size: .76rem; font-weight: 600;
+  color: var(--text-heading);
+  text-transform: uppercase; letter-spacing: .07em;
+  transition: background .15s ease;
+}
+.sb-section > summary:hover { background: #f9fafb; }
+.sb-section > summary::-webkit-details-marker { display: none; }
+.sb-section > summary .chev {
+  width: 14px; height: 14px;
+  flex-shrink: 0;
+  transition: transform .2s ease;
+  color: var(--text-muted);
+}
+.sb-section[open] > summary .chev { transform: rotate(90deg); }
+.sb-section > summary .ico {
+  width: 18px; text-align: center; font-size: .9rem; flex-shrink: 0;
+  color: var(--text-secondary);
+}
+.sb-section > summary .summary-tag {
+  margin-left: auto; font-size: .65rem; color: var(--text-muted);
+  font-weight: 400; text-transform: none; letter-spacing: 0;
+}
+.sb-section .sb-body-inner { padding: 6px 16px 16px 16px; }
+
+/* Form rows inside the sidebar — single column friendly */
+.fld { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.fld:last-child { margin-bottom: 0; }
+.fld > .lbl-row {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: .7rem; color: var(--text-secondary);
+  text-transform: none; letter-spacing: 0;
+}
+.fld > .lbl-row .v {
+  font-family: monospace; color: var(--text-muted); font-size: .68rem;
+}
+.fld input[type=range] {
+  width: 100%; min-width: 0;
+  accent-color: #1f2937;
+  height: 18px;
+}
+.fld input[type=color] {
+  width: 36px; height: 26px;
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 0; background: none; cursor: pointer;
+}
+.fld select.btn, .fld select {
+  width: 100%; min-width: 0; font-size: .72rem; padding: 5px 8px;
+  background: var(--bg-card); border: 1px solid var(--border); color: var(--text);
+  border-radius: 5px; cursor: pointer; font-family: inherit;
+}
+.fld select[multiple] {
+  height: 90px; padding: 4px 6px;
+  font-family: monospace; font-size: .68rem;
+}
+/* Inline label-with-color — used for color picker rows */
+.color-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.color-row .cn { font-size: .72rem; color: var(--text); flex: 1; }
+.color-row .cn .h { font-family: monospace; font-size: .65rem; color: var(--text-muted); margin-left: 4px; }
+
+/* Toggle button grid — square-ish chips, 2-up */
+.toggle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.toggle-grid .btn {
+  width: 100%; padding: 7px 8px; font-size: .68rem;
+  text-align: center; line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.toggle-grid .btn.full { grid-column: 1 / -1; }
+
+/* Playback controls */
+.pb-row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.pb-row .btn { padding: 7px 10px; font-size: .8rem; }
+.pb-row #scrub { flex: 1; min-width: 0; }
+.pb-row .frame-lbl { font-size: .68rem; color: var(--text-muted); min-width: auto; }
+
+/* Two-column slider grid, used in compact sections */
+.fld-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px;
+}
+.fld-grid .fld { margin-bottom: 0; }
+
+/* Inline picker reset (↺) shown next to the multi-selects */
+.pick-row { display: flex; align-items: flex-start; gap: 6px; }
+.pick-row select { flex: 1; }
+.pick-row .btn { padding: 4px 8px; font-size: .7rem; align-self: stretch; }
+
+/* Tab toggle for the sidebar handle, when sidebar is closed */
+.sb-handle {
+  position: fixed; top: 96px; right: 0;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-right: 0; border-radius: 8px 0 0 8px;
+  padding: 10px 8px; cursor: pointer;
+  box-shadow: -4px 0 16px rgba(15,23,42,0.06);
+  z-index: 49;
+  font-size: .7rem; color: var(--text);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  transition: opacity .2s ease, transform .25s ease;
+}
+.sb-handle:hover { background: #f9fafb; }
+.sb-handle.hidden { opacity: 0; pointer-events: none; transform: translateX(20px); }
+.sb-handle .vt { writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .14em; text-transform: uppercase; font-size: .65rem; color: var(--text-secondary); }
+
+/* Color palette swatch row — square chips you can click */
+.palette-row {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+}
+.palette-chip {
+  cursor: pointer; border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--bg-card);
+  padding: 0; font-family: inherit;
+}
+.palette-chip:hover { border-color: var(--text-muted); }
+.palette-chip.active { outline: 2px solid var(--text-heading); outline-offset: -2px; }
+.palette-chip .pc-bars {
+  display: flex; height: 22px;
+}
+.palette-chip .pc-bars span { flex: 1; }
+.palette-chip .pc-name {
+  font-size: .62rem; padding: 3px 4px; color: var(--text-secondary);
+  text-align: center; background: var(--bg-card);
+}
+
+/* Mini "row" inside the sidebar header for preset save/load */
+.preset-row { display: flex; gap: 6px; padding: 8px 16px 4px 16px; align-items: center; }
+.preset-row .btn { padding: 5px 8px; font-size: .68rem; flex: 1; }
+.preset-row select { flex: 1; font-size: .7rem; padding: 4px 6px; min-width: 0;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 5px; color: var(--text); }
+
+/* Legend block at the bottom of the sidebar */
+.sb-legend { padding: 4px 16px 14px 16px; }
+.sb-legend .legend { display:flex; flex-direction: column; gap: 6px; font-size: .7rem; color: var(--text-secondary); }
+.sb-legend .legend .sw { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:8px; vertical-align: middle; border: 1px solid rgba(0,0,0,0.05); }
+
+/* When the sidebar is open and viewport is wide, give the page extra
+   max-width room (we already shrink padding-right). Keep it simple. */
+@media (max-width: 1024px) {
+  body.sb-open { padding-right: 0; } /* on narrow screens it floats over */
+  .sidebar { box-shadow: -16px 0 40px rgba(15,23,42,0.18); }
+}
 </style>
 
 <script type="importmap">
@@ -167,12 +373,17 @@ footer a { color: #2563eb; text-decoration: none; }
       <div class="sub" id="hdr-caption">Loading…</div>
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-      <select class="btn" id="clip-sel" style="font-size:.72rem;">
-        <option value="static/data/clean_surface_1713_t10.json">EgoDex · clean_surface_1713 · obj0 · t10</option>
-        <option value="static/data/basic_pick_place_14851_t29.json">EgoDex · basic_pick_place_14851 · obj2 · t29</option>
-        <option value="static/data/AUTOLab_5d05c5aa_object_t27.json">DROID · AUTOLab_5d05c5aa_2023-07-13 · object · t27</option>
-        <option value="static/data/camel_camal_t2.json">DAVIS · camel_camal · t2</option>
-      </select>
+      <div class="hdr-actions">
+        <select class="btn" id="clip-sel" style="font-size:.72rem;">
+          <option value="static/data/clean_surface_1713_t10.json">EgoDex · clean_surface_1713 · obj0 · t10</option>
+          <option value="static/data/basic_pick_place_14851_t29.json">EgoDex · basic_pick_place_14851 · obj2 · t29</option>
+          <option value="static/data/AUTOLab_5d05c5aa_object_t27.json">DROID · AUTOLab_5d05c5aa_2023-07-13 · object · t27</option>
+          <option value="static/data/camel_camal_t2.json">DAVIS · camel_camal · t2</option>
+        </select>
+        <button class="icon-btn" id="sb-toggle" title="Open / close the controls panel (or press [.])">
+          <span class="ic">☰</span><span>Controls</span>
+        </button>
+      </div>
       <div class="meta" id="hdr-meta"></div>
     </div>
   </header>
@@ -303,143 +514,389 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
   </div>
 
-  <!-- Controls -->
-  <div class="card controls-card">
-    <div class="row-c">
-      <button class="btn" id="play-btn">▶</button>
-      <button class="btn" id="step-back">◀|</button>
-      <button class="btn" id="step-fwd">|▶</button>
-      <select class="btn" id="rate-sel">
-        <option value="1">1×</option>
-        <option value="0.5">0.5×</option>
-        <option value="0.25" selected>0.25×</option>
-        <option value="0.1">0.1×</option>
-      </select>
-      <input type="range" id="scrub" min="0" max="100" step="any" value="0">
-      <span class="frame-lbl" id="frame-lbl">frame 0/0</span>
-    </div>
-    <div class="row-c">
-      <label>Colors:</label>
-      <label style="font-size:.72rem;">GT</label>
-      <input type="color" id="col-gt" value="#f0529c" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
-      <label style="font-size:.72rem; margin-left:10px;">Pred</label>
-      <input type="color" id="col-pred" value="#34d399" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Used when rainbow mode is OFF.">
-      <button class="btn on" id="t-rainbow" style="margin-left:10px;" title="Cycle hue across time for GT/Pred (muted, distinguishable).">rainbow GT/Pred</button>
-      <label style="font-size:.72rem; margin-left:14px;">Endpoint</label>
-      <input type="color" id="col-endpoint" value="#fde047" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Bright accent for the start/end markers (defaults to vivid yellow).">
-      <label style="font-size:.72rem; margin-left:14px;">3D bg</label>
-      <input type="color" id="col-bg" value="#555555" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Background colour for every 3D panel (and the CSS fallback).">
-
-      <label style="margin-left:14px;">GT sat</label>
-      <input type="range" id="gt-sat" min="0" max="1" step="0.02" value="0.50" style="min-width:80px;" title="Saturation of GT's rainbow (0=grey, 1=vivid).">
-      <span class="frame-lbl" id="gt-sat-lbl">0.50</span>
-      <label>GT lit</label>
-      <input type="range" id="gt-lit" min="0.1" max="0.9" step="0.02" value="0.62" style="min-width:80px;" title="Lightness of GT's rainbow (low=dark, high=pale/white).">
-      <span class="frame-lbl" id="gt-lit-lbl">0.62</span>
-      <label>Pred sat</label>
-      <input type="range" id="pred-sat" min="0" max="1" step="0.02" value="0.62" style="min-width:80px;">
-      <span class="frame-lbl" id="pred-sat-lbl">0.62</span>
-      <label>Pred lit</label>
-      <input type="range" id="pred-lit" min="0.1" max="0.9" step="0.02" value="0.46" style="min-width:80px;">
-      <span class="frame-lbl" id="pred-lit-lbl">0.46</span>
-      <label style="margin-left:18px;"># trajectories</label>
-      <input type="range" id="n-keep" min="1" max="30" step="1" value="8" style="min-width:120px;">
-      <span class="frame-lbl" id="n-keep-lbl">8</span>
-      <label style="margin-left:14px;">Ball stride</label>
-      <input type="range" id="ball-stride" min="1" max="10" step="1" value="3" style="min-width:90px;">
-      <span class="frame-lbl" id="ball-stride-lbl">3</span>
-    </div>
-    <div class="row-c">
-      <label>Ball size</label>
-      <input type="range" id="ball-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
-      <span class="frame-lbl" id="ball-scale-lbl">1.0×</span>
-      <label style="margin-left:14px;">Endpoint size</label>
-      <input type="range" id="endpoint-scale" min="1" max="3.5" step="0.05" value="1.6" style="min-width:120px;" title="Multiplier (× largest trail ball) for the start/end object-colour markers.">
-      <span class="frame-lbl" id="endpoint-scale-lbl">1.6×</span>
-      <label style="margin-left:14px;" title="Panel ⑤ filter: keep a scene-PC point only if its K-th nearest tracked point is within R metres.">Obj R(m)</label>
-      <input type="range" id="obj-R" min="0.005" max="0.20" step="0.005" value="0.05" style="min-width:90px;">
-      <span class="frame-lbl" id="obj-R-lbl">0.05</span>
-      <label style="margin-left:8px;">Obj K</label>
-      <input type="range" id="obj-K" min="1" max="20" step="1" value="4" style="min-width:80px;">
-      <span class="frame-lbl" id="obj-K-lbl">4</span>
-      <label style="margin-left:8px;">Obj dot</label>
-      <input type="range" id="obj-dot" min="0.5" max="6" step="0.1" value="2.5" style="min-width:80px;">
-      <span class="frame-lbl" id="obj-dot-lbl">2.5×</span>
-      <label style="margin-left:14px;">Line width</label>
-      <input type="range" id="line-scale" min="0.4" max="3" step="0.05" value="1" style="min-width:120px;">
-      <span class="frame-lbl" id="line-scale-lbl">1.0×</span>
-      <label style="margin-left:14px;">Gradient floor</label>
-      <input type="range" id="mix-lo" min="0" max="0.95" step="0.02" value="0.18" style="min-width:120px;" title="0 = oldest is white, 1 = no gradient">
-      <span class="frame-lbl" id="mix-lo-lbl">0.18</span>
-      <label style="margin-left:14px;">Gradient curve</label>
-      <input type="range" id="t-exp" min="0.2" max="2" step="0.05" value="1" style="min-width:120px;" title="<1 boosts saturation of early frames">
-      <span class="frame-lbl" id="t-exp-lbl">1.0</span>
-    </div>
-    <div class="row-c">
-      <label>Toggle layers in big panel:</label>
-      <button class="btn on" id="t-pc">scene point cloud</button>
-      <button class="btn on" id="t-hist">history</button>
-      <button class="btn on" id="t-gt">GT future</button>
-      <button class="btn on" id="t-pred">prediction</button>
-      <button class="btn" id="t-err">GT↔Pred error vectors</button>
-      <button class="btn" id="t-raw">raw tracks (unfiltered, unsmoothed)</button>
-      <button class="btn" id="t-balls">trajectory balls</button>
-      <button class="btn" id="t-endpoints">endpoint markers</button>
-      <button class="btn" id="t-camera-reset">reset camera</button>
-    </div>
-    <div class="row-c">
-      <label>History color:</label>
-      <select class="btn" id="hist-color-sel" style="font-size:.72rem;">
-        <option value="gt" selected>match GT</option>
-        <option value="pred">match prediction</option>
-        <option value="own">own (baby blue)</option>
-      </select>
-      <label style="margin-left:18px;">PC size:</label>
-      <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12" style="min-width:140px;">
-      <span class="frame-lbl" id="pc-size-lbl">12.0</span>
-      <label style="margin-left:18px;">Camera: WASD pan · E up · C down · drag to orbit · scroll to zoom</label>
-    </div>
-
-    <!-- Manual trajectory pickers — let the user override the auto-curated
-         GT and Raw subsets. Each listbox is populated with every valid
-         track index sorted by jump-score (smoothest-first for GT, jumpiest-
-         first for Raw). The "# trajectories" slider preselects the top-N;
-         user can ctrl/⌘-click to add/remove individual tracks. -->
-    <div class="row-c">
-      <label title="Pick which GT trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the smoothest-N driven by the # trajectories slider; manual changes override.">GT picks:</label>
-      <select id="gt-pick" multiple size="4" style="min-width:180px;font-family:monospace;font-size:.7rem;padding:2px 4px;"></select>
-      <button class="btn" id="gt-pick-reset" title="Reset selection to the smoothest-N (auto)" style="font-size:.7rem;">↺</button>
-      <label style="margin-left:14px;" title="Pick which raw trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the jumpiest-N; manual changes override.">Raw picks:</label>
-      <select id="raw-pick" multiple size="4" style="min-width:180px;font-family:monospace;font-size:.7rem;padding:2px 4px;"></select>
-      <button class="btn" id="raw-pick-reset" title="Reset selection to the jumpiest-N (auto)" style="font-size:.7rem;">↺</button>
-    </div>
-
-    <!-- Full-video panel layer toggles + colour pickers. Hidden when the
-         loaded clip ships no full_video bundle. -->
-    <div class="row-c" id="row-full-controls" style="display:none;">
-      <label>Full-video panel layers:</label>
-      <button class="btn on" id="t-full-gt">filtered GT</button>
-      <input type="color" id="full-gt-col" value="#22c55e" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Colour for the filtered/smoothed full-video tracks (GT-equivalent).">
-      <button class="btn on" id="t-full-raw">raw cotracker</button>
-      <input type="color" id="full-raw-col" value="#ef4444" style="width:30px;height:24px;border:1px solid var(--border);border-radius:4px;padding:0;background:none;cursor:pointer;" title="Vivid endpoint colour for the raw cotracker layer (pale → vivid gradient mirrors the clip raw style).">
-    </div>
-    <div class="row-c">
-      <span class="legend">
-        <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
-        <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
-        <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
-        <span><span class="sw" style="background:#ef4444"></span>raw tracks (unfiltered, unsmoothed)</span>
-        <span><span class="sw" style="background:#fbbf24"></span>per-point dot color = sampled object RGB (frame 0)</span>
-      </span>
-    </div>
-  </div>
-
   <footer class="foot">
     <p>MotionPlanner / 4D point-tracking teaser. Code:
       <a href="https://github.com/jianingnz/motion-teaser-viz" target="_blank">github.com/jianingnz/motion-teaser-viz</a>
+      · press <kbd style="font-family:monospace;background:#f3f4f6;padding:1px 5px;border:1px solid var(--border);border-radius:3px;font-size:.7rem;">.</kbd> to toggle the controls panel
     </p>
   </footer>
 </div>
+
+<!-- Closed-state handle. Click to open the sidebar. -->
+<button class="sb-handle" id="sb-handle" title="Open controls (or press .)">
+  <span class="ic">⚙</span>
+  <span class="vt">controls</span>
+</button>
+
+<!-- ──────────────── Right-side controls panel ──────────────── -->
+<aside class="sidebar" id="sidebar" aria-label="Visualization controls">
+  <div class="sb-head">
+    <h2>Controls</h2>
+    <div class="sb-head-actions">
+      <button class="icon-btn" id="sb-reset" title="Reset every control to the page's startup values">
+        <span class="ic">↺</span><span>Reset</span>
+      </button>
+      <button class="icon-btn" id="sb-close" title="Close (or press .)">
+        <span class="ic">✕</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Preset save/load row, sits above the accordion -->
+  <div class="preset-row">
+    <select id="preset-sel" title="Load a saved preset"><option value="">— preset —</option></select>
+    <button class="btn" id="preset-save" title="Save the current settings as a named preset">Save</button>
+    <button class="btn" id="preset-del" title="Delete the selected preset">Del</button>
+  </div>
+
+  <div class="sb-body">
+
+    <!-- ① Playback ─────────────────────────────────────────────────── -->
+    <details class="sb-section" open>
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">▶</span> Playback
+      </summary>
+      <div class="sb-body-inner">
+        <div class="pb-row">
+          <button class="btn" id="play-btn" title="Play / pause">▶</button>
+          <button class="btn" id="step-back" title="Step one frame back">◀|</button>
+          <button class="btn" id="step-fwd"  title="Step one frame forward">|▶</button>
+          <select class="btn" id="rate-sel" title="Playback speed">
+            <option value="1">1×</option>
+            <option value="0.5">0.5×</option>
+            <option value="0.25" selected>0.25×</option>
+            <option value="0.1">0.1×</option>
+          </select>
+          <span class="frame-lbl" id="frame-lbl">frame 0/0</span>
+        </div>
+        <div class="fld">
+          <input type="range" id="scrub" min="0" max="100" step="any" value="0">
+        </div>
+        <div style="font-size:.65rem;color:var(--text-muted);margin-top:6px;">
+          Camera: drag to orbit · scroll to zoom · WASD pan · E/C up/down
+        </div>
+      </div>
+    </details>
+
+    <!-- ② Color palette ──────────────────────────────────────────────── -->
+    <details class="sb-section" open>
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">🎨</span> Colors
+        <span class="summary-tag">trail / endpoint / bg</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span>Palette presets</span></div>
+          <div class="palette-row" id="palette-row"></div>
+        </div>
+
+        <div class="color-row">
+          <input type="color" id="col-gt" value="#f0529c" title="GT trail color (used when rainbow mode is OFF).">
+          <span class="cn">GT future <span class="h" id="col-gt-h">#f0529c</span></span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-pred" value="#34d399" title="Pred trail color (used when rainbow mode is OFF).">
+          <span class="cn">Prediction <span class="h" id="col-pred-h">#34d399</span></span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-endpoint" value="#fde047" title="Bright accent for the start/end markers.">
+          <span class="cn">Endpoint accent <span class="h" id="col-endpoint-h">#fde047</span></span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-bg" value="#555555" title="Background color for every 3D panel.">
+          <span class="cn">3D panel bg <span class="h" id="col-bg-h">#555555</span></span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-page-top" value="#ffffff" title="Page background — top of the gradient.">
+          <span class="cn">Page bg (top) <span class="h" id="col-page-top-h">#ffffff</span></span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-page-bot" value="#f3f4f6" title="Page background — bottom of the gradient.">
+          <span class="cn">Page bg (bottom) <span class="h" id="col-page-bot-h">#f3f4f6</span></span>
+        </div>
+
+        <div class="fld" style="margin-top:8px;">
+          <div class="lbl-row"><span>History color</span></div>
+          <select class="btn" id="hist-color-sel">
+            <option value="gt" selected>match GT</option>
+            <option value="pred">match prediction</option>
+            <option value="own">own (baby blue)</option>
+          </select>
+        </div>
+      </div>
+    </details>
+
+    <!-- ③ Time gradient & rainbow ──────────────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">🌈</span> Time gradient
+        <span class="summary-tag">rainbow / saturation / curve</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="toggle-grid">
+          <button class="btn on full" id="t-rainbow" title="Cycle hue across time for GT/Pred (muted, distinguishable).">Rainbow GT/Pred</button>
+        </div>
+        <div class="fld-grid" style="margin-top:10px;">
+          <div class="fld">
+            <div class="lbl-row"><span>GT saturation</span><span class="v" id="gt-sat-lbl">0.50</span></div>
+            <input type="range" id="gt-sat" min="0" max="1" step="0.02" value="0.50">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>GT lightness</span><span class="v" id="gt-lit-lbl">0.62</span></div>
+            <input type="range" id="gt-lit" min="0.1" max="0.9" step="0.02" value="0.62">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Pred saturation</span><span class="v" id="pred-sat-lbl">0.62</span></div>
+            <input type="range" id="pred-sat" min="0" max="1" step="0.02" value="0.62">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Pred lightness</span><span class="v" id="pred-lit-lbl">0.46</span></div>
+            <input type="range" id="pred-lit" min="0.1" max="0.9" step="0.02" value="0.46">
+          </div>
+        </div>
+        <div class="fld" style="margin-top:10px;">
+          <div class="lbl-row"><span>Gradient floor</span><span class="v" id="mix-lo-lbl">0.18</span></div>
+          <input type="range" id="mix-lo" min="0" max="0.95" step="0.02" value="0.18" title="0 = oldest is white, 1 = no gradient">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span>Gradient curve</span><span class="v" id="t-exp-lbl">1.0</span></div>
+          <input type="range" id="t-exp" min="0.2" max="2" step="0.05" value="1" title="<1 boosts saturation of early frames">
+        </div>
+      </div>
+    </details>
+
+    <!-- ④ Trajectory rendering ──────────────────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">✨</span> Trajectory style
+        <span class="summary-tag">balls / lines / count</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span># trajectories</span><span class="v" id="n-keep-lbl">8</span></div>
+          <input type="range" id="n-keep" min="1" max="30" step="1" value="8">
+        </div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span>Ball stride</span><span class="v" id="ball-stride-lbl">3</span></div>
+            <input type="range" id="ball-stride" min="1" max="10" step="1" value="3">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Ball size</span><span class="v" id="ball-scale-lbl">1.0×</span></div>
+            <input type="range" id="ball-scale" min="0.4" max="3" step="0.05" value="1">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Endpoint size</span><span class="v" id="endpoint-scale-lbl">1.6×</span></div>
+            <input type="range" id="endpoint-scale" min="1" max="3.5" step="0.05" value="1.6" title="Multiplier (× largest trail ball) for the start/end markers.">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Line width</span><span class="v" id="line-scale-lbl">1.0×</span></div>
+            <input type="range" id="line-scale" min="0.4" max="3" step="0.05" value="1">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Smallest ball as a fraction of the largest. 1.0 = uniform-size balls.">Ball min/max ratio</span><span class="v" id="ball-min-frac-lbl">0.48</span></div>
+            <input type="range" id="ball-min-frac" min="0.2" max="1.0" step="0.02" value="0.48">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="0 = no depth shading on the scene PC. Higher dims far-away points so the foreground reads.">PC depth shade</span><span class="v" id="pc-shade-lbl">0.00</span></div>
+            <input type="range" id="pc-shade" min="0" max="1.5" step="0.05" value="0">
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- ④b Sampling & track selection ───────────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">📊</span> Sampling
+        <span class="summary-tag">trail length / strategy</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span title="How many trailing frames are rendered behind the current playhead in the live big panel.">Trail length (frames)</span><span class="v" id="trail-len-lbl">12</span></div>
+          <input type="range" id="trail-len" min="2" max="40" step="1" value="12">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Catmull–Rom samples per inter-frame interval. Higher = smoother curves but slower.">Smooth samples</span><span class="v" id="smooth-samples-lbl">8</span></div>
+          <input type="range" id="smooth-samples" min="2" max="20" step="1" value="8">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span>GT selection strategy</span></div>
+          <select class="btn" id="gt-strategy" title="How the auto-curated GT track set is chosen.">
+            <option value="smoothest" selected>Smoothest first (default)</option>
+            <option value="jumpiest">Jumpiest first</option>
+            <option value="random">Random</option>
+            <option value="uniform">Uniform spread (every Nth)</option>
+          </select>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span># raw tracks</span><span class="v" id="n-raw-lbl">18</span></div>
+          <input type="range" id="n-raw" min="0" max="60" step="1" value="18" title="How many raw cotracker tracks are rendered when the raw layer is on.">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Of the raw tracks, this many come from the top-jumpiest set (the rest are mixed across the jump-score distribution).">Jumpy fraction (mixed mode)</span><span class="v" id="n-raw-jumpy-lbl">5</span></div>
+          <input type="range" id="n-raw-jumpy" min="0" max="40" step="1" value="5">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span>Raw selection strategy</span></div>
+          <select class="btn" id="raw-strategy" title="How the auto-curated raw track set is chosen.">
+            <option value="mixed" selected>Mixed (cross-section + jumpy bias)</option>
+            <option value="jumpiest">Jumpiest only</option>
+            <option value="smoothest">Smoothest only</option>
+            <option value="random">Random</option>
+            <option value="uniform">Uniform spread (every Nth)</option>
+          </select>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑤ Point cloud ─────────────────────────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">☁</span> Point cloud
+        <span class="summary-tag">size / object filter</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span>PC point size</span><span class="v" id="pc-size-lbl">12.0</span></div>
+          <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12">
+        </div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Panel ⑤ filter: keep a scene-PC point only if its K-th nearest tracked point is within R metres.">Object R (m)</span><span class="v" id="obj-R-lbl">0.05</span></div>
+            <input type="range" id="obj-R" min="0.005" max="0.20" step="0.005" value="0.05">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Object K</span><span class="v" id="obj-K-lbl">4</span></div>
+            <input type="range" id="obj-K" min="1" max="20" step="1" value="4">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span>Object dot</span><span class="v" id="obj-dot-lbl">2.5×</span></div>
+            <input type="range" id="obj-dot" min="0.5" max="6" step="0.1" value="2.5">
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑤b Paper figure (static composite) ─────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">📄</span> Paper figure
+        <span class="summary-tag">static composite knobs</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span title="Drop this many frames off the END of the GT trail in the paper-figure panel only — kills residual track noise at the tail.">GT tail drop (paper)</span><span class="v" id="paper-tail-lbl">9</span></div>
+          <input type="range" id="paper-tail" min="0" max="20" step="1" value="9">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Paper-mode gradient pale-floor — k(t) = MIX_LO + (1-MIX_LO)·t^EXP">Paper gradient floor</span><span class="v" id="paper-mix-lo-lbl">0.15</span></div>
+          <input type="range" id="paper-mix-lo" min="0" max="0.95" step="0.02" value="0.15">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Paper-mode gradient curve — lower = faster transition → smaller pale region.">Paper gradient curve</span><span class="v" id="paper-t-exp-lbl">0.30</span></div>
+          <input type="range" id="paper-t-exp" min="0.1" max="2" step="0.05" value="0.30">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Number of raw tracks in the paper figure — denser than live to make noise visible in a still.">Paper # raw tracks</span><span class="v" id="paper-n-raw-lbl">28</span></div>
+          <input type="range" id="paper-n-raw" min="0" max="80" step="1" value="28">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span># raw jumpy (paper)</span><span class="v" id="paper-n-raw-jumpy-lbl">14</span></div>
+          <input type="range" id="paper-n-raw-jumpy" min="0" max="60" step="1" value="14">
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑥ Layer toggles ──────────────────────────────────────────── -->
+    <details class="sb-section" open>
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">👁</span> Layers
+        <span class="summary-tag">show / hide in big panel</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="toggle-grid">
+          <button class="btn on" id="t-pc">scene PC</button>
+          <button class="btn on" id="t-hist">history</button>
+          <button class="btn on" id="t-gt">GT future</button>
+          <button class="btn on" id="t-pred">prediction</button>
+          <button class="btn full" id="t-err">GT↔Pred error vectors</button>
+          <button class="btn full" id="t-raw">raw tracks (unfiltered)</button>
+          <button class="btn" id="t-balls">trajectory balls</button>
+          <button class="btn" id="t-endpoints">endpoints</button>
+          <button class="btn full" id="t-camera-reset">↻ reset camera</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑦ Trajectory selection ───────────────────────────────────── -->
+    <details class="sb-section">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">🎯</span> Trajectory picks
+        <span class="summary-tag">manual track override</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span title="Pick which GT trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the smoothest-N driven by the # trajectories slider; manual changes override.">GT picks (smoothest first)</span></div>
+          <div class="pick-row">
+            <select id="gt-pick" multiple size="6"></select>
+            <button class="btn" id="gt-pick-reset" title="Reset selection to the smoothest-N (auto)">↺</button>
+          </div>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Pick which raw trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the jumpiest-N; manual changes override.">Raw picks (jumpiest first)</span></div>
+          <div class="pick-row">
+            <select id="raw-pick" multiple size="6"></select>
+            <button class="btn" id="raw-pick-reset" title="Reset selection to the jumpiest-N (auto)">↺</button>
+          </div>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑧ Full-video panel layers (conditional) ─────────────────── -->
+    <details class="sb-section" id="row-full-controls" style="display:none;">
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg>
+        <span class="ico">🎞</span> Full-video panel
+        <span class="summary-tag">layers + colors</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="toggle-grid" style="margin-bottom:10px;">
+          <button class="btn on" id="t-full-gt">filtered GT</button>
+          <button class="btn on" id="t-full-raw">raw cotracker</button>
+        </div>
+        <div class="color-row">
+          <input type="color" id="full-gt-col" value="#22c55e" title="Color for the filtered/smoothed full-video tracks (GT-equivalent).">
+          <span class="cn">Filtered GT</span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="full-raw-col" value="#ef4444" title="Vivid endpoint color for the raw cotracker layer (pale → vivid gradient mirrors the clip raw style).">
+          <span class="cn">Raw cotracker</span>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑨ Legend (compact) ───────────────────────────────────────── -->
+    <div class="sb-legend">
+      <div class="legend">
+        <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
+        <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
+        <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
+        <span><span class="sw" style="background:#ef4444"></span>raw tracks (unfiltered)</span>
+        <span><span class="sw" style="background:#fbbf24"></span>per-point dot = sampled object RGB (frame 0)</span>
+      </div>
+    </div>
+  </div>
+</aside>
 
 <script type="module">
 import * as THREE from 'three';
@@ -561,6 +1018,25 @@ const Settings = {
   rainbowHueRange: 330,        // degrees swept across the clip (avoid wrap-back to red)
   gtSat:   0.50, gtLit:   0.62,   // GT rainbow profile (lighter, pastel)
   predSat: 0.62, predLit: 0.46,   // Pred rainbow profile (deeper, richer)
+
+  // ── Sampling & strategy (live-tunable) ──────────────────────────
+  trailLen:       12,    // frames of trail behind the playhead in the live big panel
+  smoothSamples:   8,    // catmull–rom samples per inter-frame interval
+  nRawKeep:       18,    // raw tracks rendered when the raw layer is ON
+  nRawJumpy:       5,    // of nRawKeep, this many forced-from-jumpiest pool
+  gtStrategy:  'smoothest',  // 'smoothest' | 'jumpiest' | 'random' | 'uniform'
+  rawStrategy: 'mixed',      // 'mixed' | 'jumpiest' | 'smoothest' | 'random' | 'uniform'
+
+  // ── Paper figure (static composite) ─────────────────────────────
+  paperGtTailDrop: 9,
+  paperMixLo:      0.15,
+  paperTExp:       0.30,
+  nRawPaper:      28,
+  nRawPaperJumpy: 14,
+
+  // ── Trail balls + PC ───────────────────────────────────────────
+  ballMinFrac:    0.48,  // smallest ball / largest ball ratio in the trail
+  pcDepthShade:   0.0,   // 0 = no shading; >0 dims far-away PC points
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -713,6 +1189,59 @@ function selectMixedRawIdx(scores, n_total, n_jumpy) {
   return merged;
 }
 
+// Random selection — picks N from the valid pool with a fixed seed so the
+// visualization stays stable across re-renders (otherwise every slider tweak
+// would resample). Caller supplies a deterministic seed (e.g. valid.length).
+function _seededRand(seed) {
+  let s = seed | 0; if (s === 0) s = 1;
+  return () => {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    return ((s >>> 0) / 4294967295);
+  };
+}
+function selectRandomIdx(scores, n_keep, seed) {
+  const valid = [];
+  for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
+  if (!valid.length) return [];
+  const rnd = _seededRand(seed || valid.length);
+  // Fisher–Yates the first n_keep slots.
+  const arr = valid.slice();
+  const n = Math.min(n_keep, arr.length);
+  for (let i = 0; i < n; i++) {
+    const j = i + Math.floor(rnd() * (arr.length - i));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  const out = arr.slice(0, n);
+  out.sort((a, b) => a - b);
+  return out;
+}
+function selectUniformIdx(scores, n_keep) {
+  const valid = [];
+  for (let i = 0; i < scores.length; i++) if (scores[i] > 0) valid.push(i);
+  if (!valid.length) return [];
+  const n = Math.min(n_keep, valid.length);
+  const step = valid.length / n;
+  const out = [];
+  for (let k = 0; k < n; k++) {
+    out.push(valid[Math.min(valid.length - 1, Math.floor(k * step + 0.5))]);
+  }
+  return [...new Set(out)].sort((a, b) => a - b);
+}
+
+// Strategy dispatch: returns a curated index list given a strategy name.
+// Used by both the GT (smoothest-first by default) and Raw (mixed by default)
+// pipelines, so the user can flip strategies live from the sidebar.
+function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
+  switch (strategy) {
+    case 'smoothest': return selectSmoothestIdx(scores, n_keep);
+    case 'jumpiest':  return selectJumpiestIdx(scores, n_keep);
+    case 'random':    return selectRandomIdx(scores, n_keep, scores.length);
+    case 'uniform':   return selectUniformIdx(scores, n_keep);
+    case 'mixed':     return selectMixedRawIdx(scores, n_keep, n_jumpy);
+    default:          return selectSmoothestIdx(scores, n_keep);
+  }
+}
+
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
 // Standard HSL→RGB. h in degrees, s/l in 0..1. Returns [r,g,b] in 0..1
 // (shader-ready). Used for the rainbow gradient mode: same hue progression
@@ -764,7 +1293,7 @@ function _useRainbowFor(role) {
 }
 
 // ──────────── Catmull-Rom smoothing ────────────
-function smoothCurve3(flat, samples = SMOOTH_SAMPLES) {
+function smoothCurve3(flat, samples = Settings.smoothSamples) {
   const n = flat.length / 3;
   if (n < 3) return flat;
   const pts = [];
@@ -778,7 +1307,7 @@ function smoothCurve3(flat, samples = SMOOTH_SAMPLES) {
   return out;
 }
 
-function smoothPath2D(pts, samples = SMOOTH_SAMPLES) {
+function smoothPath2D(pts, samples = Settings.smoothSamples) {
   if (pts.length < 3) return pts;
   const out = [pts[0]];
   for (let i = 0; i < pts.length - 1; i++) {
@@ -1005,7 +1534,7 @@ class Panel {
     const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 1.00;
     const MIX_HI = 1.00;
     const isPaperGrad = mixLoOverride !== null;
-    const T_EXP = isPaperGrad ? PAPER_T_EXP : Settings.tExp;
+    const T_EXP = isPaperGrad ? Settings.paperTExp : Settings.tExp;
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
     const useRainbow = _useRainbowFor(role);
     for (const p of ptIdx) {
@@ -1071,7 +1600,7 @@ class Panel {
     const isPaperGrad = mixLoOverride !== null;
     const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 0.92;
     const MIX_HI = 1.00;
-    const T_EXP  = isPaperGrad ? PAPER_T_EXP : Settings.tExp;
+    const T_EXP  = isPaperGrad ? Settings.paperTExp : Settings.tExp;
     const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
     const useRainbow = _useRainbowFor(role);
@@ -1119,10 +1648,15 @@ class Panel {
   _ballRadii() {
     const isPaper = !!this.opts.paperMode;
     const isBig   = this.opts.lineWidth >= TRAIL_LINE_PX_BIG - 0.01;
-    let rMin, rMax;
-    if (isPaper)    { rMin = TRAIL_BALL_R_MIN_PAPER; rMax = TRAIL_BALL_R_MAX_PAPER; }
-    else if (isBig) { rMin = TRAIL_BALL_R_MIN_BIG;   rMax = TRAIL_BALL_R_MAX_BIG; }
-    else            { rMin = TRAIL_BALL_R_MIN_SM;    rMax = TRAIL_BALL_R_MAX_SM; }
+    // rMax is the per-panel "newest ball" target; rMin is derived from the
+    // user-tunable ratio so the user can move from "fixed-size dots"
+    // (ratio = 1.0) to "strong size gradient" (ratio ≈ 0.3).
+    let rMax;
+    if (isPaper)    { rMax = TRAIL_BALL_R_MAX_PAPER; }
+    else if (isBig) { rMax = TRAIL_BALL_R_MAX_BIG; }
+    else            { rMax = TRAIL_BALL_R_MAX_SM; }
+    const ratio = Math.max(0, Math.min(1, Settings.ballMinFrac ?? 0.48));
+    const rMin  = rMax * ratio;
     return [rMin * Settings.ballScale, rMax * Settings.ballScale];
   }
 
@@ -1253,15 +1787,15 @@ class Panel {
     const rawIdxList = isPaper ? rawIdxPaper : rawIdxLive;
     if (this.opts.showRaw && rawSrc3d && rawIdxList.length) {
       const rawStart = isPaper ? 0
-                       : ((lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - TRAIL_LEN));
+                       : ((lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - Settings.trailLen));
       const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
       const baseR = this.lineBaseCols.raw;
       const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
-      const MIX_LO = isPaper ? PAPER_MIX_LO : 0.18;
+      const MIX_LO = isPaper ? Settings.paperMixLo : 0.18;
       const MIX_HI = 1.00;
-      const T_EXP  = isPaper ? PAPER_T_EXP : 1.00;
+      const T_EXP  = isPaper ? Settings.paperTExp : 1.00;
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -1303,7 +1837,7 @@ class Panel {
     // reads as one continuous time-encoded sweep from frame 0 → frame T-1.
     // Each layer just contributes its hue; the gradient curve and global span
     // are the same for all three.
-    const paperMix   = isPaper ? PAPER_MIX_LO : null;
+    const paperMix   = isPaper ? Settings.paperMixLo : null;
     const T_TOTAL    = T_clip;
 
     if (this.opts.showHist && nHist > 0) {
@@ -1330,7 +1864,7 @@ class Panel {
     // override this drop count (e.g. the full-video paper panel sets it to
     // 0 — its tracks are already filtered + smoothed across the full video,
     // so no tail-noise mask is needed).
-    const tailDrop = cfg.paperGtTailDrop ?? PAPER_GT_TAIL_DROP;
+    const tailDrop = cfg.paperGtTailDrop ?? Settings.paperGtTailDrop;
     const paperGtEnd = Math.max(nHist, T_clip - tailDrop);
     if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
       // No more TRAIL_LEN sliding window — show the *full* GT trail from the
@@ -1552,7 +2086,7 @@ async function init() {
   // smoothest-globally, then keep the N_GT_KEEP cleanest in the TAIL window.
   // This lets us be stricter on tail noise without dropping the track count.
   {
-    const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - PAPER_GT_TAIL_DROP);
+    const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - Settings.paperGtTailDrop);
     const poolSize   = Math.min(cfg.gt_3d[0].length,
                                 Math.ceil(N_GT_KEEP * PAPER_GT_POOL_MULT));
     const pool       = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), poolSize);
@@ -1565,8 +2099,11 @@ async function init() {
 
   if (clipData.raw_3d && clipData.raw_3d.length) {
     const rawScores = pointMaxJumpScores(clipData.raw_3d);
-    clipData._rawIdx      = selectMixedRawIdx(rawScores, N_RAW_KEEP, N_RAW_JUMPY);
-    clipData._rawIdxPaper = selectMixedRawIdx(rawScores, N_RAW_PAPER, N_RAW_PAPER_JUMPY);
+    clipData._rawScoresCached = rawScores;
+    clipData._rawIdx      = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                                Settings.nRawKeep,    Settings.nRawJumpy);
+    clipData._rawIdxPaper = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                                Settings.nRawPaper,   Settings.nRawPaperJumpy);
   }
   console.log(`good GT idx:       ${cfg._goodIdx.length}/${cfg.gt_3d[0].length}`);
   console.log(`good GT idx (paper, tail-clean): ${cfg._goodIdxPaper.length}`);
@@ -1783,8 +2320,10 @@ function buildFullCfg(clipData) {
   let rawIdx = [], rawIdxPaper = [];
   if (rawTracks?.length) {
     const rawScores = pointMaxJumpScores(rawTracks);
-    rawIdx      = selectMixedRawIdx(rawScores, N_RAW_KEEP, N_RAW_JUMPY);
-    rawIdxPaper = selectMixedRawIdx(rawScores, N_RAW_PAPER, N_RAW_PAPER_JUMPY);
+    rawIdx      = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                      Settings.nRawKeep,    Settings.nRawJumpy);
+    rawIdxPaper = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                      Settings.nRawPaper,   Settings.nRawPaperJumpy);
   }
   // pred_3d aliased to the same array; showPred is off on the panel so it
   // never gets rendered, but _addEndpointSpheres reads pred_3d defensively.
@@ -2013,7 +2552,8 @@ function ensureFullPicks() {
       scores[p] = maxd;
     }
     clipData._fullRawScores = scores;
-    clipData._fullRawIdx = selectMixedRawIdx(scores, N_RAW_KEEP, N_RAW_JUMPY);
+    clipData._fullRawIdx = selectIdxByStrategy(Settings.rawStrategy, scores,
+                                                Settings.nRawKeep, Settings.nRawJumpy);
   }
 }
 
@@ -2226,9 +2766,12 @@ function bindTrajectoryPickers() {
   });
   document.getElementById('raw-pick-reset')?.addEventListener('click', () => {
     if (rawScores.length) {
-      clipData._rawIdx      = selectMixedRawIdx(rawScores, N_RAW_KEEP, N_RAW_JUMPY);
-      clipData._rawIdxPaper = selectMixedRawIdx(rawScores, N_RAW_PAPER, N_RAW_PAPER_JUMPY);
-      fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx), true);
+      clipData._rawIdx      = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                                  Settings.nRawKeep,    Settings.nRawJumpy);
+      clipData._rawIdxPaper = selectIdxByStrategy(Settings.rawStrategy, rawScores,
+                                                  Settings.nRawPaper,   Settings.nRawPaperJumpy);
+      fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx),
+                           Settings.rawStrategy !== 'smoothest');
     }
     rerenderAll();
   });
@@ -2423,7 +2966,7 @@ function drawVideoOverlay(fiFrac) {
 
   // Raw tracks first, with the same trailing-window logic as GT/Pred.
   if (App.showRaw && clipData.raw_2d && clipData._rawIdx) {
-    const rawStart = (lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - TRAIL_LEN);
+    const rawStart = (lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - Settings.trailLen);
     drawRaw2D(ctx, clipData.raw_2d, clipData._rawIdx, rawStart, lastFi, W, H);
   }
 
@@ -2680,6 +3223,84 @@ function bindControls() {
   wireSlider('pred-lit', 'pred-lit-lbl', v => v.toFixed(2),
              v => { Settings.predLit = v; onRainbowKnob(); });
 
+  // ── Sampling section ──────────────────────────────────────────────
+  wireSlider('trail-len', 'trail-len-lbl', v => `${v|0}`,
+             v => { Settings.trailLen = v|0; rerenderAll(); });
+  wireSlider('smooth-samples', 'smooth-samples-lbl', v => `${v|0}`,
+             v => { Settings.smoothSamples = Math.max(1, v|0); rerenderAll(); });
+  wireSlider('n-raw', 'n-raw-lbl', v => `${v|0}`,
+             v => { Settings.nRawKeep = v|0; recomputeRawIdx(); rerenderAll(); });
+  wireSlider('n-raw-jumpy', 'n-raw-jumpy-lbl', v => `${v|0}`,
+             v => { Settings.nRawJumpy = v|0; recomputeRawIdx(); rerenderAll(); });
+  document.getElementById('gt-strategy')?.addEventListener('change', (e) => {
+    Settings.gtStrategy = e.target.value;
+    recomputeGtIdx(Settings.nKeep);
+    const gs = clipData?._gtScoresCached;
+    if (gs && gs.length) fillTrajectoryPicker('gt-pick', gs, new Set(cfg._goodIdx || []),
+                                              Settings.gtStrategy === 'jumpiest');
+    rerenderAll();
+  });
+  document.getElementById('raw-strategy')?.addEventListener('change', (e) => {
+    Settings.rawStrategy = e.target.value;
+    recomputeRawIdx();
+    rerenderAll();
+  });
+
+  // ── Paper figure section ──────────────────────────────────────────
+  wireSlider('paper-tail', 'paper-tail-lbl', v => `${v|0}`,
+             v => { Settings.paperGtTailDrop = v|0; recomputeGtIdx(Settings.nKeep); rerenderAll(); });
+  wireSlider('paper-mix-lo', 'paper-mix-lo-lbl', v => v.toFixed(2),
+             v => { Settings.paperMixLo = v; rerenderAll(); });
+  wireSlider('paper-t-exp', 'paper-t-exp-lbl', v => v.toFixed(2),
+             v => { Settings.paperTExp = v; rerenderAll(); });
+  wireSlider('paper-n-raw', 'paper-n-raw-lbl', v => `${v|0}`,
+             v => { Settings.nRawPaper = v|0; recomputeRawIdx(); rerenderAll(); });
+  wireSlider('paper-n-raw-jumpy', 'paper-n-raw-jumpy-lbl', v => `${v|0}`,
+             v => { Settings.nRawPaperJumpy = v|0; recomputeRawIdx(); rerenderAll(); });
+
+  // ── Trajectory ratio + PC depth shade ─────────────────────────────
+  wireSlider('ball-min-frac', 'ball-min-frac-lbl', v => v.toFixed(2),
+             v => { Settings.ballMinFrac = v; rerenderAll(); });
+  wireSlider('pc-shade', 'pc-shade-lbl', v => v.toFixed(2),
+             v => {
+               Settings.pcDepthShade = v;
+               for (const p of panels) {
+                 if (p.pcMaterial) p.pcMaterial.uniforms.uShade.value = v;
+               }
+               rerenderAll();
+             });
+
+  // ── Page background colors ────────────────────────────────────────
+  const setPageBg = () => {
+    const top = document.getElementById('col-page-top').value;
+    const bot = document.getElementById('col-page-bot').value;
+    document.documentElement.style.setProperty('--page-bg-top', top);
+    document.documentElement.style.setProperty('--page-bg-bottom', bot);
+    document.getElementById('col-page-top-h').textContent = top;
+    document.getElementById('col-page-bot-h').textContent = bot;
+  };
+  document.getElementById('col-page-top')?.addEventListener('input', setPageBg);
+  document.getElementById('col-page-bot')?.addEventListener('input', setPageBg);
+
+  // Live hex echo for the existing color pickers (purely cosmetic).
+  const echo = (id, hid) => {
+    const el = document.getElementById(id);
+    const h  = document.getElementById(hid);
+    if (!el || !h) return;
+    const sync = () => { h.textContent = el.value; };
+    el.addEventListener('input', sync);
+    sync();
+  };
+  echo('col-gt',       'col-gt-h');
+  echo('col-pred',     'col-pred-h');
+  echo('col-endpoint', 'col-endpoint-h');
+  echo('col-bg',       'col-bg-h');
+
+  // ── Sidebar open/close + accordion persistence ────────────────────
+  bindSidebar();
+  bindPalettes();
+  bindPresets();
+
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
   bindPcSourceSelector();
@@ -2736,17 +3357,46 @@ function recomputeGtIdx(n) {
   const P = cfg.gt_3d[0]?.length || 0;
   if (!P) return;
   n = Math.max(1, Math.min(P, n | 0));
-  cfg._goodIdx = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), n);
-  const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - PAPER_GT_TAIL_DROP);
-  const poolSize   = Math.min(P, Math.ceil(n * PAPER_GT_POOL_MULT));
-  const pool       = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), poolSize);
-  const tailScores = pointMaxJumpScores(cfg.gt_3d,
-    Math.max(0, paperGtEnd - PAPER_GT_TAIL_WINDOW), paperGtEnd);
-  const ranked = [...pool].sort((a, b) => tailScores[a] - tailScores[b]);
-  cfg._goodIdxPaper = ranked.slice(0, Math.min(n, ranked.length))
-                            .sort((a, b) => a - b);
+  const scores = pointMaxJumpScores(cfg.gt_3d);
+  cfg._goodIdx = selectIdxByStrategy(Settings.gtStrategy, scores, n);
+  const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - Settings.paperGtTailDrop);
+  // Paper-mode GT pool: only meaningful for the smoothest strategy. For other
+  // strategies just mirror the live picks so the paper still shows the same
+  // tracks the user dialled in.
+  if (Settings.gtStrategy === 'smoothest') {
+    const poolSize   = Math.min(P, Math.ceil(n * PAPER_GT_POOL_MULT));
+    const pool       = selectSmoothestIdx(scores, poolSize);
+    const tailScores = pointMaxJumpScores(cfg.gt_3d,
+      Math.max(0, paperGtEnd - PAPER_GT_TAIL_WINDOW), paperGtEnd);
+    const ranked = [...pool].sort((a, b) => tailScores[a] - tailScores[b]);
+    cfg._goodIdxPaper = ranked.slice(0, Math.min(n, ranked.length))
+                              .sort((a, b) => a - b);
+  } else {
+    cfg._goodIdxPaper = cfg._goodIdx.slice();
+  }
 
   syncAltPanelGtFromClip();
+}
+
+// Re-curate the raw track index lists from Settings.nRawKeep, Settings.nRawJumpy,
+// and Settings.rawStrategy. Mirrors recomputeGtIdx so the user can flip the raw
+// sampling strategy and counts live without reloading the clip.
+function recomputeRawIdx() {
+  if (!clipData?.raw_3d?.length) return;
+  const scores = clipData._rawScoresCached
+    || (clipData._rawScoresCached = pointMaxJumpScores(clipData.raw_3d));
+  if (!scores.length) return;
+  clipData._rawIdx      = selectIdxByStrategy(Settings.rawStrategy,    scores,
+                                              Settings.nRawKeep,      Settings.nRawJumpy);
+  clipData._rawIdxPaper = selectIdxByStrategy(Settings.rawStrategy,    scores,
+                                              Settings.nRawPaper,     Settings.nRawPaperJumpy);
+  // Re-prime the picker listbox so the user sees the auto picks change.
+  const rawSel = document.getElementById('raw-pick');
+  if (rawSel && clipData._rawScoresCached) {
+    fillTrajectoryPicker('raw-pick', clipData._rawScoresCached,
+                         new Set(clipData._rawIdx),
+                         /*jumpiest*/ Settings.rawStrategy !== 'smoothest');
+  }
 }
 
 // Re-map the clip's current _goodIdx onto the full-video alt-PC panel so
@@ -2865,6 +3515,201 @@ function buildTimeLegend() {
     dot.style.background = `rgb(${r},${g},${b})`;
     host.appendChild(dot);
   }
+}
+
+// ──────────── Sidebar open/close + keyboard shortcut ────────────
+// `.` toggles the controls panel. Persists last open/closed state in
+// localStorage so the user's preference survives reloads.
+const SB_KEY = 'mt_sidebar_open';
+function bindSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const handle  = document.getElementById('sb-handle');
+  const open  = () => {
+    sidebar.classList.add('open');
+    handle.classList.add('hidden');
+    document.body.classList.add('sb-open');
+    localStorage.setItem(SB_KEY, '1');
+    // Resize panels — sidebar steals horizontal space on wide screens.
+    panels?.forEach(p => p.render?.());
+  };
+  const close = () => {
+    sidebar.classList.remove('open');
+    handle.classList.remove('hidden');
+    document.body.classList.remove('sb-open');
+    localStorage.setItem(SB_KEY, '0');
+    panels?.forEach(p => p.render?.());
+  };
+  const toggle = () => sidebar.classList.contains('open') ? close() : open();
+  document.getElementById('sb-toggle')?.addEventListener('click', toggle);
+  document.getElementById('sb-close')?.addEventListener('click', close);
+  handle?.addEventListener('click', open);
+  document.getElementById('sb-reset')?.addEventListener('click', () => {
+    if (!confirm('Reset every control to the page defaults?')) return;
+    location.reload();
+  });
+  // Global keyboard shortcut — but only when not typing into a form field.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== '.') return;
+    if (['INPUT','SELECT','TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    e.preventDefault();
+    toggle();
+  });
+  // Restore last visibility (default: open on first visit so users discover the panel).
+  const want = localStorage.getItem(SB_KEY);
+  if (want === '0') close(); else open();
+}
+
+// ──────────── Color palette presets ────────────
+// Preset name → maps onto the live colour pickers + applies them. Designed
+// to be one-click "look starting points" for paper figures vs. demo videos
+// vs. dark mode.
+const PALETTES = {
+  'Studio':  { gt:'#f0529c', pred:'#34d399', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', rainbow:true  },
+  'Paper':   { gt:'#ec4899', pred:'#10b981', endpoint:'#facc15', bg:'#1f2937', pageTop:'#ffffff', pageBot:'#e5e7eb', rainbow:false },
+  'Vivid':   { gt:'#ef4444', pred:'#22c55e', endpoint:'#f59e0b', bg:'#0f172a', pageTop:'#fafafa', pageBot:'#e5e7eb', rainbow:true  },
+  'Dark':    { gt:'#f472b6', pred:'#34d399', endpoint:'#fcd34d', bg:'#0a0a0a', pageTop:'#111827', pageBot:'#1f2937', rainbow:true  },
+  'Mono':    { gt:'#475569', pred:'#94a3b8', endpoint:'#fbbf24', bg:'#f8fafc', pageTop:'#ffffff', pageBot:'#f1f5f9', rainbow:false },
+  'Sunset':  { gt:'#fb7185', pred:'#a78bfa', endpoint:'#fde68a', bg:'#1e1b4b', pageTop:'#fdf2f8', pageBot:'#fce7f3', rainbow:true  },
+  'Ocean':   { gt:'#22d3ee', pred:'#a3e635', endpoint:'#facc15', bg:'#0c4a6e', pageTop:'#ecfeff', pageBot:'#cffafe', rainbow:false },
+  'Original':{ gt:'#22e36b', pred:'#ff7e3c', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', rainbow:false },
+};
+function bindPalettes() {
+  const host = document.getElementById('palette-row');
+  if (!host) return;
+  host.innerHTML = '';
+  for (const [name, p] of Object.entries(PALETTES)) {
+    const btn = document.createElement('button');
+    btn.className = 'palette-chip';
+    btn.title = `Apply ${name} palette`;
+    const bars = document.createElement('div');
+    bars.className = 'pc-bars';
+    for (const c of [p.gt, p.pred, p.endpoint, p.bg]) {
+      const s = document.createElement('span');
+      s.style.background = c;
+      bars.appendChild(s);
+    }
+    const lbl = document.createElement('div');
+    lbl.className = 'pc-name';
+    lbl.textContent = name;
+    btn.appendChild(bars);
+    btn.appendChild(lbl);
+    btn.addEventListener('click', () => applyPalette(name));
+    host.appendChild(btn);
+  }
+}
+function applyPalette(name) {
+  const p = PALETTES[name];
+  if (!p) return;
+  const set = (id, v) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  set('col-gt',       p.gt);
+  set('col-pred',     p.pred);
+  set('col-endpoint', p.endpoint);
+  set('col-bg',       p.bg);
+  set('col-page-top', p.pageTop);
+  set('col-page-bot', p.pageBot);
+  // Rainbow toggle — flip if the current state doesn't match.
+  if (Settings.rainbow !== p.rainbow) {
+    document.getElementById('t-rainbow')?.click();
+  }
+  // Mark active chip
+  document.querySelectorAll('.palette-chip').forEach(c => c.classList.remove('active'));
+  const idx = Object.keys(PALETTES).indexOf(name);
+  if (idx >= 0) document.querySelectorAll('.palette-chip')[idx]?.classList.add('active');
+}
+
+// ──────────── Save/load presets (localStorage) ────────────
+// Captures every UI input value (range, color, select, button-on state) into
+// a JSON blob. Replaying a preset just writes those values back and dispatches
+// 'input'/'change'/'click' so the existing handlers fire.
+const PRESET_KEY = 'mt_presets_v1';
+const PRESET_INPUTS = [
+  // ranges + selects
+  'rate-sel','scrub','col-gt','col-pred','col-endpoint','col-bg',
+  'col-page-top','col-page-bot','hist-color-sel','pc-size','pc-shade',
+  'gt-sat','gt-lit','pred-sat','pred-lit',
+  'n-keep','ball-stride','ball-scale','endpoint-scale','line-scale',
+  'mix-lo','t-exp','obj-R','obj-K','obj-dot',
+  'trail-len','smooth-samples','n-raw','n-raw-jumpy',
+  'gt-strategy','raw-strategy',
+  'paper-tail','paper-mix-lo','paper-t-exp','paper-n-raw','paper-n-raw-jumpy',
+  'ball-min-frac',
+  'full-gt-col','full-raw-col',
+];
+const PRESET_TOGGLES = [
+  't-pc','t-hist','t-gt','t-pred','t-err','t-raw','t-balls','t-endpoints',
+  't-rainbow','t-full-gt','t-full-raw',
+];
+function _readPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}'); } catch { return {}; } }
+function _writePresets(o) { localStorage.setItem(PRESET_KEY, JSON.stringify(o)); }
+function _capturePreset() {
+  const out = { _v: 1, inputs: {}, toggles: {} };
+  for (const id of PRESET_INPUTS) {
+    const el = document.getElementById(id);
+    if (el && 'value' in el) out.inputs[id] = el.value;
+  }
+  for (const id of PRESET_TOGGLES) {
+    const el = document.getElementById(id);
+    if (el) out.toggles[id] = el.classList.contains('on');
+  }
+  return out;
+}
+function _applyPreset(p) {
+  if (!p) return;
+  for (const [id, v] of Object.entries(p.inputs || {})) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  for (const [id, want] of Object.entries(p.toggles || {})) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.classList.contains('on') !== want) el.click();
+  }
+}
+function bindPresets() {
+  const sel = document.getElementById('preset-sel');
+  if (!sel) return;
+  const refill = () => {
+    const all = _readPresets();
+    sel.innerHTML = '<option value="">— preset —</option>';
+    for (const name of Object.keys(all)) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+    }
+  };
+  refill();
+  sel.addEventListener('change', () => {
+    const v = sel.value;
+    if (!v) return;
+    const all = _readPresets();
+    _applyPreset(all[v]);
+  });
+  document.getElementById('preset-save')?.addEventListener('click', () => {
+    const name = prompt('Save current settings as preset:', 'preset-' + (Object.keys(_readPresets()).length + 1));
+    if (!name) return;
+    const all = _readPresets();
+    all[name] = _capturePreset();
+    _writePresets(all);
+    refill();
+    sel.value = name;
+  });
+  document.getElementById('preset-del')?.addEventListener('click', () => {
+    const v = sel.value;
+    if (!v) return;
+    if (!confirm(`Delete preset "${v}"?`)) return;
+    const all = _readPresets();
+    delete all[v];
+    _writePresets(all);
+    refill();
+  });
 }
 
 // ──────────── WASD pan + E/C up/down camera controls ────────────
