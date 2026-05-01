@@ -379,7 +379,11 @@ footer a { color: #2563eb; text-decoration: none; }
           <option value="static/data/basic_pick_place_14851_t29.json">EgoDex · basic_pick_place_14851 · obj2 · t29</option>
           <option value="static/data/AUTOLab_5d05c5aa_object_t27.json">DROID · AUTOLab_5d05c5aa_2023-07-13 · object · t27</option>
           <option value="static/data/camel_camal_t2.json">DAVIS · camel_camal · t2</option>
+          <option value="static/data/P05-20240427-145526-105.json">HD-EPIC · P05-20240427-145526-105 · "pour the soy sauce into the pan with the right hand"</option>
+          <option value="static/data/P06-20240510-100047-225.json">HD-EPIC · P06-20240510-100047-225 · "scrub the frying pan with the cleaning sponge in the right hand"</option>
+          <option value="static/data/P05-20240425-171455-251.json">HD-EPIC · P05-20240425-171455-251 · "pour water from the kettle into the pan with the right hand"</option>
         </select>
+        <select class="btn" id="obj-sel" style="font-size:.72rem; display:none;" title="Tracked object (HD-EPIC clips have multiple)"></select>
         <button class="icon-btn" id="sb-toggle" title="Open / close the controls panel (or press [.])">
           <span>Controls</span>
         </button>
@@ -682,7 +686,7 @@ footer a { color: #2563eb; text-decoration: none; }
           </div>
           <div class="fld">
             <div class="lbl-row"><span>Ball size</span><span class="v" id="ball-scale-lbl">1.0×</span></div>
-            <input type="range" id="ball-scale" min="0.4" max="3" step="0.05" value="1">
+            <input type="range" id="ball-scale" min="0.1" max="3" step="0.05" value="1">
           </div>
           <div class="fld">
             <div class="lbl-row"><span>Endpoint size</span><span class="v" id="endpoint-scale-lbl">1.6×</span></div>
@@ -690,7 +694,7 @@ footer a { color: #2563eb; text-decoration: none; }
           </div>
           <div class="fld">
             <div class="lbl-row"><span>Line width</span><span class="v" id="line-scale-lbl">1.0×</span></div>
-            <input type="range" id="line-scale" min="0.4" max="3" step="0.05" value="1">
+            <input type="range" id="line-scale" min="0.1" max="3" step="0.05" value="1">
           </div>
           <div class="fld">
             <div class="lbl-row"><span title="Smallest ball as a fraction of the largest. 1.0 = uniform-size balls.">Ball min/max ratio</span><span class="v" id="ball-min-frac-lbl">0.48</span></div>
@@ -758,7 +762,7 @@ footer a { color: #2563eb; text-decoration: none; }
       <div class="sb-body-inner">
         <div class="fld">
           <div class="lbl-row"><span>PC point size</span><span class="v" id="pc-size-lbl">12.0</span></div>
-          <input type="range" id="pc-size" min="3" max="30" step="0.5" value="12">
+          <input type="range" id="pc-size" min="1" max="30" step="0.5" value="12">
         </div>
         <div class="fld-grid">
           <div class="fld">
@@ -823,7 +827,16 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn full" id="t-raw">raw tracks (unfiltered)</button>
           <button class="btn" id="t-balls">trajectory balls</button>
           <button class="btn" id="t-endpoints">endpoints</button>
+          <button class="btn on" id="t-frustum">camera frustum</button>
           <button class="btn full" id="t-camera-reset">↻ reset camera</button>
+        </div>
+        <div class="fld" style="margin-top:8px;">
+          <div class="lbl-row"><span title="Frustum draw distance in metres">Frustum size (m)</span><span class="v" id="frustum-size-lbl">0.10</span></div>
+          <input type="range" id="frustum-size" min="0.005" max="0.80" step="0.005" value="0.10">
+          <div class="color-row" style="margin-top:6px;">
+            <input type="color" id="frustum-col" value="#fbbf24" title="Frustum + camera path colour">
+            <span class="cn">Frustum colour</span>
+          </div>
         </div>
       </div>
     </details>
@@ -900,6 +913,8 @@ const CLIP_URL = new URLSearchParams(location.search).get('clip')
   || 'static/data/clean_surface_1713_t10.json';
 
 // Sync the clip-selector dropdown to the current clip and reload on change.
+// The clip-sel reload also drops the `?obj=` param because object names don't
+// generalise across clips (soy sauce → bowl etc).
 {
   const sel = document.getElementById('clip-sel');
   if (sel) {
@@ -907,6 +922,19 @@ const CLIP_URL = new URLSearchParams(location.search).get('clip')
     sel.addEventListener('change', () => {
       const url = new URL(location.href);
       url.searchParams.set('clip', sel.value);
+      url.searchParams.delete('obj');
+      location.href = url.toString();
+    });
+  }
+  // Object selector: triggers a reload with a fresh `?obj=` so the rest of
+  // the bootstrap (PC object filter, trajectory picker presets, raw-track
+  // index selection, layout framing, …) all re-runs against the chosen
+  // config. A reload is simpler & more correct than partial state surgery.
+  const objSel = document.getElementById('obj-sel');
+  if (objSel) {
+    objSel.addEventListener('change', () => {
+      const url = new URL(location.href);
+      url.searchParams.set('obj', objSel.value);
       location.href = url.toString();
     });
   }
@@ -1026,6 +1054,15 @@ const Settings = {
   // ── Trail balls + PC ───────────────────────────────────────────
   ballMinFrac:    0.48,  // smallest ball / largest ball ratio in the trail
   pcDepthShade:   0.0,   // 0 = no shading; >0 dims far-away PC points
+
+  // ── Camera frustum ─────────────────────────────────────────────
+  // Wireframe pyramid showing the recording camera's pose & FOV. If the
+  // bundle ships `camera.c2w_per_frame` the frustum follows the playhead;
+  // otherwise it sits at frame 0. Rendered in dynGroup so it tracks fi.
+  showFrustum:    true,
+  frustumSize:    0.10,         // depth (m) of the pyramid from camera origin
+  frustumColor:   '#fbbf24',    // wire colour (matches default endpoint accent)
+  frustumPath:    true,         // also draw the camera-centre polyline through the clip
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -1921,6 +1958,120 @@ class Panel {
     // Note: per-point object-color current-frame spheres were replaced by the
     // trail ball layer above. The newest ball (largest + most vivid) at
     // `lastFi` serves as the "current frame" indicator on the trajectory.
+
+    // ── Camera frustum (and optional camera-centre path polyline) ──────
+    // Source: clipData.camera. Per-frame pose+intrinsics if present, else
+    // falls back to the static frame-0 entries (works for EgoDex/DROID/DAVIS
+    // bundles which only ship c2w_frame0 / intrinsics_frame0).
+    if (Settings.showFrustum && clipData?.camera) {
+      const cam = clipData.camera;
+      const c2wAll = cam.c2w_per_frame || null;
+      const intrAll = cam.intrinsics_per_frame || null;
+      const T_cam = c2wAll ? c2wAll.length : 1;
+      // Snap the frustum to the integer frame for the same reason the trails do.
+      const fi = Math.max(0, Math.min(T_cam - 1, Math.round(fiFrac)));
+      const c2w = c2wAll ? c2wAll[fi] : cam.c2w_frame0;
+      const intr = intrAll ? intrAll[fi] : cam.intrinsics_frame0;
+      const dimHW = cam.video_dim_HW || clipData.raw_meta?.video_dim_HW || [480, 854];
+      if (c2w && intr) {
+        const layer = this._buildFrustumLayer(c2w, intr, dimHW, Settings.frustumSize, Settings.frustumColor);
+        if (layer) this.dynGroup.add(layer);
+      }
+      if (Settings.frustumPath && c2wAll && c2wAll.length > 1) {
+        const pts = [];
+        for (let i = 0; i < c2wAll.length; i++) {
+          const m = c2wAll[i];
+          // Camera centre = c2w * [0,0,0,1] = (m[0][3], m[1][3], m[2][3]).
+          // Apply the same y/z flip the rest of the scene uses.
+          pts.push(m[0][3], -m[1][3], -m[2][3]);
+        }
+        if (pts.length >= 6) {
+          const segs = [];
+          for (let i = 0; i < pts.length / 3 - 1; i++) {
+            segs.push(pts[i*3], pts[i*3+1], pts[i*3+2],
+                      pts[i*3+3], pts[i*3+4], pts[i*3+5]);
+          }
+          const g = new LineSegmentsGeometry();
+          g.setPositions(segs);
+          if (!this._frustumPathMat) {
+            this._frustumPathMat = new LineMaterial({
+              color: new THREE.Color(Settings.frustumColor).getHex(),
+              linewidth: 2, dashed: false, worldUnits: false, vertexColors: false,
+            });
+          } else {
+            this._frustumPathMat.color = new THREE.Color(Settings.frustumColor);
+          }
+          this._frustumPathMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
+          this.dynGroup.add(new LineSegments2(g, this._frustumPathMat));
+        }
+      }
+    }
+  }
+
+  // Build a wireframe pyramid in world space showing where the camera is
+  // looking at one frame. Apex sits at the camera centre; the four basis
+  // edges go to the corners of the image plane projected at depth d. We
+  // unproject pixel corners through fx/fy/cx/cy then transform to world via
+  // c2w. Same y/z flip as the rest of the 3D scene so it lines up with the
+  // PC and trajectory visualisation.
+  _buildFrustumLayer(c2w, intr, dimHW, depth, colorHex) {
+    const fx = intr[0], fy = intr[1], cx = intr[2], cy = intr[3];
+    const H = dimHW[0], W = dimHW[1];
+    // Image-plane corners (px) → camera-space rays at z=depth.
+    const corners_px = [[0, 0], [W, 0], [W, H], [0, H]];
+    const corners_cam = corners_px.map(([u, v]) => {
+      const xc = (u - cx) / fx * depth;
+      const yc = (v - cy) / fy * depth;
+      return [xc, yc, depth, 1];
+    });
+    // Apex (camera centre).
+    const apex_cam = [0, 0, 0, 1];
+    const tx = (p) => {
+      // p = [x,y,z,1] in camera space. world = c2w · p
+      const x = c2w[0][0]*p[0] + c2w[0][1]*p[1] + c2w[0][2]*p[2] + c2w[0][3]*p[3];
+      const y = c2w[1][0]*p[0] + c2w[1][1]*p[1] + c2w[1][2]*p[2] + c2w[1][3]*p[3];
+      const z = c2w[2][0]*p[0] + c2w[2][1]*p[1] + c2w[2][2]*p[2] + c2w[2][3]*p[3];
+      // Apply the y/z flip used by the rest of the 3D scene
+      return [x, -y, -z];
+    };
+    const apex = tx(apex_cam);
+    const corners = corners_cam.map(tx);
+    const segs = [];
+    // Apex → corners
+    for (const c of corners) {
+      segs.push(apex[0], apex[1], apex[2], c[0], c[1], c[2]);
+    }
+    // Corner ring (image plane outline)
+    for (let i = 0; i < 4; i++) {
+      const a = corners[i], b = corners[(i+1) % 4];
+      segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    }
+    // Top-edge tick to indicate "up" of the image (camera roll)
+    {
+      const mid_top = [(corners[0][0]+corners[1][0])/2,
+                       (corners[0][1]+corners[1][1])/2,
+                       (corners[0][2]+corners[1][2])/2];
+      const mid_bot = [(corners[2][0]+corners[3][0])/2,
+                       (corners[2][1]+corners[3][1])/2,
+                       (corners[2][2]+corners[3][2])/2];
+      const tick = [mid_top[0] + (mid_top[0]-mid_bot[0])*0.18,
+                    mid_top[1] + (mid_top[1]-mid_bot[1])*0.18,
+                    mid_top[2] + (mid_top[2]-mid_bot[2])*0.18];
+      segs.push(corners[0][0], corners[0][1], corners[0][2], tick[0], tick[1], tick[2]);
+      segs.push(tick[0], tick[1], tick[2], corners[1][0], corners[1][1], corners[1][2]);
+    }
+    const g = new LineSegmentsGeometry();
+    g.setPositions(segs);
+    if (!this._frustumMat) {
+      this._frustumMat = new LineMaterial({
+        color: new THREE.Color(colorHex).getHex(),
+        linewidth: 2.5, dashed: false, worldUnits: false, vertexColors: false,
+      });
+    } else {
+      this._frustumMat.color = new THREE.Color(colorHex);
+    }
+    this._frustumMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
+    return new LineSegments2(g, this._frustumMat);
   }
 
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
@@ -2021,10 +2172,38 @@ async function loadPCBinary(url) {
   return { N, positions, colors };
 }
 
+// Show + populate the object selector iff the bundle has multiple configs
+// (HD-EPIC clips). EgoDex/DROID/DAVIS bundles typically have a single config
+// so the selector stays hidden.
+function populateObjSelector(clipData, cfg) {
+  const sel = document.getElementById('obj-sel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  const configs = clipData.configs || [];
+  if (configs.length <= 1) { sel.style.display = 'none'; return; }
+  for (const c of configs) {
+    const opt = document.createElement('option');
+    opt.value = c.obj_name;
+    opt.textContent = `obj: ${c.obj_name}`;
+    if (c === cfg) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  sel.style.display = '';
+}
+
 async function init() {
   const resp = await fetch(CLIP_URL + '?v=' + Date.now());
   clipData = await resp.json();
-  cfg = clipData.configs[0];
+  // Honor a `?obj=<name>` query param so deep-links into a specific HD-EPIC
+  // object (e.g. `?clip=...&obj=soy%20sauce`) re-open at the same view. Falls
+  // back to configs[0] when missing or unmatched.
+  {
+    const wantObj = new URLSearchParams(location.search).get('obj');
+    cfg = (wantObj && clipData.configs.find(c => c.obj_name === wantObj))
+       || clipData.configs[0];
+  }
+  // Populate the per-clip object selector (only visible when there's >1 config).
+  populateObjSelector(clipData, cfg);
 
   // Preload the alternate full-video PC if this clip ships one (EgoDex). We
   // load it as a separate `_altPC` so panels can independently choose between
@@ -3110,6 +3289,33 @@ function bindControls() {
   const tEnds = document.getElementById('t-endpoints');
   if (tEnds) { tEnds.classList.add('on'); tEnds.onclick = (e) => toggleLayer(e, 'showEndpoints'); }
   document.getElementById('t-camera-reset').onclick = resetCamera;
+  // Camera-frustum toggle + size slider + colour picker. Frustum lives in
+  // dynGroup so it follows the playhead — toggling just flips the Settings
+  // flag and asks every panel to redraw at the current frame.
+  const tFrustum = document.getElementById('t-frustum');
+  if (tFrustum) {
+    tFrustum.classList.toggle('on', Settings.showFrustum);
+    tFrustum.onclick = () => {
+      Settings.showFrustum = !Settings.showFrustum;
+      tFrustum.classList.toggle('on', Settings.showFrustum);
+      rerenderAll();
+    };
+  }
+  const frustumSize = document.getElementById('frustum-size');
+  const frustumSizeLbl = document.getElementById('frustum-size-lbl');
+  if (frustumSize) {
+    frustumSize.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      Settings.frustumSize = v;
+      if (frustumSizeLbl) frustumSizeLbl.textContent = v.toFixed(3);
+      rerenderAll();
+    };
+  }
+  const frustumCol = document.getElementById('frustum-col');
+  if (frustumCol) frustumCol.oninput = (e) => {
+    Settings.frustumColor = e.target.value;
+    rerenderAll();
+  };
   // History color selector — re-aim the history hue to follow GT or pred (or
   // its own baby-blue default).
   const histSel = document.getElementById('hist-color-sel');
