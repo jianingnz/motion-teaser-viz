@@ -206,8 +206,12 @@ def main():
                 frame_pts.append([u, v])
             gt_2d.append(frame_pts)
 
-        # gt_3d: list[T] of list[N] of [x,y,z] (world)
-        # p3d_obj is (N, T, 3) → transpose to (T, N, 3)
+        # gt_3d: list[T] of list[N] of [x,y,z] (world) or None when invalid.
+        # p3d_obj is (N, T, 3) → transpose to (T, N, 3). Invalid values must
+        # be encoded as `null` (None) so the viewer's `if (!pt) continue`
+        # checks skip them; emitting [0,0,0] makes invalid points converge
+        # to the world origin (typically the camera frame-0 position) and
+        # produces the "rays from camera" artifact in the paper-figure view.
         p3d_t = np.transpose(p3d_obj, (1, 0, 2))
         gt_3d = []
         for t in range(T):
@@ -215,7 +219,7 @@ def main():
             for n in range(p3d_t.shape[1]):
                 x, y, z = float(p3d_t[t, n, 0]), float(p3d_t[t, n, 1]), float(p3d_t[t, n, 2])
                 if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(z)):
-                    frame_pts.append([0.0, 0.0, 0.0])
+                    frame_pts.append(None)
                 else:
                     frame_pts.append([x, y, z])
             gt_3d.append(frame_pts)
