@@ -374,16 +374,24 @@ footer a { color: #2563eb; text-decoration: none; }
     </div>
     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
       <div class="hdr-actions">
-        <select class="btn" id="clip-sel" style="font-size:.72rem;">
-          <option value="static/data/clean_surface_1713_t10.json">EgoDex · clean_surface_1713 · obj0 · t10</option>
-          <option value="static/data/basic_pick_place_14851_t29.json">EgoDex · basic_pick_place_14851 · obj2 · t29</option>
-          <option value="static/data/AUTOLab_5d05c5aa_object_t27.json">DROID · AUTOLab_5d05c5aa_2023-07-13 · object · t27</option>
-          <option value="static/data/camel_camal_t2.json">DAVIS · camel_camal · t2</option>
-          <option value="static/data/P05-20240427-145526-105.json">HD-EPIC · P05-20240427-145526-105 · "pour the soy sauce into the pan with the right hand"</option>
-          <option value="static/data/P06-20240510-100047-225.json">HD-EPIC · P06-20240510-100047-225 · "scrub the frying pan with the cleaning sponge in the right hand"</option>
-          <option value="static/data/P05-20240425-171455-251.json">HD-EPIC · P05-20240425-171455-251 · "pour water from the kettle into the pan with the right hand"</option>
+        <select class="btn" id="clip-sel" style="font-size:.72rem;" title="Source clip">
+          <optgroup label="EgoDex">
+            <option value="static/data/clean_surface_1713_t10.json">clean_surface_1713 · obj0 · t10</option>
+            <option value="static/data/basic_pick_place_14851_t29.json">basic_pick_place_14851 · obj2 · t29</option>
+          </optgroup>
+          <optgroup label="HD-EPIC">
+            <option value="static/data/P05-20240427-145526-105.json">P05-20240427-145526-105 · pour soy sauce into pan</option>
+            <option value="static/data/P06-20240510-100047-225.json">P06-20240510-100047-225 · scrub frying pan</option>
+            <option value="static/data/P05-20240425-171455-251.json">P05-20240425-171455-251 · pour water into pan</option>
+          </optgroup>
+          <optgroup label="DROID">
+            <option value="static/data/AUTOLab_5d05c5aa_object_t27.json">AUTOLab_5d05c5aa_2023-07-13 · object · t27</option>
+          </optgroup>
+          <optgroup label="DAVIS">
+            <option value="static/data/camel_camal_t2.json">camel_camal · t2</option>
+          </optgroup>
         </select>
-        <select class="btn" id="obj-sel" style="font-size:.72rem; display:none;" title="Tracked object (HD-EPIC clips have multiple)"></select>
+        <select class="btn" id="obj-sel" style="font-size:.72rem; display:none;" title="Tracked object — only shown when the clip has multiple"></select>
         <button class="icon-btn" id="sb-toggle" title="Open / close the controls panel (or press [.])">
           <span>Controls</span>
         </button>
@@ -668,11 +676,15 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
-    <!-- ④ Trajectory rendering ──────────────────────────────────────── -->
+    <!-- ④ Trajectory style ──────────────────────────────────────────── -->
+    <!-- Visual rendering of the chosen trajectories: shape (balls / lines)
+         and the live trail window. Track *selection* (which IDs to draw,
+         strategies, raw counts) lives in the Track selection section below
+         so the two responsibilities don't tangle. -->
     <details class="sb-section">
       <summary>
         <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Trajectory style
-        <span class="summary-tag">balls / lines / count</span>
+        <span class="summary-tag">balls · lines · trail length</span>
       </summary>
       <div class="sb-body-inner">
         <div class="fld">
@@ -701,28 +713,26 @@ footer a { color: #2563eb; text-decoration: none; }
             <input type="range" id="ball-min-frac" min="0.2" max="1.0" step="0.02" value="0.48">
           </div>
           <div class="fld">
-            <div class="lbl-row"><span title="0 = no depth shading on the scene PC. Higher dims far-away points so the foreground reads.">PC depth shade</span><span class="v" id="pc-shade-lbl">0.00</span></div>
-            <input type="range" id="pc-shade" min="0" max="1.5" step="0.05" value="0">
+            <div class="lbl-row"><span title="How many trailing frames are rendered behind the current playhead in the live big panel.">Trail length (frames)</span><span class="v" id="trail-len-lbl">12</span></div>
+            <input type="range" id="trail-len" min="2" max="40" step="1" value="12">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Catmull–Rom samples per inter-frame interval. Higher = smoother curves but slower.">Smooth samples</span><span class="v" id="smooth-samples-lbl">8</span></div>
+            <input type="range" id="smooth-samples" min="2" max="20" step="1" value="8">
           </div>
         </div>
       </div>
     </details>
 
-    <!-- ④b Sampling & track selection ───────────────────────────────── -->
+    <!-- ④b Track selection ──────────────────────────────────────────── -->
+    <!-- Which tracks the renderer picks each frame: GT vs raw, count,
+         strategy. Pure data-side decisions — no styling. -->
     <details class="sb-section">
       <summary>
-        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Sampling
-        <span class="summary-tag">trail length / strategy</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Track selection
+        <span class="summary-tag">GT · raw · strategies</span>
       </summary>
       <div class="sb-body-inner">
-        <div class="fld">
-          <div class="lbl-row"><span title="How many trailing frames are rendered behind the current playhead in the live big panel.">Trail length (frames)</span><span class="v" id="trail-len-lbl">12</span></div>
-          <input type="range" id="trail-len" min="2" max="40" step="1" value="12">
-        </div>
-        <div class="fld">
-          <div class="lbl-row"><span title="Catmull–Rom samples per inter-frame interval. Higher = smoother curves but slower.">Smooth samples</span><span class="v" id="smooth-samples-lbl">8</span></div>
-          <input type="range" id="smooth-samples" min="2" max="20" step="1" value="8">
-        </div>
         <div class="fld">
           <div class="lbl-row"><span>GT selection strategy</span></div>
           <select class="btn" id="gt-strategy" title="How the auto-curated GT track set is chosen.">
@@ -757,12 +767,16 @@ footer a { color: #2563eb; text-decoration: none; }
     <details class="sb-section">
       <summary>
         <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Point cloud
-        <span class="summary-tag">size / object filter</span>
+        <span class="summary-tag">size · depth shade · object filter</span>
       </summary>
       <div class="sb-body-inner">
         <div class="fld">
           <div class="lbl-row"><span>PC point size</span><span class="v" id="pc-size-lbl">12.0</span></div>
           <input type="range" id="pc-size" min="1" max="30" step="0.5" value="12">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="0 = no depth shading on the scene PC. Higher dims far-away points so the foreground reads.">PC depth shade</span><span class="v" id="pc-shade-lbl">0.00</span></div>
+          <input type="range" id="pc-shade" min="0" max="1.5" step="0.05" value="0">
         </div>
         <div class="fld-grid">
           <div class="fld">
@@ -811,32 +825,51 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
-    <!-- ⑥ Layer toggles ──────────────────────────────────────────── -->
+    <!-- ⑥ Layers — pure show/hide. Per-layer styling lives in the dedicated
+         sections (Trajectory style, Point cloud, Camera). ─────────────── -->
     <details class="sb-section" open>
       <summary>
         <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Layers
         <span class="summary-tag">show / hide in big panel</span>
       </summary>
       <div class="sb-body-inner">
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:0 0 4px 0;">Trajectory layers</div>
         <div class="toggle-grid">
-          <button class="btn on" id="t-pc">scene PC</button>
           <button class="btn on" id="t-hist">history</button>
           <button class="btn on" id="t-gt">GT future</button>
           <button class="btn on" id="t-pred">prediction</button>
-          <button class="btn full" id="t-err">GT↔Pred error vectors</button>
           <button class="btn full" id="t-raw">raw tracks (unfiltered)</button>
+          <button class="btn full" id="t-err">GT↔Pred error vectors</button>
           <button class="btn" id="t-balls">trajectory balls</button>
           <button class="btn" id="t-endpoints">endpoints</button>
-          <button class="btn on" id="t-frustum">camera frustum</button>
-          <button class="btn full" id="t-camera-reset">↻ reset camera</button>
         </div>
-        <div class="fld" style="margin-top:8px;">
-          <div class="lbl-row"><span title="Frustum draw distance in metres">Frustum size (m)</span><span class="v" id="frustum-size-lbl">0.10</span></div>
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:10px 0 4px 0;">Scene layers</div>
+        <div class="toggle-grid">
+          <button class="btn on" id="t-pc">scene PC</button>
+          <button class="btn on" id="t-frustum">camera frustum</button>
+        </div>
+      </div>
+    </details>
+
+    <!-- ⑥b Camera — frustum sizing + colour + viewer-camera reset.
+         All camera-scoped controls live here so the Layers grid is purely
+         about visibility. ───────────────────────────────────────────── -->
+    <details class="sb-section" open>
+      <summary>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Camera
+        <span class="summary-tag">frustum · viewer reset</span>
+      </summary>
+      <div class="sb-body-inner">
+        <div class="fld">
+          <div class="lbl-row"><span title="Depth (in metres) of the wireframe pyramid drawn at the recording-camera centre. Lower = subtler frustum.">Frustum size (m)</span><span class="v" id="frustum-size-lbl">0.100</span></div>
           <input type="range" id="frustum-size" min="0.005" max="0.80" step="0.005" value="0.10">
-          <div class="color-row" style="margin-top:6px;">
-            <input type="color" id="frustum-col" value="#fbbf24" title="Frustum + camera path colour">
-            <span class="cn">Frustum colour</span>
-          </div>
+        </div>
+        <div class="color-row">
+          <input type="color" id="frustum-col" value="#fbbf24" title="Frustum + camera-path colour.">
+          <span class="cn">Frustum colour</span>
+        </div>
+        <div class="toggle-grid" style="margin-top:10px;">
+          <button class="btn full" id="t-camera-reset" title="Reset the viewer camera (orbit/zoom) — does not affect the recording-camera frustum.">↻ Reset viewer camera</button>
         </div>
       </div>
     </details>
