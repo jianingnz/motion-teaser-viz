@@ -378,6 +378,7 @@ footer a { color: #2563eb; text-decoration: none; }
           <optgroup label="EgoDex">
             <option value="static/data/clean_surface_1713_t10.json">clean_surface_1713 · obj0 · t10</option>
             <option value="static/data/basic_pick_place_14851_t29.json">basic_pick_place_14851 · obj2 · t29</option>
+            <option value="static/data/part4_pour_1027.json">part4_pour_1027 · pour silver bottle into brown cup</option>
           </optgroup>
           <optgroup label="HD-EPIC">
             <option value="static/data/P05-20240427-145526-105.json">P05-20240427-145526-105 · pour soy sauce into pan</option>
@@ -860,13 +861,28 @@ footer a { color: #2563eb; text-decoration: none; }
         <span class="summary-tag">frustum · viewer reset</span>
       </summary>
       <div class="sb-body-inner">
+        <div class="toggle-grid" style="margin-bottom:10px;">
+          <button class="btn on" id="t-frustum-video" title="Project the live video frame onto the far rectangle of the frustum (mimics viz_website).">project video</button>
+        </div>
         <div class="fld">
           <div class="lbl-row"><span title="Depth (in metres) of the wireframe pyramid drawn at the recording-camera centre. Lower = subtler frustum.">Frustum size (m)</span><span class="v" id="frustum-size-lbl">0.100</span></div>
           <input type="range" id="frustum-size" min="0.005" max="0.80" step="0.005" value="0.10">
         </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="How many past camera frames are spline-rendered as the camera trail polyline.">Trail length (frames)</span><span class="v" id="frustum-trail-lbl">20</span></div>
+          <input type="range" id="frustum-trail" min="0" max="80" step="1" value="20">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Symmetric moving-average kernel applied to camera positions and forwards. 1 = no smoothing; 5 is a good default.">Camera smoothing</span><span class="v" id="cam-smooth-lbl">5</span></div>
+          <input type="range" id="cam-smooth" min="1" max="21" step="2" value="5">
+        </div>
         <div class="color-row">
-          <input type="color" id="frustum-col" value="#fbbf24" title="Frustum + camera-path colour.">
+          <input type="color" id="frustum-col" value="#66aaff" title="Frustum wireframe colour.">
           <span class="cn">Frustum colour</span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="frustum-path-col" value="#cccccc" title="Camera trail polyline colour.">
+          <span class="cn">Trail colour</span>
         </div>
         <div class="toggle-grid" style="margin-top:10px;">
           <button class="btn full" id="t-camera-reset" title="Reset the viewer camera (orbit/zoom) — does not affect the recording-camera frustum.">↻ Reset viewer camera</button>
@@ -1089,13 +1105,19 @@ const Settings = {
   pcDepthShade:   0.0,   // 0 = no shading; >0 dims far-away PC points
 
   // ── Camera frustum ─────────────────────────────────────────────
-  // Wireframe pyramid showing the recording camera's pose & FOV. If the
-  // bundle ships `camera.c2w_per_frame` the frustum follows the playhead;
-  // otherwise it sits at frame 0. Rendered in dynGroup so it tracks fi.
+  // Wireframe pyramid + recent-trail polyline + (optional) live video
+  // texture mapped onto the far rectangle. Mimics the design in
+  // /weka/prior-default/jianingz/home/project/_GenTraj/viz_website so the
+  // two visualizations read consistently. Camera positions and forward
+  // vectors are smoothed at clip-load time (gaussian moving average) so
+  // the rendered trajectory is calm even when raw vipe poses are noisy.
   showFrustum:    true,
   frustumSize:    0.10,         // depth (m) of the pyramid from camera origin
-  frustumColor:   '#fbbf24',    // wire colour (matches default endpoint accent)
-  frustumPath:    true,         // also draw the camera-centre polyline through the clip
+  frustumColor:   '#66aaff',    // wire colour (matches reference design)
+  frustumPathColor: '#cccccc',  // recent-trail polyline colour
+  frustumVideo:   true,         // map current video frame onto far rectangle
+  frustumPathTrail: 20,         // # past frames to spline-render as trail
+  camSmoothWindow: 5,           // odd kernel size; 1 = no smoothing
 };
 const ERR_COLOR = 0x6b7280; // soft gray
 
@@ -1992,119 +2014,149 @@ class Panel {
     // trail ball layer above. The newest ball (largest + most vivid) at
     // `lastFi` serves as the "current frame" indicator on the trajectory.
 
-    // ── Camera frustum (and optional camera-centre path polyline) ──────
-    // Source: clipData.camera. Per-frame pose+intrinsics if present, else
-    // falls back to the static frame-0 entries (works for EgoDex/DROID/DAVIS
-    // bundles which only ship c2w_frame0 / intrinsics_frame0).
-    if (Settings.showFrustum && clipData?.camera) {
-      const cam = clipData.camera;
-      const c2wAll = cam.c2w_per_frame || null;
-      const intrAll = cam.intrinsics_per_frame || null;
-      const T_cam = c2wAll ? c2wAll.length : 1;
-      // Snap the frustum to the integer frame for the same reason the trails do.
-      const fi = Math.max(0, Math.min(T_cam - 1, Math.round(fiFrac)));
-      const c2w = c2wAll ? c2wAll[fi] : cam.c2w_frame0;
-      const intr = intrAll ? intrAll[fi] : cam.intrinsics_frame0;
-      const dimHW = cam.video_dim_HW || clipData.raw_meta?.video_dim_HW || [480, 854];
-      if (c2w && intr) {
-        const layer = this._buildFrustumLayer(c2w, intr, dimHW, Settings.frustumSize, Settings.frustumColor);
-        if (layer) this.dynGroup.add(layer);
+    // ── Camera frustum + recent-trail polyline + (optional) video texture ──
+    // Mimics the design in viz_website/templates/index.html: world-up basis
+    // (no roll), centripetal-Catmull-Rom-smoothed trail covering the last
+    // CAM_TRAIL frames, and the live video frame projected onto the far
+    // rectangle so the viewer can see what the camera is looking at.
+    if (Settings.showFrustum && clipData?._camSmooth) {
+      const cs = clipData._camSmooth;
+      const T_cam = cs.T;
+      const fiCam = Math.max(0, Math.min(T_cam - 1, Math.round(fiFrac)));
+      const fiNext = Math.min(fiCam + 1, T_cam - 1);
+      const frac = Math.max(0, Math.min(1, fiFrac - Math.floor(fiFrac)));
+
+      // Interpolated camera position + forward at the (possibly fractional)
+      // current frame so the frustum eases between integer poses.
+      const a = cs.pos[fiCam], b = cs.pos[fiNext];
+      const fa = cs.fwd[fiCam], fb = cs.fwd[fiNext];
+      const cpx = a[0] + (b[0]-a[0]) * frac;
+      const cpy = a[1] + (b[1]-a[1]) * frac;
+      const cpz = a[2] + (b[2]-a[2]) * frac;
+      // Re-normalize the interpolated forward vector so basis stays orthonormal.
+      let fx = fa[0] + (fb[0]-fa[0]) * frac;
+      let fy = fa[1] + (fb[1]-fa[1]) * frac;
+      let fz = fa[2] + (fb[2]-fa[2]) * frac;
+      const fL = Math.hypot(fx, fy, fz) || 1;
+      fx /= fL; fy /= fL; fz /= fL;
+
+      // Recent-trail polyline (last frustumPathTrail frames, with the
+      // interpolated current point appended). Smoothed via centripetal
+      // Catmull-Rom so a few-frame jitter doesn't look like a zig-zag.
+      const TRAIL = Math.max(1, Settings.frustumPathTrail | 0);
+      const ts = Math.max(0, fiCam - TRAIL);
+      const trailPts = [];
+      for (let t = ts; t <= fiCam; t++) {
+        const p = cs.pos[t];
+        // Same y/z flip as the rest of the scene.
+        trailPts.push(new THREE.Vector3(p[0], -p[1], -p[2]));
       }
-      if (Settings.frustumPath && c2wAll && c2wAll.length > 1) {
-        const pts = [];
-        for (let i = 0; i < c2wAll.length; i++) {
-          const m = c2wAll[i];
-          // Camera centre = c2w * [0,0,0,1] = (m[0][3], m[1][3], m[2][3]).
-          // Apply the same y/z flip the rest of the scene uses.
-          pts.push(m[0][3], -m[1][3], -m[2][3]);
+      if (frac > 0 && fiCam < T_cam - 1) {
+        trailPts.push(new THREE.Vector3(cpx, -cpy, -cpz));
+      }
+      if (trailPts.length >= 2) {
+        const curve = new THREE.CatmullRomCurve3(trailPts, false, 'centripetal', 0.5);
+        const samples = curve.getPoints(Math.max(8, trailPts.length * 4));
+        const segs = [];
+        for (let i = 0; i < samples.length - 1; i++) {
+          const s0 = samples[i], s1 = samples[i+1];
+          segs.push(s0.x, s0.y, s0.z, s1.x, s1.y, s1.z);
         }
-        if (pts.length >= 6) {
-          const segs = [];
-          for (let i = 0; i < pts.length / 3 - 1; i++) {
-            segs.push(pts[i*3], pts[i*3+1], pts[i*3+2],
-                      pts[i*3+3], pts[i*3+4], pts[i*3+5]);
-          }
-          const g = new LineSegmentsGeometry();
-          g.setPositions(segs);
-          if (!this._frustumPathMat) {
-            this._frustumPathMat = new LineMaterial({
-              color: new THREE.Color(Settings.frustumColor).getHex(),
-              linewidth: 2, dashed: false, worldUnits: false, vertexColors: false,
+        const g = new LineSegmentsGeometry();
+        g.setPositions(segs);
+        if (!this._frustumPathMat) {
+          this._frustumPathMat = new LineMaterial({
+            color: new THREE.Color(Settings.frustumPathColor).getHex(),
+            linewidth: 1.8, dashed: false, worldUnits: false,
+            vertexColors: false, transparent: true, opacity: 0.7,
+          });
+        } else {
+          this._frustumPathMat.color = new THREE.Color(Settings.frustumPathColor);
+        }
+        this._frustumPathMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
+        this.dynGroup.add(new LineSegments2(g, this._frustumPathMat));
+      }
+
+      // Build the frustum basis in scene space (post y/z flip). World-up =
+      // (0,1,0); right = cross(fwd, up); up = cross(right, fwd). This pins
+      // the frustum to a level horizon — it does NOT roll with the camera,
+      // which matches the reference design (less visual noise).
+      const origin = new THREE.Vector3(cpx, -cpy, -cpz);
+      const fwd = new THREE.Vector3(fx, -fy, -fz).normalize();
+      const wup = new THREE.Vector3(0, 1, 0);
+      let right = new THREE.Vector3().crossVectors(fwd, wup);
+      if (right.length() < 1e-3) right.set(1, 0, 0); else right.normalize();
+      const up = new THREE.Vector3().crossVectors(right, fwd).normalize();
+
+      const fd = Settings.frustumSize;
+      const aspect = cs.aspect;
+      const hH = fd * 0.35, hW = hH * aspect;
+      const off = (rs, us) =>
+        origin.clone()
+          .add(fwd.clone().multiplyScalar(fd))
+          .add(right.clone().multiplyScalar(rs * hW))
+          .add(up.clone().multiplyScalar(us * hH));
+      // Far-plane corners: TL, TR, BR, BL.
+      const c0 = off(-1,  1);
+      const c1 = off( 1,  1);
+      const c2 = off( 1, -1);
+      const c3 = off(-1, -1);
+      const fp = [origin, c0, origin, c1, origin, c2, origin, c3,
+                  c0, c1, c1, c2, c2, c3, c3, c0];
+      const fg = new THREE.BufferGeometry().setFromPoints(fp);
+      this.dynGroup.add(new THREE.LineSegments(fg, this._getFrustumMat()));
+
+      // Video texture on the far rectangle. Uses the live <video id="rgb-video">
+      // element so the projected image is always the current frame. We
+      // copy each frame to a small canvas and rebuild the CanvasTexture
+      // each call (frequency = render rate, which is fine in practice).
+      // Skip on the alt-PC panel (paperMode) and when the video isn't ready.
+      if (Settings.frustumVideo) {
+        const vid = window._frustumVideoSrc || (window._frustumVideoSrc = document.getElementById('rgb-video'));
+        if (vid && vid.videoWidth > 0 && !this.opts.paperMode) {
+          try {
+            const tc = this._frustumTexCanvas || (this._frustumTexCanvas = document.createElement('canvas'));
+            tc.width = 128;
+            tc.height = Math.max(1, Math.round(128 / aspect));
+            const tctx = tc.getContext('2d');
+            tctx.drawImage(vid, 0, 0, tc.width, tc.height);
+            const tex = new THREE.CanvasTexture(tc);
+            tex.minFilter = THREE.LinearFilter;
+            tex.needsUpdate = true;
+            const pg = new THREE.BufferGeometry();
+            // Two triangles covering the far rectangle. UV order matches
+            // image orientation: c0=TL→(0,1), c1=TR→(1,1), c2=BR→(1,0), c3=BL→(0,0).
+            pg.setAttribute('position', new THREE.Float32BufferAttribute([
+              c0.x,c0.y,c0.z, c1.x,c1.y,c1.z, c2.x,c2.y,c2.z,
+              c0.x,c0.y,c0.z, c2.x,c2.y,c2.z, c3.x,c3.y,c3.z], 3));
+            pg.setAttribute('uv', new THREE.Float32BufferAttribute(
+              [0,1, 1,1, 1,0,  0,1, 1,0, 0,0], 2));
+            const pm = new THREE.MeshBasicMaterial({
+              map: tex, side: THREE.DoubleSide,
+              transparent: true, opacity: 0.9, depthWrite: false,
             });
-          } else {
-            this._frustumPathMat.color = new THREE.Color(Settings.frustumColor);
-          }
-          this._frustumPathMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
-          this.dynGroup.add(new LineSegments2(g, this._frustumPathMat));
+            this.dynGroup.add(new THREE.Mesh(pg, pm));
+          } catch (e) { /* video may not be decodable yet — silently skip */ }
         }
       }
     }
   }
 
-  // Build a wireframe pyramid in world space showing where the camera is
-  // looking at one frame. Apex sits at the camera centre; the four basis
-  // edges go to the corners of the image plane projected at depth d. We
-  // unproject pixel corners through fx/fy/cx/cy then transform to world via
-  // c2w. Same y/z flip as the rest of the 3D scene so it lines up with the
-  // PC and trajectory visualisation.
-  _buildFrustumLayer(c2w, intr, dimHW, depth, colorHex) {
-    const fx = intr[0], fy = intr[1], cx = intr[2], cy = intr[3];
-    const H = dimHW[0], W = dimHW[1];
-    // Image-plane corners (px) → camera-space rays at z=depth.
-    const corners_px = [[0, 0], [W, 0], [W, H], [0, H]];
-    const corners_cam = corners_px.map(([u, v]) => {
-      const xc = (u - cx) / fx * depth;
-      const yc = (v - cy) / fy * depth;
-      return [xc, yc, depth, 1];
-    });
-    // Apex (camera centre).
-    const apex_cam = [0, 0, 0, 1];
-    const tx = (p) => {
-      // p = [x,y,z,1] in camera space. world = c2w · p
-      const x = c2w[0][0]*p[0] + c2w[0][1]*p[1] + c2w[0][2]*p[2] + c2w[0][3]*p[3];
-      const y = c2w[1][0]*p[0] + c2w[1][1]*p[1] + c2w[1][2]*p[2] + c2w[1][3]*p[3];
-      const z = c2w[2][0]*p[0] + c2w[2][1]*p[1] + c2w[2][2]*p[2] + c2w[2][3]*p[3];
-      // Apply the y/z flip used by the rest of the 3D scene
-      return [x, -y, -z];
-    };
-    const apex = tx(apex_cam);
-    const corners = corners_cam.map(tx);
-    const segs = [];
-    // Apex → corners
-    for (const c of corners) {
-      segs.push(apex[0], apex[1], apex[2], c[0], c[1], c[2]);
-    }
-    // Corner ring (image plane outline)
-    for (let i = 0; i < 4; i++) {
-      const a = corners[i], b = corners[(i+1) % 4];
-      segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-    }
-    // Top-edge tick to indicate "up" of the image (camera roll)
-    {
-      const mid_top = [(corners[0][0]+corners[1][0])/2,
-                       (corners[0][1]+corners[1][1])/2,
-                       (corners[0][2]+corners[1][2])/2];
-      const mid_bot = [(corners[2][0]+corners[3][0])/2,
-                       (corners[2][1]+corners[3][1])/2,
-                       (corners[2][2]+corners[3][2])/2];
-      const tick = [mid_top[0] + (mid_top[0]-mid_bot[0])*0.18,
-                    mid_top[1] + (mid_top[1]-mid_bot[1])*0.18,
-                    mid_top[2] + (mid_top[2]-mid_bot[2])*0.18];
-      segs.push(corners[0][0], corners[0][1], corners[0][2], tick[0], tick[1], tick[2]);
-      segs.push(tick[0], tick[1], tick[2], corners[1][0], corners[1][1], corners[1][2]);
-    }
-    const g = new LineSegmentsGeometry();
-    g.setPositions(segs);
+  // Cached LineBasicMaterial for the frustum wires. The basic material
+  // ignores `linewidth` on most platforms (WebGL spec), but for a thin
+  // wire-frustum that's actually fine — and avoids the per-frame
+  // resolution-recompute cost of LineMaterial. The colour is pulled from
+  // Settings each call so the colour picker is live.
+  _getFrustumMat() {
     if (!this._frustumMat) {
-      this._frustumMat = new LineMaterial({
-        color: new THREE.Color(colorHex).getHex(),
-        linewidth: 2.5, dashed: false, worldUnits: false, vertexColors: false,
+      this._frustumMat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(Settings.frustumColor),
+        transparent: true, opacity: 0.85,
       });
     } else {
-      this._frustumMat.color = new THREE.Color(colorHex);
+      this._frustumMat.color = new THREE.Color(Settings.frustumColor);
     }
-    this._frustumMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
-    return new LineSegments2(g, this._frustumMat);
+    return this._frustumMat;
   }
 
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
@@ -2205,6 +2257,57 @@ async function loadPCBinary(url) {
   return { N, positions, colors };
 }
 
+// Pre-compute smoothed camera (position + forward direction) for the
+// frustum + camera-trail rendering. Gaussian moving average of odd kernel
+// size; the forward vectors are re-normalized after smoothing so the
+// frustum basis stays orthonormal.
+//
+// Inputs come from `clipData.camera`:
+//   * c2w_per_frame  (T,4,4) — preferred (HD-EPIC clips)
+//   * c2w_frame0           — single-frame fallback (EgoDex/DROID/DAVIS)
+// Output cached at clipData._camSmooth = { pos, fwd, T, aspect }.
+function precomputeSmoothCamera(clipData) {
+  if (!clipData?.camera) { clipData._camSmooth = null; return; }
+  const cam = clipData.camera;
+  const c2wAll = cam.c2w_per_frame || (cam.c2w_frame0 ? [cam.c2w_frame0] : null);
+  if (!c2wAll || !c2wAll.length) { clipData._camSmooth = null; return; }
+  const T = c2wAll.length;
+  // Raw camera origin (column 3) and forward = camera Z axis (column 2).
+  // OpenCV/vipe convention: +Z points into the scene from the camera.
+  const rawPos = new Array(T);
+  const rawFwd = new Array(T);
+  for (let i = 0; i < T; i++) {
+    const m = c2wAll[i];
+    rawPos[i] = [m[0][3], m[1][3], m[2][3]];
+    rawFwd[i] = [m[0][2], m[1][2], m[2][2]];
+  }
+  // Symmetric moving-average with truncated edges (no wrap, no padding bias).
+  const k = Math.max(1, (Settings.camSmoothWindow | 0) | 1);  // force odd
+  const half = (k - 1) >> 1;
+  const smooth = (arr) => {
+    const out = new Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      const lo = Math.max(0, i - half), hi = Math.min(arr.length - 1, i + half);
+      let sx = 0, sy = 0, sz = 0, n = 0;
+      for (let j = lo; j <= hi; j++) {
+        sx += arr[j][0]; sy += arr[j][1]; sz += arr[j][2]; n++;
+      }
+      out[i] = [sx / n, sy / n, sz / n];
+    }
+    return out;
+  };
+  const pos = smooth(rawPos);
+  const fwdRaw = smooth(rawFwd);
+  // Re-normalize forward vectors so the frustum basis stays orthonormal
+  // even after averaging warps the magnitude.
+  const fwd = fwdRaw.map(v => {
+    const L = Math.hypot(v[0], v[1], v[2]) || 1;
+    return [v[0]/L, v[1]/L, v[2]/L];
+  });
+  const dimHW = cam.video_dim_HW || clipData.raw_meta?.video_dim_HW || [480, 854];
+  clipData._camSmooth = { pos, fwd, T, aspect: dimHW[1] / dimHW[0] };
+}
+
 // Show + populate the object selector iff the bundle has multiple configs
 // (HD-EPIC clips). EgoDex/DROID/DAVIS bundles typically have a single config
 // so the selector stays hidden.
@@ -2237,6 +2340,8 @@ async function init() {
   }
   // Populate the per-clip object selector (only visible when there's >1 config).
   populateObjSelector(clipData, cfg);
+  // Cache smoothed camera positions/forwards for frustum + trail rendering.
+  precomputeSmoothCamera(clipData);
 
   // Preload the alternate full-video PC if this clip ships one (EgoDex). We
   // load it as a separate `_altPC` so panels can independently choose between
@@ -3349,6 +3454,44 @@ function bindControls() {
     Settings.frustumColor = e.target.value;
     rerenderAll();
   };
+  const frustumPathCol = document.getElementById('frustum-path-col');
+  if (frustumPathCol) frustumPathCol.oninput = (e) => {
+    Settings.frustumPathColor = e.target.value;
+    rerenderAll();
+  };
+  const tFrustumVideo = document.getElementById('t-frustum-video');
+  if (tFrustumVideo) {
+    tFrustumVideo.classList.toggle('on', Settings.frustumVideo);
+    tFrustumVideo.onclick = () => {
+      Settings.frustumVideo = !Settings.frustumVideo;
+      tFrustumVideo.classList.toggle('on', Settings.frustumVideo);
+      rerenderAll();
+    };
+  }
+  const frustumTrail = document.getElementById('frustum-trail');
+  const frustumTrailLbl = document.getElementById('frustum-trail-lbl');
+  if (frustumTrail) {
+    frustumTrail.oninput = (e) => {
+      const v = parseInt(e.target.value, 10);
+      Settings.frustumPathTrail = v;
+      if (frustumTrailLbl) frustumTrailLbl.textContent = String(v);
+      rerenderAll();
+    };
+  }
+  // Camera-smoothing kernel: changing this needs to re-run the gaussian
+  // moving-average over the cached camera arrays, so we re-precompute
+  // before triggering a redraw.
+  const camSmooth = document.getElementById('cam-smooth');
+  const camSmoothLbl = document.getElementById('cam-smooth-lbl');
+  if (camSmooth) {
+    camSmooth.oninput = (e) => {
+      const v = parseInt(e.target.value, 10);
+      Settings.camSmoothWindow = v;
+      if (camSmoothLbl) camSmoothLbl.textContent = String(v);
+      if (clipData) precomputeSmoothCamera(clipData);
+      rerenderAll();
+    };
+  }
   // History color selector — re-aim the history hue to follow GT or pred (or
   // its own baby-blue default).
   const histSel = document.getElementById('hist-color-sel');
