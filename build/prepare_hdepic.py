@@ -150,6 +150,12 @@ def main():
     ap.add_argument("--caption", default="")
     ap.add_argument("--n-stamps", type=int, default=4)
     ap.add_argument("--pc-subsample", type=int, default=3)
+    ap.add_argument(
+        "--extra-pc-frames", type=int, nargs='*', default=[],
+        help="Additional frame indices to backproject as standalone PCs. "
+             "Each one is written to static/data/{vid}_pc_f{N}.bin and "
+             "referenced from the bundle's `pc_extras` list so the viewer "
+             "can render them alongside the frame-0 PC.")
     args = ap.parse_args()
 
     vid = args.vid
@@ -266,14 +272,32 @@ def main():
     chrono_path = out_video / f"{vid}_chrono.jpg"
     cv2.imwrite(str(chrono_path), chrono_img, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
 
-    # PC: depth backprojection at frame 0
+    # PC: depth backprojection at frame 0 + any --extra-pc-frames.
+    pc_extras = []
     with zipfile.ZipFile(depth_zip_path) as zf:
         names = sorted(zf.namelist())
         depth0 = load_exr_depth(zf.read(names[0]))
-    f0_rgb = cv2.cvtColor(f0, cv2.COLOR_BGR2RGB)
-    xyz, col = backproject(depth0, f0_rgb, poses[0], intrs[0], subsample=args.pc_subsample)
-    pc_path = out_data / f"{vid}_pc.bin"
-    write_pc_binary(pc_path, xyz, col)
+        f0_rgb = cv2.cvtColor(f0, cv2.COLOR_BGR2RGB)
+        xyz, col = backproject(depth0, f0_rgb, poses[0], intrs[0], subsample=args.pc_subsample)
+        pc_path = out_data / f"{vid}_pc.bin"
+        write_pc_binary(pc_path, xyz, col)
+        for fi in args.extra_pc_frames:
+            if fi < 0 or fi >= T:
+                raise RuntimeError(f"--extra-pc-frames {fi} out of range [0, {T})")
+            depth_fi = load_exr_depth(zf.read(names[fi]))
+            frame_fi = grab_frame(rgb_path, fi)
+            rgb_fi = cv2.cvtColor(frame_fi, cv2.COLOR_BGR2RGB)
+            xyz_fi, col_fi = backproject(depth_fi, rgb_fi, poses[fi], intrs[fi],
+                                         subsample=args.pc_subsample)
+            extra_path = out_data / f"{vid}_pc_f{fi}.bin"
+            write_pc_binary(extra_path, xyz_fi, col_fi)
+            pc_extras.append({
+                "frame": int(fi),
+                "url": f"static/data/{vid}_pc_f{fi}.bin",
+                "n_points": int(xyz_fi.shape[0]),
+                "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
+                "subsample": args.pc_subsample,
+            })
 
     # mp4: transcode to ensure libx264 yuv420p
     mp4_dst = out_video / f"{vid}.mp4"
@@ -313,6 +337,7 @@ def main():
             "subsample": args.pc_subsample,
             "frame_indices_original": [0],
         },
+        "pc_extras": pc_extras,
         "camera": {
             "c2w_frame0": poses[0].tolist(),
             "intrinsics_frame0": [float(intrs[0,0]), float(intrs[0,1]),

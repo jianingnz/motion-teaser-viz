@@ -722,6 +722,10 @@ footer a { color: #2563eb; text-decoration: none; }
             <input type="range" id="smooth-samples" min="2" max="20" step="1" value="8">
           </div>
         </div>
+        <div class="fld" style="margin-top:10px;">
+          <div class="lbl-row"><span title="Symmetric moving-average kernel (in frames) applied to gt_3d / pred_3d / raw_3d. 1 = original (no smoothing); larger values denoise but flatten fast motion.">Track smoothing (kernel)</span><span class="v" id="track-smooth-lbl">1 (original)</span></div>
+          <input type="range" id="track-smooth" min="1" max="21" step="2" value="1">
+        </div>
       </div>
     </details>
 
@@ -1111,6 +1115,10 @@ const Settings = {
   // two visualizations read consistently. Camera positions and forward
   // vectors are smoothed at clip-load time (gaussian moving average) so
   // the rendered trajectory is calm even when raw vipe poses are noisy.
+  // Symmetric moving-average kernel (in frames) applied to gt_3d, pred_3d,
+  // and raw_3d at clip-load time and again whenever the slider moves. 1 =
+  // identity (raw tracks); larger values denoise but flatten fast motion.
+  trackSmoothWindow: 1,
   showFrustum:    true,
   frustumSize:    0.10,         // depth (m) of the pyramid from camera origin
   frustumColor:   '#66aaff',    // wire colour (matches reference design)
@@ -1565,6 +1573,25 @@ class Panel {
       // becomes three.js Y-down, hence the negative scale on Y and Z).
       pc.scale.set(1, -1, -1);
       this.staticGroup.add(pc);
+
+      // Extra per-frame PCs (e.g. part4_pour_1027 ships a frame-33 PC). They
+      // share the disc material so the user-visible point-size slider and
+      // depth-shade settings apply uniformly. Skipped on panel ⑤ when
+      // objectPCOnly is set — that panel deliberately filters to only the
+      // tracked-object surface from frame 0 and adding a second time-snapshot
+      // would dilute that view.
+      if (!this.opts.objectPCOnly && Array.isArray(clipData._pcExtras)) {
+        for (const ex of clipData._pcExtras) {
+          if (!ex || !ex.N) continue;
+          const eg = new THREE.BufferGeometry();
+          eg.setAttribute('position', new THREE.BufferAttribute(ex.positions, 3));
+          eg.setAttribute('color',    new THREE.BufferAttribute(ex.colors,    3));
+          const epc = new THREE.Points(eg, m);
+          epc.scale.set(1, -1, -1);
+          epc.userData = { pcExtraFrame: ex.frame };
+          this.staticGroup.add(epc);
+        }
+      }
     }
 
     // (Raw 3D tracks now live in dynGroup with a tail-window — see updateDynamic)
@@ -2308,6 +2335,76 @@ function precomputeSmoothCamera(clipData) {
   clipData._camSmooth = { pos, fwd, T, aspect: dimHW[1] / dimHW[0] };
 }
 
+// Snapshot the un-smoothed track arrays so the smoothing slider can move
+// freely between "very smooth" and "raw" without ever losing the source
+// signal. We snapshot per-config (gt_3d, pred_3d) and once at the bundle
+// level (raw_3d if present). Shape is preserved exactly: T x N x [x,y,z]
+// with `null` for invalid frames.
+function _cloneTracks(arr) {
+  if (!arr) return null;
+  return arr.map(frame => frame.map(p =>
+    (p && Number.isFinite(p[0])) ? [p[0], p[1], p[2]] : null));
+}
+function snapshotOriginalTracks(clipData) {
+  if (!clipData) return;
+  clipData._origConfigs = (clipData.configs || []).map(c => ({
+    gt_3d:  _cloneTracks(c.gt_3d),
+    pred_3d: _cloneTracks(c.pred_3d),
+  }));
+  clipData._origRaw3d = _cloneTracks(clipData.raw_3d);
+}
+
+// Symmetric moving-average smoothing over the time axis. Points that were
+// originally null/invalid stay null in the output (we don't synthesize
+// values for hidden frames). The kernel size is forced odd; size <= 1 is
+// a no-op (the original arrays are returned unchanged).
+function _smoothTracksOverTime(tracks, K) {
+  if (!tracks || K <= 1) return _cloneTracks(tracks);
+  const T = tracks.length;
+  if (!T) return tracks;
+  const N = tracks[0]?.length || 0;
+  const half = (K - 1) >> 1;
+  const out = new Array(T);
+  for (let t = 0; t < T; t++) out[t] = new Array(N);
+  for (let p = 0; p < N; p++) {
+    for (let t = 0; t < T; t++) {
+      const orig = tracks[t][p];
+      if (!orig || !Number.isFinite(orig[0])) { out[t][p] = null; continue; }
+      const lo = Math.max(0, t - half), hi = Math.min(T - 1, t + half);
+      let sx = 0, sy = 0, sz = 0, n = 0;
+      for (let j = lo; j <= hi; j++) {
+        const pt = tracks[j][p];
+        if (!pt || !Number.isFinite(pt[0])) continue;
+        sx += pt[0]; sy += pt[1]; sz += pt[2]; n++;
+      }
+      out[t][p] = n > 0 ? [sx / n, sy / n, sz / n] : null;
+    }
+  }
+  return out;
+}
+
+// Apply Settings.trackSmoothWindow to every cached original track array
+// and write the smoothed result back where the renderer expects to read
+// it (cfg.gt_3d, cfg.pred_3d, clipData.raw_3d). Idempotent — always
+// rebuilds from the originals so successive slider drags compose
+// correctly. Layout / jumpy-score / track-picker selections are left
+// alone on purpose: they're identity-stable and recomputing them on
+// every slider tick would visibly thrash the picker UI.
+function applyTrackSmoothing(clipData) {
+  if (!clipData?._origConfigs) return;
+  const K = Math.max(1, (Settings.trackSmoothWindow | 0) | 1);  // odd
+  const cfgs = clipData.configs || [];
+  for (let i = 0; i < cfgs.length; i++) {
+    const orig = clipData._origConfigs[i];
+    if (!orig) continue;
+    cfgs[i].gt_3d   = _smoothTracksOverTime(orig.gt_3d,   K);
+    cfgs[i].pred_3d = _smoothTracksOverTime(orig.pred_3d, K);
+  }
+  if (clipData._origRaw3d) {
+    clipData.raw_3d = _smoothTracksOverTime(clipData._origRaw3d, K);
+  }
+}
+
 // Show + populate the object selector iff the bundle has multiple configs
 // (HD-EPIC clips). EgoDex/DROID/DAVIS bundles typically have a single config
 // so the selector stays hidden.
@@ -2342,6 +2439,11 @@ async function init() {
   populateObjSelector(clipData, cfg);
   // Cache smoothed camera positions/forwards for frustum + trail rendering.
   precomputeSmoothCamera(clipData);
+  // Snapshot raw tracks before any smoothing pass touches them — the slider
+  // always rebuilds from these so going back to "Original (no smoothing)"
+  // restores the bundle's untouched data.
+  snapshotOriginalTracks(clipData);
+  applyTrackSmoothing(clipData);
 
   // Preload the alternate full-video PC if this clip ships one (EgoDex). We
   // load it as a separate `_altPC` so panels can independently choose between
@@ -2354,7 +2456,19 @@ async function init() {
   if (clipData.pc_bin) {
     clipData._pc = await loadPCBinary(clipData.pc_bin.url);
     console.log(`PC: ${clipData._pc.N} points loaded from ${clipData.pc_bin.url}`);
-  } else if (clipData.pc_xyz && clipData.pc_colors) {
+  }
+  // Extra PCs at additional frames (e.g. frame 33). Each one is a separate
+  // depth backprojection bundled by prepare_hdepic.py — rendered alongside
+  // the frame-0 PC so the user can see the object's pose at multiple times.
+  if (Array.isArray(clipData.pc_extras) && clipData.pc_extras.length) {
+    clipData._pcExtras = [];
+    for (const ex of clipData.pc_extras) {
+      const pc = await loadPCBinary(ex.url);
+      clipData._pcExtras.push({ ...pc, frame: ex.frame });
+      console.log(`PC extra @frame=${ex.frame}: ${pc.N} pts from ${ex.url}`);
+    }
+  }
+  if (!clipData.pc_bin && clipData.pc_xyz && clipData.pc_colors) {
     // JSON-fallback PC (DROID/DAVIS source clips that don't ship a separate
     // bin file). Inflate into typed arrays so downstream code (filter, panel
     // rendering) can use the same `_pc.positions / .colors` interface.
@@ -3475,6 +3589,19 @@ function bindControls() {
       const v = parseInt(e.target.value, 10);
       Settings.frustumPathTrail = v;
       if (frustumTrailLbl) frustumTrailLbl.textContent = String(v);
+      rerenderAll();
+    };
+  }
+  // Track smoothing: re-run the moving-average pass over the snapshotted
+  // originals. Identity (kernel=1) restores the bundle's untouched data.
+  const trackSmooth = document.getElementById('track-smooth');
+  const trackSmoothLbl = document.getElementById('track-smooth-lbl');
+  if (trackSmooth) {
+    trackSmooth.oninput = (e) => {
+      const v = parseInt(e.target.value, 10);
+      Settings.trackSmoothWindow = v;
+      if (trackSmoothLbl) trackSmoothLbl.textContent = v <= 1 ? '1 (original)' : String(v);
+      if (clipData) applyTrackSmoothing(clipData);
       rerenderAll();
     };
   }
