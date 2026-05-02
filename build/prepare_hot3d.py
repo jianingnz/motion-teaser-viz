@@ -163,8 +163,11 @@ def main():
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--name", default="hot3d_clip1995_clip1996")
     ap.add_argument("--caption", default="HOT3D cross-clip stitch · clip-001995 → clip-001996")
-    ap.add_argument("--obj-keep", type=int, default=256,
-                    help="Subsample obj K from 2000 to this many to keep JSON modest.")
+    ap.add_argument("--obj-keep", type=int, default=2000,
+                    help="Cap on the per-frame GT point cloud size. The source "
+                         "ships K=2000 anchor-visible tracks; we keep all of them "
+                         "by default so the cloud reads as a dense surface. Lower "
+                         "this if the bundle JSON gets too large (~21 MB at 2000).")
     ap.add_argument("--target-height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=15)
     args = ap.parse_args()
@@ -330,7 +333,9 @@ def main():
         "viewer_defaults": {
             "objMaskRadiusPx": int(meta["moge"]["obj_mask_radius_px_default"]) * 3,
             "objectCloud": True,             # render gt_3d[fi] as a coloured PC
-            "objCloudPointPx": 14,
+            # 2000-point cloud reads as solid at ~6-8 px on a 480-tall panel;
+            # bigger sizes turn into overlapping blobs.
+            "objCloudPointPx": 7,
             "showHist": False,               # HOT3D has no separate history concept
             "showPred": False,               # no prediction model evaluated here
             "trackSmoothWindow": 1,          # don't pre-smooth the GT object cloud
