@@ -2198,7 +2198,15 @@ class Panel {
     // GT object cloud (HOT3D-style) renders BEFORE the early-return so it's
     // always visible — including before any video frame has been decoded
     // (fiFrac < 0) and in paper mode. We clamp the frame index to [0, T-1].
-    if (Settings.objectCloud && cfg.pt_colors_rgb) {
+    // Gate the (potentially heavy) GT object cloud + ghosts + trails on
+    // the panel's GT visibility flag. With 7 panels in the grid we'd
+    // otherwise render the same 36k-pt cloud + 1024 trail polylines on
+    // every panel each frame — way more work than the screen needs. This
+    // restricts cloud rendering to the panels where the GT layer is
+    // semantically active (canvas-all, canvas-gt, canvas-cmp,
+    // canvas-paper) and lets the small history / pred / object-PC
+    // panels skip the work entirely.
+    if (Settings.objectCloud && cfg.pt_colors_rgb && this.opts.showGT) {
       const T = cfg.gt_3d?.length || 0;
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
@@ -2651,41 +2659,33 @@ class Panel {
   _addObjectCloudTrails(cfg, fiNow) {
     const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
     const fStart   = Math.max(0, fiNow - trailLen);
-    const segs = [], cols = [];
     const baseCol = new THREE.Color(Settings.objectCloudTrailColor || '#34d399');
     const r0 = baseCol.r, g0 = baseCol.g, b0 = baseCol.b;
-    const MIX_LO = Settings.mixLo;       // pale-floor (existing slider)
-    const T_EXP  = Settings.tExp;        // gradient curve
+    const MIX_LO = Settings.mixLo;
+    const T_EXP  = Settings.tExp;
     const Tdenom = Math.max(1, fiNow - fStart);
-    // Per-frame colour for a vertex at frame f in [fStart, fiNow]:
-    //   t = (f - fStart) / Tdenom        ∈ [0, 1]
-    //   k = MIX_LO + (1 - MIX_LO) * t^EXP
-    //   rgb = (k * baseRGB) + (1-k) * white     // toward-white pale
-    const colorAt = (f) => {
-      const t = (f - fStart) / Tdenom;
+
+    // Pre-compute the gradient color per frame in the trail window. With
+    // up to 1024 trails × 30+ frames this short table avoids 30k+ Math.pow
+    // calls (the per-segment colorAt call dominated profile time).
+    const winN = trailLen + 1;
+    const colorTable = new Float32Array(winN * 3);
+    for (let i = 0; i < winN; i++) {
+      const t = i / Tdenom;
       const k = MIX_LO + (1 - MIX_LO) * Math.pow(Math.max(0, Math.min(1, t)), T_EXP);
-      return [r0 * k + (1 - k), g0 * k + (1 - k), b0 * k + (1 - k)];
-    };
-    const pushSeg = (pa, pb, fa, fb) => {
-      segs.push(pa[0], pa[1], pa[2], pb[0], pb[1], pb[2]);
-      const ca = colorAt(fa), cb = colorAt(fb);
-      cols.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
-    };
+      colorTable[i*3]   = r0 * k + (1 - k);
+      colorTable[i*3+1] = g0 * k + (1 - k);
+      colorTable[i*3+2] = b0 * k + (1 - k);
+    }
 
     if (clipData?._gt3d) {
-      // Same on-the-fly dequant logic as _addObjectCloudLayer — read
-      // Int16 quant directly, decode per axis, no Float32 mirror buffer.
-      const { N, F, quant, center, half, motionMag } = clipData._gt3d;
+      const { N, quant, center, half, motionMag } = clipData._gt3d;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
       const M = Math.min(Settings.objectCloudTrailCount | 0, N);
       if (M <= 0) return;
-      // Pick the M tracks with the LARGEST motion magnitudes (cached
-      // sort under clipData._gt3d._motionRank, lazy-built once). When
-      // every track is ~static the rank is meaningless but we still
-      // draw something — that's fine. When one object is moving and
-      // five are still, this naturally surfaces the moving one.
+      // Lazy-cache top-K-by-motion ordering.
       let ranked = clipData._gt3d._motionRank;
       if (!ranked && motionMag) {
         ranked = new Int32Array(N);
@@ -2695,8 +2695,6 @@ class Panel {
         clipData._gt3d._motionRank = ranked;
       }
       const motionMin = Math.max(0, Settings.motionMinMag || 0);
-      // Walk the top of the ranked list; bail when we hit a track below
-      // the motion threshold (since the list is sorted desc).
       const trackIds = [];
       for (let r = 0; r < N && trackIds.length < M; r++) {
         const p = ranked ? ranked[r] : (Math.floor(r * (N / M)) % N);
@@ -2704,28 +2702,59 @@ class Panel {
         trackIds.push(p);
       }
       if (!trackIds.length) return;
+      // Pre-allocate. Worst case = M tracks × trailLen segments per track.
+      const maxSegs = trackIds.length * trailLen;
+      const segs = new Float32Array(maxSegs * 6);
+      const cols = new Float32Array(maxSegs * 6);
+      let si = 0;   // segment count actually filled
       for (let mi = 0; mi < trackIds.length; mi++) {
         const p = trackIds[mi];
-        let prev = null, prevF = -1;
+        let prevValid = false;
+        let prevX = 0, prevY = 0, prevZ = 0, prevColIdx = 0;
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
           const qx = quant[base];
-          if (qx === SENT) { prev = null; continue; }
+          if (qx === SENT) { prevValid = false; continue; }
           const qy = quant[base + 1], qz = quant[base + 2];
-          const cur = [
-             (qx * K) * hx + cx,
-            -((qy * K) * hy + cy),
-            -((qz * K) * hz + cz),
-          ];
-          if (prev) pushSeg(prev, cur, prevF, f);
-          prev = cur; prevF = f;
+          const cx_ = (qx * K) * hx + cx;
+          const cy_ = -((qy * K) * hy + cy);
+          const cz_ = -((qz * K) * hz + cz);
+          const colIdx = (f - fStart) * 3;
+          if (prevValid) {
+            const o = si * 6;
+            segs[o]   = prevX; segs[o+1] = prevY; segs[o+2] = prevZ;
+            segs[o+3] = cx_;   segs[o+4] = cy_;   segs[o+5] = cz_;
+            cols[o]   = colorTable[prevColIdx];
+            cols[o+1] = colorTable[prevColIdx+1];
+            cols[o+2] = colorTable[prevColIdx+2];
+            cols[o+3] = colorTable[colIdx];
+            cols[o+4] = colorTable[colIdx+1];
+            cols[o+5] = colorTable[colIdx+2];
+            si++;
+          }
+          prevX = cx_; prevY = cy_; prevZ = cz_;
+          prevColIdx = colIdx;
+          prevValid = true;
         }
       }
-    } else if (cfg.gt_3d) {
+      if (si === 0) return;
+      // Trim to filled length so LineSegmentsGeometry doesn't draw stale
+      // zeros beyond `si`.
+      const segsTrim = (si === maxSegs) ? segs : segs.subarray(0, si * 6);
+      const colsTrim = (si === maxSegs) ? cols : cols.subarray(0, si * 6);
+      const g = new LineSegmentsGeometry();
+      g.setPositions(segsTrim);
+      g.setColors(colsTrim);
+      this._addTrailMatLayer(g);
+      return;
+    }
+    // Legacy nested-array fallback (non-typed bundles)
+    if (cfg.gt_3d) {
       const Nfull = (cfg.gt_3d[0] || []).length || 0;
       const M = Math.min(Settings.objectCloudTrailCount | 0, Nfull);
       if (M <= 0) return;
       const step = Nfull / M;
+      const segs = [], cols = [];
       for (let m = 0; m < M; m++) {
         const p = Math.min(Nfull - 1, Math.floor(m * step));
         let prev = null, prevF = -1;
@@ -2733,18 +2762,27 @@ class Panel {
           const pt = cfg.gt_3d[f]?.[p];
           if (!pt || !Number.isFinite(pt[0])) { prev = null; continue; }
           const cur = [pt[0], -pt[1], -pt[2]];
-          if (prev) pushSeg(prev, cur, prevF, f);
+          if (prev) {
+            segs.push(prev[0], prev[1], prev[2], cur[0], cur[1], cur[2]);
+            const ca = colorTable.subarray((prevF - fStart) * 3, (prevF - fStart) * 3 + 3);
+            const cb = colorTable.subarray((f     - fStart) * 3, (f     - fStart) * 3 + 3);
+            cols.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
+          }
           prev = cur; prevF = f;
         }
       }
-    } else {
+      if (!segs.length) return;
+      const g = new LineSegmentsGeometry();
+      g.setPositions(segs);
+      g.setColors(cols);
+      this._addTrailMatLayer(g);
       return;
     }
+  }
 
-    if (!segs.length) return;
-    const g = new LineSegmentsGeometry();
-    g.setPositions(segs);
-    g.setColors(cols);
+  // Shared LineSegments2 wrapper for the trail layer above — keeps the
+  // material reuse + opacity / linewidth refresh in one place.
+  _addTrailMatLayer(g) {
     if (!this._objCloudTrailMat) {
       this._objCloudTrailMat = new LineMaterial({
         color: 0xffffff, vertexColors: true,
@@ -2757,6 +2795,7 @@ class Panel {
     this._objCloudTrailMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
     this.dynGroup.add(new LineSegments2(g, this._objCloudTrailMat));
   }
+
 
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
     const N = ptIdx.length;
