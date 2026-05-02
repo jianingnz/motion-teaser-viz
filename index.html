@@ -1323,8 +1323,17 @@ function resetCamera() {
 // Hard alpha-cutoff disc with depthWrite enabled so nearer points
 // correctly occlude farther points (no see-through bug).
 function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE,
-                            alpha = 1.0 } = {}) {
-  const transparent = (alpha < 1.0);
+                            alpha = 1.0, forceTransparent = false } = {}) {
+  // `forceTransparent: true` keeps the material in the *transparent
+  // render pass* even at alpha=1.0. three.js runs the opaque pass
+  // FIRST then the transparent pass FULLY, so without this an "opaque"
+  // cloud always draws BEFORE any transparent line layer regardless of
+  // renderOrder — and trails would overpaint the cloud no matter what.
+  // Setting transparent: true at alpha=1.0 still produces visually
+  // opaque pixels (blending math is identity for alpha=1) but moves
+  // the draw call into the transparent queue where renderOrder
+  // actually decides who wins on top.
+  const transparent = forceTransparent || (alpha < 1.0);
   return new THREE.ShaderMaterial({
     uniforms: {
       uSize: { value: size },
@@ -1369,7 +1378,11 @@ function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE,
         gl_FragColor = vec4(c, uAlpha);
       }`,
     transparent: transparent,
-    depthWrite: !transparent,    // ghosts shouldn't z-block the live cloud
+    // depthWrite is decided by the ALPHA, not the transparent flag —
+    // forceTransparent (live cloud at alpha=1.0) still wants to write
+    // depth so the cloud z-occludes itself correctly. Genuine ghosts
+    // (alpha<1.0) skip depthWrite so they don't z-block the live cloud.
+    depthWrite: alpha >= 1.0,
     depthTest: true,
   });
 }
@@ -2673,8 +2686,11 @@ class Panel {
       mat.uniforms.uAlpha.value = alpha;
     } else {
       if (!this._objLiveMat) {
+        // Live cloud: opaque-looking (alpha=1.0) but routed through the
+        // transparent pass so its high renderOrder beats the LineMaterial
+        // trails. depthWrite stays on so the cloud z-blocks itself.
         this._objLiveMat = makeDiscMaterial({
-          size: Settings.objCloudPointPx, alpha: 1.0,
+          size: Settings.objCloudPointPx, alpha: 1.0, forceTransparent: true,
         });
       }
       mat = this._objLiveMat;
