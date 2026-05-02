@@ -2206,7 +2206,14 @@ class Panel {
     // semantically active (canvas-all, canvas-gt, canvas-cmp,
     // canvas-paper) and lets the small history / pred / object-PC
     // panels skip the work entirely.
-    if (Settings.objectCloud && cfg.pt_colors_rgb && this.opts.showGT) {
+    // Gate the dense GT object cloud + trails to BIG panels only
+    // (canvas-all + canvas-paper). Small comparison panels were rebuilding
+    // 36k-pt BufferGeometries every frame, eating ~3 MB / frame each
+    // through the GC and stalling the playhead at heavy frames. The small
+    // panels keep their existing trail-balls/lines/raw layers — they just
+    // don't show the dense object surface cloud.
+    const _isBigPanel = this.opts.lineWidth >= TRAIL_LINE_PX_BIG - 0.01;
+    if (Settings.objectCloud && cfg.pt_colors_rgb && this.opts.showGT && _isBigPanel) {
       const T = cfg.gt_3d?.length || 0;
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
@@ -2641,14 +2648,36 @@ class Panel {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
-    const m = makeDiscMaterial({ size: Settings.objCloudPointPx, alpha });
-    m.uniforms.uViewport.value = this.canvas.height || 400;
-    const cloud = new THREE.Points(g, m);
-    // Tag ghosts so the dynGroup teardown disposes their one-shot
-    // shader material (each ghost gets its own material because of the
-    // alpha uniform); the live (alpha=1.0) cloud also gets a fresh
-    // material per frame, so disposal is uniform either way.
-    cloud.userData = { pcKind: 'objectCloud', disposeMaterial: true };
+    // Cache one ShaderMaterial per role per panel. Without this we'd
+    // allocate + compile a fresh ShaderMaterial every frame for every
+    // ghost cloud + live cloud; even though three.js caches the GLSL
+    // program, the JS allocation churn was visible as scrubbing hitches.
+    const isGhost = (alpha < 1.0);
+    let mat;
+    if (isGhost) {
+      if (!this._objGhostMat) {
+        this._objGhostMat = makeDiscMaterial({
+          size: Settings.objCloudPointPx, alpha,
+        });
+      }
+      mat = this._objGhostMat;
+      mat.uniforms.uAlpha.value = alpha;
+    } else {
+      if (!this._objLiveMat) {
+        this._objLiveMat = makeDiscMaterial({
+          size: Settings.objCloudPointPx, alpha: 1.0,
+        });
+      }
+      mat = this._objLiveMat;
+      mat.uniforms.uAlpha.value = 1.0;
+    }
+    mat.uniforms.uSize.value = Settings.objCloudPointPx;
+    mat.uniforms.uViewport.value = this.canvas.height || 400;
+    const cloud = new THREE.Points(g, mat);
+    // Geometry is per-frame disposable (tagged via the dynGroup teardown
+    // path through child.geometry.dispose()). Materials are SHARED across
+    // frames now, so do NOT set disposeMaterial = true here.
+    cloud.userData = { pcKind: 'objectCloud' };
     this.dynGroup.add(cloud);
   }
 
