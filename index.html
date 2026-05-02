@@ -2129,7 +2129,32 @@ class Panel {
 
   updateDynamic(cfg, fiFrac) {
     if (this.cfgOverride) cfg = this.cfgOverride;
-    while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
+    // Tear down the previous frame's dynamic layer. Each updateDynamic
+    // creates fresh BufferGeometry / LineSegmentsGeometry instances; if
+    // we only call dynGroup.remove(), three.js never disposes the
+    // underlying GPU buffers and the renderer accumulates dead VBOs at
+    // 30 fps × 100s = 3000 leaked geometries — over time the GPU thrashes
+    // and the panel freezes ("stuck" while playback keeps advancing).
+    // Materials are SHARED across frames (this.lineMats, this.sphereMat,
+    // this._endpointMat, this._frustumMat, this._frustumPathMat,
+    // this._objCloudTrailMat) so we MUST NOT dispose them — only the
+    // per-frame geometry.
+    while (this.dynGroup.children.length) {
+      const child = this.dynGroup.children[0];
+      this.dynGroup.remove(child);
+      if (child.geometry && typeof child.geometry.dispose === 'function') {
+        child.geometry.dispose();
+      }
+      // The video-texture frustum mesh ships its own one-shot
+      // CanvasTexture + MeshBasicMaterial — those need disposal too.
+      if (child.userData?.disposeMaterial && child.material
+          && typeof child.material.dispose === 'function') {
+        if (child.material.map && typeof child.material.map.dispose === 'function') {
+          child.material.map.dispose();
+        }
+        child.material.dispose();
+      }
+    }
     const isPaper = !!this.opts.paperMode;
     // GT object cloud (HOT3D-style) renders BEFORE the early-return so it's
     // always visible — including before any video frame has been decoded
@@ -2455,7 +2480,9 @@ class Panel {
               map: tex, side: THREE.DoubleSide,
               transparent: true, opacity: 0.9, depthWrite: false,
             });
-            this.dynGroup.add(new THREE.Mesh(pg, pm));
+            const tmesh = new THREE.Mesh(pg, pm);
+            tmesh.userData = { disposeMaterial: true };  // one-shot tex + mat
+            this.dynGroup.add(tmesh);
           } catch (e) { /* video may not be decodable yet — silently skip */ }
         }
       }
