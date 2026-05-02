@@ -1825,17 +1825,24 @@ class Panel {
     if (clipData?._gt3d) {
       // HOT3D typed-array path: scan a stride of frames at a stride of
       // points (sub-sampled — 100k * 100 frames is way more than we need
-      // for a bounding-box estimate).
-      const { N, F, positions: posAll } = clipData._gt3d;
+      // for a bounding-box estimate). Dequantizes Int16 inline.
+      const { N, F, quant, center, half } = clipData._gt3d;
+      const cx = center[0], cy = center[1], cz = center[2];
+      const hx = half[0],   hy = half[1],   hz = half[2];
+      const SENT = -32768, K = 1 / 32767;
       const fStride = Math.max(1, Math.floor(F / 8));
       const pStride = Math.max(1, Math.floor(N / 2000));
       for (let fi = 0; fi < F; fi += fStride) {
         const base = fi * N * 3;
         for (let p = 0; p < N; p += pStride) {
-          const x = posAll[base + p*3];
-          if (Number.isFinite(x)) {
-            trajPts.push([x, -posAll[base + p*3 + 1], -posAll[base + p*3 + 2]]);
-          }
+          const qx = quant[base + p*3];
+          if (qx === SENT) continue;
+          const qy = quant[base + p*3 + 1], qz = quant[base + p*3 + 2];
+          trajPts.push([
+             (qx * K) * hx + cx,
+            -((qy * K) * hy + cy),
+            -((qz * K) * hz + cz),
+          ]);
         }
       }
     } else if (cfg.gt_3d) {
@@ -2493,25 +2500,28 @@ class Panel {
     //      or null + cfg.pt_colors_rgb[p] = [r,g,b].
     let positions = null, colors = null;
     if (clipData?._gt3d) {
-      const { N, F, positions: posAll, rgb } = clipData._gt3d;
+      // On-the-fly dequantization from Int16 quant + per-axis center/half.
+      // Sentinel −32768 = invisible (the int16 valid range is ±32767).
+      const { N, F, quant, rgb, center, half } = clipData._gt3d;
       if (fi < 0 || fi >= F) return;
+      const cx = center[0], cy = center[1], cz = center[2];
+      const hx = half[0],   hy = half[1],   hz = half[2];
+      const SENT = -32768, K = 1 / 32767;
       const base = fi * N * 3;
-      // Two-pass: count valid, then fill. Pre-allocating typed arrays avoids
-      // V8 boxing 100k Number objects when we'd push to a JS array.
       let M = 0;
-      for (let p = 0; p < N; p++) {
-        if (Number.isFinite(posAll[base + p*3])) M++;
-      }
+      for (let p = 0; p < N; p++) if (quant[base + p*3] !== SENT) M++;
       if (!M) return;
       positions = new Float32Array(M * 3);
       colors    = new Float32Array(M * 3);
       let j = 0;
       for (let p = 0; p < N; p++) {
-        const x = posAll[base + p*3];
-        if (!Number.isFinite(x)) continue;
-        positions[j*3]   = x;
-        positions[j*3+1] = -posAll[base + p*3 + 1];
-        positions[j*3+2] = -posAll[base + p*3 + 2];
+        const qx = quant[base + p*3];
+        if (qx === SENT) continue;
+        const qy = quant[base + p*3 + 1];
+        const qz = quant[base + p*3 + 2];
+        positions[j*3]   =  (qx * K) * hx + cx;
+        positions[j*3+1] = -((qy * K) * hy + cy);     // y/z scene flip
+        positions[j*3+2] = -((qz * K) * hz + cz);
         colors[j*3]   = rgb[p*3]   / 255;
         colors[j*3+1] = rgb[p*3+1] / 255;
         colors[j*3+2] = rgb[p*3+2] / 255;
@@ -2576,22 +2586,28 @@ class Panel {
     };
 
     if (clipData?._gt3d) {
-      const { N, F, positions: posAll } = clipData._gt3d;
-      // Evenly-spaced track IDs: 0, N/M, 2*N/M, ...
+      // Same on-the-fly dequant logic as _addObjectCloudLayer — read
+      // Int16 quant directly, decode per axis, no Float32 mirror buffer.
+      const { N, F, quant, center, half } = clipData._gt3d;
+      const cx = center[0], cy = center[1], cz = center[2];
+      const hx = half[0],   hy = half[1],   hz = half[2];
+      const SENT = -32768, K = 1 / 32767;
       const M = Math.min(Settings.objectCloudTrailCount | 0, N);
       if (M <= 0) return;
       const step = N / M;
-      // We need to read posAll[(f*N + p)*3 + axis] (frame-major) and apply
-      // the y/z scene flip when emitting world-space vertices.
       for (let m = 0; m < M; m++) {
         const p = Math.min(N - 1, Math.floor(m * step));
-        // Walk the trail; gather contiguous valid sub-paths between gaps.
         let prev = null, prevF = -1;
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
-          const x = posAll[base];
-          if (!Number.isFinite(x)) { prev = null; continue; }
-          const cur = [x, -posAll[base + 1], -posAll[base + 2]];
+          const qx = quant[base];
+          if (qx === SENT) { prev = null; continue; }
+          const qy = quant[base + 1], qz = quant[base + 2];
+          const cur = [
+             (qx * K) * hx + cx,
+            -((qy * K) * hy + cy),
+            -((qz * K) * hz + cz),
+          ];
           if (prev) pushSeg(prev, cur, prevF, f);
           prev = cur; prevF = f;
         }
@@ -2756,9 +2772,10 @@ async function loadGT3DBinary(urlOrList) {
     for (const p of parts) total += p.byteLength;
     const merged = new Uint8Array(total);
     let off = 0;
-    for (const p of parts) {
-      merged.set(new Uint8Array(p), off);
-      off += p.byteLength;
+    for (let i = 0; i < parts.length; i++) {
+      merged.set(new Uint8Array(parts[i]), off);
+      off += parts[i].byteLength;
+      parts[i] = null;   // GC hint — drop the original chunk ArrayBuffer
     }
     buf = merged.buffer;
   }
@@ -2773,26 +2790,23 @@ async function loadGT3DBinary(urlOrList) {
   const axisMin = [dv.getFloat32(20, true), dv.getFloat32(24, true), dv.getFloat32(28, true)];
   const axisMax = [dv.getFloat32(32, true), dv.getFloat32(36, true), dv.getFloat32(40, true)];
   let off = 44;
-  const obj_ids = new Uint8Array(buf, off, N).slice(); off += N;
-  const rgb     = new Uint8Array(buf, off, N * 3).slice(); off += N * 3;
-  // Copy quant out of the master buffer to guarantee 2-byte alignment.
-  const quant = new Int16Array(buf.slice(off, off + F * N * 3 * 2));
-  // Dequantize to Float32 with NaN sentinel.
+  const obj_ids = new Uint8Array(buf, off, N);     off += N;       // view
+  const rgb     = new Uint8Array(buf, off, N * 3); off += N * 3;   // view
+  // Int16Array view over the master buffer — alignment is guaranteed by
+  // the header layout (44 + N + 3N is divisible by 2 for any N). NO
+  // dequantization step here — keep the Int16 buffer (~58 MB) and
+  // decode each axis on-the-fly in the render loop. Pre-allocating a
+  // 122 MB Float32Array AND holding the 58 MB Int16Array AND the merged
+  // 58 MB master buffer simultaneously was triggering "Array buffer
+  // allocation failed" on machines with constrained JS heap.
+  const quant = new Int16Array(buf, off, F * N * 3);
   const center = [(axisMin[0]+axisMax[0]) / 2,
                   (axisMin[1]+axisMax[1]) / 2,
                   (axisMin[2]+axisMax[2]) / 2];
   const half   = [(axisMax[0]-axisMin[0]) / 2,
                   (axisMax[1]-axisMin[1]) / 2,
                   (axisMax[2]-axisMin[2]) / 2];
-  const positions = new Float32Array(F * N * 3);
-  const SENTINEL = -32768;
-  for (let i = 0, len = positions.length; i < len; i++) {
-    const q = quant[i];
-    if (q === SENTINEL) { positions[i] = NaN; continue; }
-    const a = i % 3;
-    positions[i] = (q / 32767) * half[a] + center[a];
-  }
-  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, positions };
+  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, quant, center, half };
 }
 
 // HOT3D camera binary loader. Layout: 'CAM4' | u32 ver | u32 F |
