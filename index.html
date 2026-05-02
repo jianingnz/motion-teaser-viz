@@ -813,8 +813,12 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn full" id="t-object-cloud" title="Render gt_3d at the playhead as a colored Points cloud using pt_colors_rgb (HOT3D mode).">object cloud</button>
         </div>
         <div class="fld">
-          <div class="lbl-row"><span title="Disc size (CSS pixels) for the object cloud points.">Object cloud size</span><span class="v" id="obj-cloud-size-lbl">14.0</span></div>
+          <div class="lbl-row"><span title="Disc size (CSS pixels) for the object cloud points. Higher = the surface cloud visually dominates over the trails behind it.">Object cloud size</span><span class="v" id="obj-cloud-size-lbl">14.0</span></div>
           <input type="range" id="obj-cloud-size" min="2" max="40" step="0.5" value="14">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Object-cloud trail polyline opacity. Lower = trails recede as motion-direction cues, surface cloud dominates.">Trail opacity</span><span class="v" id="obj-cloud-trail-opacity-lbl">0.55</span></div>
+          <input type="range" id="obj-cloud-trail-opacity" min="0" max="1" step="0.02" value="0.55">
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
@@ -832,8 +836,8 @@ footer a { color: #2563eb; text-decoration: none; }
           <span class="cn">Trail colour</span>
         </div>
         <div class="fld">
-          <div class="lbl-row"><span title="Pixel width of the object-cloud trail polylines.">Trail line width</span><span class="v" id="obj-cloud-trail-width-lbl">1.6</span></div>
-          <input type="range" id="obj-cloud-trail-width" min="0.5" max="8" step="0.1" value="1.6">
+          <div class="lbl-row"><span title="Pixel width of the object-cloud trail polylines. Lower = thinner streaks so the cloud dominates.">Trail line width</span><span class="v" id="obj-cloud-trail-width-lbl">0.9</span></div>
+          <input type="range" id="obj-cloud-trail-width" min="0.3" max="8" step="0.1" value="0.9">
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Hide tracks whose total motion (bbox diagonal across all frames) is below this threshold. In HOT3D — where one object moves and the others sit still — set this above the static-object jitter floor (~0.005 m) to surface only the moving object's tracks.">Min track motion (m)</span><span class="v" id="motion-min-lbl">0.000</span></div>
@@ -1239,7 +1243,12 @@ const Settings = {
   objectCloudTrailCount:  256,   // # tracks to render trails for (0 = none)
   objectCloudTrailLen:    20,    // frames of trail behind the playhead
   objectCloudTrailColor:  '#34d399',  // base hue (green by default)
-  objectCloudTrailWidth:  1.6,   // CSS pixels (Line2 honours this on every platform)
+  objectCloudTrailWidth:  0.9,   // CSS pixels (Line2 honours this everywhere)
+  // Dedicated opacity for the object-cloud trails (decoupled from
+  // Settings.gtAlpha which still controls the GT trail in regular
+  // bundles). Lower default so the surface cloud reads as dominant
+  // and the trails act as supporting motion-direction cues.
+  objectCloudTrailOpacity: 0.55,
 
   // Motion-magnitude filter: each track has a precomputed bbox-diagonal
   // motion magnitude (clipData._gt3d.motionMag). Tracks below the
@@ -2674,9 +2683,17 @@ class Panel {
     mat.uniforms.uSize.value = Settings.objCloudPointPx;
     mat.uniforms.uViewport.value = this.canvas.height || 400;
     const cloud = new THREE.Points(g, mat);
-    // Geometry is per-frame disposable (tagged via the dynGroup teardown
-    // path through child.geometry.dispose()). Materials are SHARED across
-    // frames now, so do NOT set disposeMaterial = true here.
+    // renderOrder is what actually controls depth-of-stack here: three.js
+    // groups draw calls into an opaque pass + a transparent pass and the
+    // transparent pass runs LAST regardless of scene-tree order. Without
+    // renderOrder, the LineMaterial trails (transparent: true) draw AFTER
+    // the opaque live cloud — trails always overpaint the cloud and
+    // visually dominate.
+    //
+    //   trails:      renderOrder 0   (transparent, drawn first)
+    //   ghosts:      renderOrder 1   (transparent, between)
+    //   live cloud:  renderOrder 10  (opaque, drawn LAST → on top)
+    cloud.renderOrder = isGhost ? 1 : 10;
     cloud.userData = { pcKind: 'objectCloud' };
     this.dynGroup.add(cloud);
   }
@@ -2845,12 +2862,13 @@ class Panel {
     if (!this._objCloudTrailMat) {
       this._objCloudTrailMat = new LineMaterial({
         color: 0xffffff, vertexColors: true,
-        linewidth: 1.6, transparent: true, opacity: Settings.gtAlpha,
+        linewidth: 0.9, transparent: true,
+        opacity: Settings.objectCloudTrailOpacity ?? 0.55,
         depthTest: false, depthWrite: false, dashed: false,
       });
     }
-    this._objCloudTrailMat.opacity = Settings.gtAlpha;
-    this._objCloudTrailMat.linewidth = (Settings.objectCloudTrailWidth ?? 1.6) * Settings.lineScale;
+    this._objCloudTrailMat.opacity = Settings.objectCloudTrailOpacity ?? 0.55;
+    this._objCloudTrailMat.linewidth = (Settings.objectCloudTrailWidth ?? 0.9) * Settings.lineScale;
     this._objCloudTrailMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
     this.dynGroup.add(new LineSegments2(g, this._objCloudTrailMat));
   }
@@ -4704,6 +4722,8 @@ function bindControls() {
   };
   wireSlider('obj-cloud-trail-width', 'obj-cloud-trail-width-lbl', v => v.toFixed(1),
              v => { Settings.objectCloudTrailWidth = v; rerenderAll(); });
+  wireSlider('obj-cloud-trail-opacity', 'obj-cloud-trail-opacity-lbl', v => v.toFixed(2),
+             v => { Settings.objectCloudTrailOpacity = v; rerenderAll(); });
   wireSlider('motion-min', 'motion-min-lbl', v => v.toFixed(3),
              v => { Settings.motionMinMag = v; rerenderAll(); });
   wireSlider('ghost-opacity', 'ghost-opacity-lbl', v => v.toFixed(2),

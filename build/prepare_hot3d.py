@@ -486,7 +486,10 @@ def main():
         "viewer_defaults": {
             "objMaskRadiusPx": 30,
             "objectCloud": True,
-            "objCloudPointPx": 4,            # denser cloud → smaller per-point disc
+            # Cloud-dominant default (~12 px on a 480-tall panel) so the
+            # surface cloud reads as the primary visualization, with the
+            # trails behind acting as supporting motion-direction cues.
+            "objCloudPointPx": 12,
             "showHist": False, "showPred": False,
             "trackSmoothWindow": 1,
             "maxSceneDepth": 0.85,

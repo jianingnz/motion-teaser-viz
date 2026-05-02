@@ -316,7 +316,7 @@
   "viewer_defaults": {
     "objMaskRadiusPx": 30,
     "objectCloud": true,
-    "objCloudPointPx": 4,
+    "objCloudPointPx": 12,
     "showHist": false,
     "showPred": false,
     "trackSmoothWindow": 1,
