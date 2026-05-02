@@ -807,7 +807,7 @@ footer a { color: #2563eb; text-decoration: none; }
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Drops scene-PC points whose anchor-frame Z-depth (metres) exceeds this. For HOT3D the camera looks down +Z so this acts as a tabletop / room divider — keep the close stuff, hide the far wall.">Max scene depth (m)</span><span class="v" id="max-scene-depth-lbl">10.00 m</span></div>
-          <input type="range" id="max-scene-depth" min="0.10" max="10.0" step="0.05" value="10">
+          <input type="range" id="max-scene-depth" min="0.05" max="10.0" step="0.01" value="10">
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full" id="t-object-cloud" title="Render gt_3d at the playhead as a colored Points cloud using pt_colors_rgb (HOT3D mode).">object cloud</button>
@@ -830,6 +830,23 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="color-row">
           <input type="color" id="obj-cloud-trail-col" value="#34d399" title="Object-cloud trail base hue. Pale→vivid gradient over time uses this as the vivid end.">
           <span class="cn">Trail colour</span>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Pixel width of the object-cloud trail polylines.">Trail line width</span><span class="v" id="obj-cloud-trail-width-lbl">1.6</span></div>
+          <input type="range" id="obj-cloud-trail-width" min="0.5" max="8" step="0.1" value="1.6">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Hide tracks whose total motion (bbox diagonal across all frames) is below this threshold. In HOT3D — where one object moves and the others sit still — set this above the static-object jitter floor (~0.005 m) to surface only the moving object's tracks.">Min track motion (m)</span><span class="v" id="motion-min-lbl">0.000</span></div>
+          <input type="range" id="motion-min" min="0" max="0.5" step="0.001" value="0">
+        </div>
+        <div class="fld" style="margin-top:6px;">
+          <div class="lbl-row"><span title="Comma-separated frame indices to render the GT object cloud at as transparent ghosts (e.g. '0, 45'). Lets a single still image read as 'object was here, then here, now solid here'.">Ghost frames</span></div>
+          <input type="text" id="ghost-frames" value="0, 45"
+                 style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:.7rem;">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Per-ghost cloud opacity. 0 = invisible, 1 = same as live cloud.">Ghost opacity</span><span class="v" id="ghost-opacity-lbl">0.30</span></div>
+          <input type="range" id="ghost-opacity" min="0" max="1" step="0.02" value="0.30">
         </div>
         <div class="fld-grid">
           <div class="fld">
@@ -1222,6 +1239,24 @@ const Settings = {
   objectCloudTrailCount:  64,    // # tracks to render trails for (0 = none)
   objectCloudTrailLen:    20,    // frames of trail behind the playhead
   objectCloudTrailColor:  '#34d399',  // base hue (green by default)
+  objectCloudTrailWidth:  1.6,   // CSS pixels (Line2 honours this on every platform)
+
+  // Motion-magnitude filter: each track has a precomputed bbox-diagonal
+  // motion magnitude (clipData._gt3d.motionMag). Tracks below the
+  // threshold are hidden in BOTH the per-frame object cloud and the
+  // trail polylines — surface the moving object cleanly without the
+  // tabletop / static-object distractor cloud. Default 0 = show
+  // everything; the slider goes up to ~2× the largest track magnitude.
+  motionMinMag:           0.0,
+
+  // Ghost cloud: render the GT object cloud at the listed frame indices
+  // as additional, semi-transparent point clouds alongside the live
+  // current-frame cloud. Lets a single still image communicate motion
+  // history (e.g., "the bottle was here at frame 0, then here at 45,
+  // and now solid here at the playhead"). Frames in this list that
+  // equal the current playhead are skipped (no double-render).
+  ghostFrames:            [0, 45],
+  ghostOpacity:           0.30,
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -1278,7 +1313,9 @@ function resetCamera() {
 // ──────────── Round, FLAT, OPAQUE disc shader for the PC ────────────
 // Hard alpha-cutoff disc with depthWrite enabled so nearer points
 // correctly occlude farther points (no see-through bug).
-function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE } = {}) {
+function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE,
+                            alpha = 1.0 } = {}) {
+  const transparent = (alpha < 1.0);
   return new THREE.ShaderMaterial({
     uniforms: {
       uSize: { value: size },
@@ -1286,6 +1323,7 @@ function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE } = {}) {
       uShade: { value: depthShade },
       uShadeNear: { value: 0.4 },   // depth (m) where shading starts
       uShadeFar:  { value: 4.0 },   // depth (m) where shading saturates
+      uAlpha: { value: alpha },     // 1.0 = opaque (default); ghosts use < 1.0
     },
     vertexShader: `
       attribute vec3 color;
@@ -1311,6 +1349,7 @@ function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE } = {}) {
       uniform float uShade;
       uniform float uShadeNear;
       uniform float uShadeFar;
+      uniform float uAlpha;
       void main() {
         vec2 uv = gl_PointCoord * 2.0 - 1.0;
         if (dot(uv, uv) > 1.0) discard;
@@ -1318,10 +1357,10 @@ function makeDiscMaterial({ size = 3.0, depthShade = PC_DEPTH_SHADE } = {}) {
         float t = clamp((vDepth - uShadeNear) / (uShadeFar - uShadeNear), 0.0, 1.0);
         float k = 1.0 - uShade * t;
         vec3 c = mix(vec3(1.0), vColor, k);  // fade toward white
-        gl_FragColor = vec4(c, 1.0);
+        gl_FragColor = vec4(c, uAlpha);
       }`,
-    transparent: false,
-    depthWrite: true,
+    transparent: transparent,
+    depthWrite: !transparent,    // ghosts shouldn't z-block the live cloud
     depthTest: true,
   });
 }
@@ -2163,6 +2202,17 @@ class Panel {
       const T = cfg.gt_3d?.length || 0;
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
+      // GHOST clouds first (drawn behind so the live cloud sits on top
+      // visually). Each requested ghost frame is a transparent copy of
+      // the GT cloud at that frame, useful for "object was here, then
+      // here, now solid here" motion-history readouts in a single still.
+      const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
+      for (const gf of ghosts) {
+        const f = Math.round(gf);
+        if (!Number.isFinite(f) || f < 0 || f >= T || f === fiClamp) continue;
+        this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity);
+      }
+      // Live (solid) cloud at the playhead.
       this._addObjectCloudLayer(cfg, fiClamp);
       // Per-track trajectory polylines back through Settings.objectCloudTrailLen
       // frames. Sub-sampled to Settings.objectCloudTrailCount tracks so the
@@ -2517,7 +2567,7 @@ class Panel {
   // there is no separate track / GT-trail distinction. Uses the same
   // disc-AA shader as the scene PC so depth shading and point-size
   // sliders apply identically.
-  _addObjectCloudLayer(cfg, fi) {
+  _addObjectCloudLayer(cfg, fi, alpha = 1.0) {
     // Two read paths:
     //   1. Typed-array (HOT3D consolidated bin): clipData._gt3d carries
     //      Float32Array positions(F*N*3) frame-major + Uint8Array rgb(N*3).
@@ -2529,14 +2579,19 @@ class Panel {
     if (clipData?._gt3d) {
       // On-the-fly dequantization from Int16 quant + per-axis center/half.
       // Sentinel −32768 = invisible (the int16 valid range is ±32767).
-      const { N, F, quant, rgb, center, half } = clipData._gt3d;
+      const { N, F, quant, rgb, center, half, motionMag } = clipData._gt3d;
       if (fi < 0 || fi >= F) return;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
+      const motionMin = Math.max(0, Settings.motionMinMag || 0);
       const base = fi * N * 3;
       let M = 0;
-      for (let p = 0; p < N; p++) if (quant[base + p*3] !== SENT) M++;
+      for (let p = 0; p < N; p++) {
+        if (quant[base + p*3] === SENT) continue;
+        if (motionMag && motionMag[p] < motionMin) continue;
+        M++;
+      }
       if (!M) return;
       positions = new Float32Array(M * 3);
       colors    = new Float32Array(M * 3);
@@ -2544,6 +2599,7 @@ class Panel {
       for (let p = 0; p < N; p++) {
         const qx = quant[base + p*3];
         if (qx === SENT) continue;
+        if (motionMag && motionMag[p] < motionMin) continue;
         const qy = quant[base + p*3 + 1];
         const qz = quant[base + p*3 + 2];
         positions[j*3]   =  (qx * K) * hx + cx;
@@ -2574,10 +2630,14 @@ class Panel {
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
-    const m = makeDiscMaterial({ size: Settings.objCloudPointPx });
+    const m = makeDiscMaterial({ size: Settings.objCloudPointPx, alpha });
     m.uniforms.uViewport.value = this.canvas.height || 400;
     const cloud = new THREE.Points(g, m);
-    cloud.userData = { pcKind: 'objectCloud' };  // not click-hideable
+    // Tag ghosts so the dynGroup teardown disposes their one-shot
+    // shader material (each ghost gets its own material because of the
+    // alpha uniform); the live (alpha=1.0) cloud also gets a fresh
+    // material per frame, so disposal is uniform either way.
+    cloud.userData = { pcKind: 'objectCloud', disposeMaterial: true };
     this.dynGroup.add(cloud);
   }
 
@@ -2615,15 +2675,37 @@ class Panel {
     if (clipData?._gt3d) {
       // Same on-the-fly dequant logic as _addObjectCloudLayer — read
       // Int16 quant directly, decode per axis, no Float32 mirror buffer.
-      const { N, F, quant, center, half } = clipData._gt3d;
+      const { N, F, quant, center, half, motionMag } = clipData._gt3d;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
       const M = Math.min(Settings.objectCloudTrailCount | 0, N);
       if (M <= 0) return;
-      const step = N / M;
-      for (let m = 0; m < M; m++) {
-        const p = Math.min(N - 1, Math.floor(m * step));
+      // Pick the M tracks with the LARGEST motion magnitudes (cached
+      // sort under clipData._gt3d._motionRank, lazy-built once). When
+      // every track is ~static the rank is meaningless but we still
+      // draw something — that's fine. When one object is moving and
+      // five are still, this naturally surfaces the moving one.
+      let ranked = clipData._gt3d._motionRank;
+      if (!ranked && motionMag) {
+        ranked = new Int32Array(N);
+        for (let i = 0; i < N; i++) ranked[i] = i;
+        const arr = Array.from(ranked).sort((a, b) => motionMag[b] - motionMag[a]);
+        for (let i = 0; i < N; i++) ranked[i] = arr[i];
+        clipData._gt3d._motionRank = ranked;
+      }
+      const motionMin = Math.max(0, Settings.motionMinMag || 0);
+      // Walk the top of the ranked list; bail when we hit a track below
+      // the motion threshold (since the list is sorted desc).
+      const trackIds = [];
+      for (let r = 0; r < N && trackIds.length < M; r++) {
+        const p = ranked ? ranked[r] : (Math.floor(r * (N / M)) % N);
+        if (motionMag && motionMag[p] < motionMin) break;
+        trackIds.push(p);
+      }
+      if (!trackIds.length) return;
+      for (let mi = 0; mi < trackIds.length; mi++) {
+        const p = trackIds[mi];
         let prev = null, prevF = -1;
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
@@ -2671,7 +2753,7 @@ class Panel {
       });
     }
     this._objCloudTrailMat.opacity = Settings.gtAlpha;
-    this._objCloudTrailMat.linewidth = 1.6 * Settings.lineScale;
+    this._objCloudTrailMat.linewidth = (Settings.objectCloudTrailWidth ?? 1.6) * Settings.lineScale;
     this._objCloudTrailMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
     this.dynGroup.add(new LineSegments2(g, this._objCloudTrailMat));
   }
@@ -2833,7 +2915,41 @@ async function loadGT3DBinary(urlOrList) {
   const half   = [(axisMax[0]-axisMin[0]) / 2,
                   (axisMax[1]-axisMin[1]) / 2,
                   (axisMax[2]-axisMin[2]) / 2];
-  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, quant, center, half };
+  const SENTINEL = -32768;
+  // Per-track motion magnitude = bbox diagonal across all visible frames.
+  // Lets the viewer hide static-object tracks via a single threshold
+  // slider; in HOT3D where only one object actually moves, this picks
+  // out the moving-object cloud automatically without per-object IDs.
+  const motionMag = new Float32Array(N);
+  let mMax = 0;
+  for (let p = 0; p < N; p++) {
+    let xMin = Infinity, xMax = -Infinity;
+    let yMin = Infinity, yMax = -Infinity;
+    let zMin = Infinity, zMax = -Infinity;
+    for (let f = 0; f < F; f++) {
+      const base = (f * N + p) * 3;
+      const qx = quant[base];
+      if (qx === SENTINEL) continue;
+      const qy = quant[base + 1], qz = quant[base + 2];
+      const x = (qx / 32767) * half[0] + center[0];
+      const y = (qy / 32767) * half[1] + center[1];
+      const z = (qz / 32767) * half[2] + center[2];
+      if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+      if (z < zMin) zMin = z; if (z > zMax) zMax = z;
+    }
+    if (xMax > -Infinity) {
+      const dx = xMax - xMin, dy = yMax - yMin, dz = zMax - zMin;
+      const m = Math.sqrt(dx*dx + dy*dy + dz*dz);
+      motionMag[p] = m;
+      if (m > mMax) mMax = m;
+    }
+  }
+  console.log(`gt3d motion magnitudes: max=${mMax.toFixed(3)}m, median≈${
+    motionMag[Math.floor(N/2)].toFixed(3)}m`);
+
+  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, quant, center, half,
+           motionMag, motionMagMax: mMax };
 }
 
 // HOT3D camera binary loader. Layout: 'CAM4' | u32 ver | u32 F |
@@ -4488,6 +4604,30 @@ function bindControls() {
     Settings.objectCloudTrailColor = e.target.value;
     rerenderAll();
   };
+  wireSlider('obj-cloud-trail-width', 'obj-cloud-trail-width-lbl', v => v.toFixed(1),
+             v => { Settings.objectCloudTrailWidth = v; rerenderAll(); });
+  wireSlider('motion-min', 'motion-min-lbl', v => v.toFixed(3),
+             v => { Settings.motionMinMag = v; rerenderAll(); });
+  wireSlider('ghost-opacity', 'ghost-opacity-lbl', v => v.toFixed(2),
+             v => { Settings.ghostOpacity = v; rerenderAll(); });
+  // Ghost-frames text input: parse comma-separated integers, clamp to
+  // [0, num_frames-1], dedupe. Re-render on change (and on blur).
+  const ghostFrames = document.getElementById('ghost-frames');
+  if (ghostFrames) {
+    const parseGhosts = () => {
+      const T = clipData?.num_frames || 1;
+      const raw = ghostFrames.value.split(/[,\s]+/).filter(Boolean);
+      const out = [];
+      for (const tok of raw) {
+        const v = parseInt(tok, 10);
+        if (Number.isFinite(v) && v >= 0 && v < T && !out.includes(v)) out.push(v);
+      }
+      Settings.ghostFrames = out;
+      rerenderAll();
+    };
+    ghostFrames.addEventListener('change', parseGhosts);
+    ghostFrames.addEventListener('blur', parseGhosts);
+  }
   wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
              v => applyLineScale(v));
   wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
