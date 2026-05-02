@@ -264,11 +264,10 @@
     "n_points": 79524,
     "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
     "n_concat_frames": 1,
-    "subsample": 5,
+    "subsample": 1,
     "frame_indices_original": [
       84
-    ],
-    "sampling": "pixel-stride"
+    ]
   },
   "pc_dist_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_dist.bin",
@@ -285,14 +284,14 @@
     "n_frames": 106,
     "n_objects": 6,
     "axis_min": [
-      -0.08351036161184311,
+      -0.08212196081876755,
       -0.033574189990758896,
-      0.07486817985773087
+      0.09979953616857529
     ],
     "axis_max": [
       0.7723734378814697,
       0.33087158203125,
-      0.6673674583435059
+      0.6662067174911499
     ]
   },
   "cam_bin": {
@@ -319,9 +318,9 @@
     "objCloudPointPx": 12,
     "showHist": false,
     "showPred": false,
-    "trackSmoothWindow": 1,
-    "maxSceneDepth": 0.85,
     "showBalls": false,
-    "showEndpoints": false
+    "showEndpoints": false,
+    "trackSmoothWindow": 1,
+    "maxSceneDepth": 0.85
   }
 }

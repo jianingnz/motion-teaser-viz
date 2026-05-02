@@ -160,13 +160,14 @@ def write_gt3d_binary(path: Path, positions: np.ndarray, vis: np.ndarray,
     assert vis.shape == (N, F)
     assert obj_ids.shape == (N,)
     assert rgb_u8.shape == (N, 3)
-    # Always-visible mode: ignore the per-frame occlusion `vis` flag and
-    # only drop points whose 3D coords are non-finite (rare). The user
-    # wants every track to render every frame using its constant per-
-    # track colour, so the rendered cloud reads as a single coherent
-    # surface that just MOVES — it never blinks in/out as parts of the
-    # objects rotate behind themselves.
-    valid_mask = np.isfinite(positions).all(axis=-1)         # (N, F)
+    # Camera-facing-and-not-occluded mode. The source `vis` flag from
+    # vis_clips_backproject.py is True iff the surface point is
+    # camera-facing (normal · view_dir < 0) AND inside the per-frame
+    # modal mask (not occluded by another object). Encoding the
+    # SENTINEL where !vis means the renderer naturally shows ONLY the
+    # camera-side half of each object and hides occluded parts; the
+    # 'back' of the cloud doesn't bleed through.
+    valid_mask = vis & np.isfinite(positions).all(axis=-1)   # (N, F)
     if not valid_mask.any():
         raise RuntimeError("no valid positions to encode")
     valid_pts = positions[valid_mask]                        # (M, 3)
