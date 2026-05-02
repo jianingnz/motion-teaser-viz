@@ -98,19 +98,26 @@ def write_pc_binary(path: Path, xyz, rgb_norm):
         f.write(rgb_u8.tobytes())
 
 
-def stitch_mp4(out_path, target_height=480, fps=15):
+def stitch_mp4(out_path, target_height=480, fps=30):
+    """Concat clip-A[T_A_START..T_A_END] + clip-B[T_B_START..T_B_END] preserving
+    1-frame-in-source = 1-frame-in-output so the GT track arrays (one entry per
+    source frame) line up with mp4 frames exactly. The earlier `fps=15` filter
+    halved that mapping and caused the video to freeze halfway while the JSON
+    playhead kept going."""
     pa, pb = RGB_TPL.format(clip=CLIP_A), RGB_TPL.format(clip=CLIP_B)
+    n_a = T_A_END - T_A_START + 1
     fc = (
-        f"[0:v]select='between(n\\,{T_A_START}\\,{T_A_END})',setpts=PTS-STARTPTS,"
-        f"scale=-2:{target_height},fps={fps}[a];"
-        f"[1:v]select='between(n\\,{T_B_START}\\,{T_B_END})',setpts=PTS-STARTPTS,"
-        f"scale=-2:{target_height},fps={fps}[b];"
-        f"[a][b]concat=n=2:v=1:a=0[v]"
+        f"[0:v]trim=start_frame={T_A_START}:end_frame={T_A_END + 1},"
+        f"setpts=PTS-STARTPTS,scale=-2:{target_height}[a];"
+        f"[1:v]trim=start_frame={T_B_START}:end_frame={T_B_END + 1},"
+        f"setpts=PTS-STARTPTS,scale=-2:{target_height}[b];"
+        f"[a][b]concat=n=2:v=1:a=0,fps={fps}[v]"
     )
     cmd = [FFMPEG, "-y", "-loglevel", "error",
            "-i", pa, "-i", pb,
            "-filter_complex", fc, "-map", "[v]",
            "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "22",
+           "-vsync", "cfr",
            str(out_path)]
     subprocess.run(cmd, check=True)
 
@@ -141,7 +148,12 @@ def main():
                     help="Per-object cap on the GT cloud. Default 2000 keeps every "
                          "anchor-visible track per object (×6 objects = up to 12k).")
     ap.add_argument("--target-height", type=int, default=480)
-    ap.add_argument("--fps", type=int, default=15)
+    ap.add_argument("--fps", type=int, default=30,
+                    help="Output mp4 fps. Source is 30 fps; the GT track arrays "
+                         "are 1-per-source-frame, so the mp4 must stay at 30 fps "
+                         "(else ffmpeg's fps filter drops every other frame and "
+                         "the video freezes at frame ~53 while the playhead keeps "
+                         "going to 106).")
     args = ap.parse_args()
 
     out_data  = args.out_dir / "static" / "data";  out_data.mkdir(parents=True, exist_ok=True)
