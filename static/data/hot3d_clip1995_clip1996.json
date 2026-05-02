@@ -320,6 +320,8 @@
     "showHist": false,
     "showPred": false,
     "trackSmoothWindow": 1,
-    "maxSceneDepth": 0.85
+    "maxSceneDepth": 0.85,
+    "showBalls": false,
+    "showEndpoints": false
   }
 }

@@ -491,6 +491,11 @@ def main():
             # trails behind acting as supporting motion-direction cues.
             "objCloudPointPx": 12,
             "showHist": False, "showPred": False,
+            # Static-object surface point clusters were showing up as
+            # 'dots on the trail' once the cloud got dense; the trail-
+            # ball + endpoint markers are not used on the HOT3D
+            # representation either, so suppress them entirely.
+            "showBalls": False, "showEndpoints": False,
             "trackSmoothWindow": 1,
             "maxSceneDepth": 0.85,
         },

@@ -2239,28 +2239,30 @@ class Panel {
       const T = cfg.gt_3d?.length || 0;
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
-      // Z-order (back-to-front, scene-tree order = render order):
-      //   1. Per-track trail polylines  — drawn FIRST so the cloud
-      //      sits cleanly on top of them; the trail material has
-      //      depthTest:false / depthWrite:false so the live cloud's
-      //      depth-write below paints over wherever they overlap in
-      //      screen space.
-      //   2. Ghost clouds at the requested past frames — semi-
-      //      transparent, depthWrite:false so they don't z-block the
-      //      live cloud and don't depth-block each other.
-      //   3. Live (solid) cloud at the current playhead — rendered
-      //      LAST so it visually sits on top of everything else in the
-      //      object-cloud layer stack.
-      if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
-        this._addObjectCloudTrails(cfg, fiClamp);
-      }
+      // Z-order across the static/moving cloud split + trails + ghosts.
+      // Both passes run in three.js's transparent queue (cloud material
+      // is forceTransparent so renderOrder beats the LineMaterial
+      // trails); within the queue the higher renderOrder wins. The
+      // static cloud writes depth so the trails behind it get cleanly
+      // z-occluded by the foreground objects:
+      //
+      //   renderOrder  0   STATIC cloud (5 stationary objects),
+      //                    depthWrite=true → foreground occludes trails
+      //   renderOrder  5   TRAILS + ghosts, depthTest=true so static
+      //                    objects in front cull the trail pixels
+      //   renderOrder 10   MOVING cloud (the manipulated object),
+      //                    drawn LAST → always on top of its trail
+      this._addObjectCloudLayer(cfg, fiClamp, 1.0, 'static');
       const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
       for (const gf of ghosts) {
         const f = Math.round(gf);
         if (!Number.isFinite(f) || f < 0 || f >= T || f === fiClamp) continue;
-        this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity);
+        this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity, 'moving');
       }
-      this._addObjectCloudLayer(cfg, fiClamp);
+      if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
+        this._addObjectCloudTrails(cfg, fiClamp);
+      }
+      this._addObjectCloudLayer(cfg, fiClamp, 1.0, 'moving');
     }
     if (!isPaper && fiFrac < 0) return;
 
@@ -2607,7 +2609,36 @@ class Panel {
   // there is no separate track / GT-trail distinction. Uses the same
   // disc-AA shader as the scene PC so depth shading and point-size
   // sliders apply identically.
-  _addObjectCloudLayer(cfg, fi, alpha = 1.0) {
+  // Lazy-compute (and cache) the moving object id on clipData._gt3d.
+  // Used by both the trails and by the static/moving cloud split.
+  _resolveMovingObj() {
+    if (!clipData?._gt3d) return -1;
+    if (clipData._gt3d._movingObjId !== undefined) return clipData._gt3d._movingObjId;
+    const { N, motionMag, obj_ids, nObj } = clipData._gt3d;
+    if (!motionMag || !obj_ids || !nObj) {
+      clipData._gt3d._movingObjId = -1;
+      return -1;
+    }
+    const sumMag = new Float32Array(nObj);
+    const cnt    = new Uint32Array(nObj);
+    for (let p = 0; p < N; p++) {
+      sumMag[obj_ids[p]] += motionMag[p];
+      cnt[obj_ids[p]]++;
+    }
+    let bestObj = 0, bestMean = -1;
+    for (let o = 0; o < nObj; o++) {
+      const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
+      if (mean > bestMean) { bestMean = mean; bestObj = o; }
+    }
+    clipData._gt3d._movingObjId = bestObj;
+    console.log(`gt3d: moving object id = ${bestObj} (mean motion ${bestMean.toFixed(3)} m)`);
+    return bestObj;
+  }
+
+  // objFilter: 'static' | 'moving' | null. When set, restricts the
+  // rendered points to either the static-object slices or the moving-
+  // object slice (auto-detected by mean motion magnitude). null = all.
+  _addObjectCloudLayer(cfg, fi, alpha = 1.0, objFilter = null) {
     // Two read paths:
     //   1. Typed-array (HOT3D consolidated bin): clipData._gt3d carries
     //      Float32Array positions(F*N*3) frame-major + Uint8Array rgb(N*3).
@@ -2619,17 +2650,28 @@ class Panel {
     if (clipData?._gt3d) {
       // On-the-fly dequantization from Int16 quant + per-axis center/half.
       // Sentinel −32768 = invisible (the int16 valid range is ±32767).
-      const { N, F, quant, rgb, center, half, motionMag } = clipData._gt3d;
+      const { N, F, quant, rgb, center, half, motionMag, obj_ids } = clipData._gt3d;
       if (fi < 0 || fi >= F) return;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
       const motionMin = Math.max(0, Settings.motionMinMag || 0);
+      // Object filter: when objFilter is set, only emit points belonging
+      // to the requested side of the static/moving split.
+      const movObj = (objFilter && obj_ids) ? this._resolveMovingObj() : -1;
+      const acceptObj = (p) => {
+        if (!objFilter) return true;
+        if (movObj < 0 || !obj_ids) return true;
+        return objFilter === 'moving'
+          ? obj_ids[p] === movObj
+          : obj_ids[p] !== movObj;
+      };
       const base = fi * N * 3;
       let M = 0;
       for (let p = 0; p < N; p++) {
         if (quant[base + p*3] === SENT) continue;
         if (motionMag && motionMag[p] < motionMin) continue;
+        if (!acceptObj(p)) continue;
         M++;
       }
       if (!M) return;
@@ -2640,6 +2682,7 @@ class Panel {
         const qx = quant[base + p*3];
         if (qx === SENT) continue;
         if (motionMag && motionMag[p] < motionMin) continue;
+        if (!acceptObj(p)) continue;
         const qy = quant[base + p*3 + 1];
         const qz = quant[base + p*3 + 2];
         positions[j*3]   =  (qx * K) * hx + cx;
@@ -2709,7 +2752,17 @@ class Panel {
     //   trails:      renderOrder 0   (transparent, drawn first)
     //   ghosts:      renderOrder 1   (transparent, between)
     //   live cloud:  renderOrder 10  (opaque, drawn LAST → on top)
-    cloud.renderOrder = isGhost ? 1 : 10;
+    // renderOrder hierarchy across the static/moving split:
+    //   static (objFilter='static')  →  0  (drawn first, writes depth)
+    //   trails + ghosts              →  5  (depth-tested behind static)
+    //   moving  (objFilter='moving') → 10  (drawn last, always on top)
+    if (isGhost) {
+      cloud.renderOrder = 5;
+    } else if (objFilter === 'static') {
+      cloud.renderOrder = 0;
+    } else {
+      cloud.renderOrder = 10;
+    }
     cloud.userData = { pcKind: 'objectCloud' };
     this.dynGroup.add(cloud);
   }
@@ -2880,13 +2933,18 @@ class Panel {
         color: 0xffffff, vertexColors: true,
         linewidth: 0.9, transparent: true,
         opacity: Settings.objectCloudTrailOpacity ?? 0.55,
-        depthTest: false, depthWrite: false, dashed: false,
+        // depthTest:true so the STATIC cloud (renderOrder 0,
+        // depthWrite:true) z-occludes trail pixels behind it. depthWrite
+        // stays off so trails don't block the moving cloud above them.
+        depthTest: true, depthWrite: false, dashed: false,
       });
     }
     this._objCloudTrailMat.opacity = Settings.objectCloudTrailOpacity ?? 0.55;
     this._objCloudTrailMat.linewidth = (Settings.objectCloudTrailWidth ?? 0.9) * Settings.lineScale;
     this._objCloudTrailMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
-    this.dynGroup.add(new LineSegments2(g, this._objCloudTrailMat));
+    const lines = new LineSegments2(g, this._objCloudTrailMat);
+    lines.renderOrder = 5;     // between static cloud (0) and moving cloud (10)
+    this.dynGroup.add(lines);
   }
 
 
@@ -3180,6 +3238,10 @@ function applyBundleViewerDefaults(clipData) {
   if (vd.showGT   !== undefined) togglePanelLayer('showGT',   't-gt',   vd.showGT);
   if (vd.showPC   !== undefined) togglePanelLayer('showPC',   't-pc',   vd.showPC);
   if (vd.showRaw  !== undefined) togglePanelLayer('showRaw',  't-raw',  vd.showRaw);
+  if (vd.showBalls !== undefined)
+    togglePanelLayer('showBalls', 't-balls', vd.showBalls);
+  if (vd.showEndpoints !== undefined)
+    togglePanelLayer('showEndpoints', 't-endpoints', vd.showEndpoints);
 
   // 2) Settings flags / numbers + matching DOM inputs.
   const setSlider = (id, lblId, v, fmt = (x) => x) => {
