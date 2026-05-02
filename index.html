@@ -1797,10 +1797,28 @@ class Panel {
 
     // compute layout from trajectory points for camera framing
     const trajPts = [];
-    for (let f = 0; f < cfg.gt_3d.length; f++) {
-      for (let p = 0; p < cfg.gt_3d[f].length; p++) {
-        const pt = cfg.gt_3d[f][p];
-        if (pt && Number.isFinite(pt[0])) trajPts.push([pt[0], -pt[1], -pt[2]]);
+    if (clipData?._gt3d) {
+      // HOT3D typed-array path: scan a stride of frames at a stride of
+      // points (sub-sampled — 100k * 100 frames is way more than we need
+      // for a bounding-box estimate).
+      const { N, F, positions: posAll } = clipData._gt3d;
+      const fStride = Math.max(1, Math.floor(F / 8));
+      const pStride = Math.max(1, Math.floor(N / 2000));
+      for (let fi = 0; fi < F; fi += fStride) {
+        const base = fi * N * 3;
+        for (let p = 0; p < N; p += pStride) {
+          const x = posAll[base + p*3];
+          if (Number.isFinite(x)) {
+            trajPts.push([x, -posAll[base + p*3 + 1], -posAll[base + p*3 + 2]]);
+          }
+        }
+      }
+    } else if (cfg.gt_3d) {
+      for (let f = 0; f < cfg.gt_3d.length; f++) {
+        for (let p = 0; p < cfg.gt_3d[f].length; p++) {
+          const pt = cfg.gt_3d[f][p];
+          if (pt && Number.isFinite(pt[0])) trajPts.push([pt[0], -pt[1], -pt[2]]);
+        }
       }
     }
     if (trajPts.length) {
@@ -2434,23 +2452,59 @@ class Panel {
   // disc-AA shader as the scene PC so depth shading and point-size
   // sliders apply identically.
   _addObjectCloudLayer(cfg, fi) {
-    const pts3d = cfg.gt_3d;
-    if (!pts3d || !pts3d[fi]) return;
-    const ptColors = cfg.pt_colors_rgb || [];
-    const N = pts3d[fi].length;
-    const positions = [], colors = [];
-    for (let p = 0; p < N; p++) {
-      const pt = pts3d[fi][p];
-      const c  = ptColors[p];
-      if (!pt || !Number.isFinite(pt[0]) || !c) continue;
-      // Same y/z flip used everywhere else in the scene.
-      positions.push(pt[0], -pt[1], -pt[2]);
-      colors.push(c[0]/255, c[1]/255, c[2]/255);
+    // Two read paths:
+    //   1. Typed-array (HOT3D consolidated bin): clipData._gt3d carries
+    //      Float32Array positions(F*N*3) frame-major + Uint8Array rgb(N*3).
+    //      Builds the per-frame BufferGeometry directly from typed arrays —
+    //      no per-point object allocation, fast for ~100k points.
+    //   2. Legacy nested-array (older bundles): cfg.gt_3d[fi][p] = [x,y,z]
+    //      or null + cfg.pt_colors_rgb[p] = [r,g,b].
+    let positions = null, colors = null;
+    if (clipData?._gt3d) {
+      const { N, F, positions: posAll, rgb } = clipData._gt3d;
+      if (fi < 0 || fi >= F) return;
+      const base = fi * N * 3;
+      // Two-pass: count valid, then fill. Pre-allocating typed arrays avoids
+      // V8 boxing 100k Number objects when we'd push to a JS array.
+      let M = 0;
+      for (let p = 0; p < N; p++) {
+        if (Number.isFinite(posAll[base + p*3])) M++;
+      }
+      if (!M) return;
+      positions = new Float32Array(M * 3);
+      colors    = new Float32Array(M * 3);
+      let j = 0;
+      for (let p = 0; p < N; p++) {
+        const x = posAll[base + p*3];
+        if (!Number.isFinite(x)) continue;
+        positions[j*3]   = x;
+        positions[j*3+1] = -posAll[base + p*3 + 1];
+        positions[j*3+2] = -posAll[base + p*3 + 2];
+        colors[j*3]   = rgb[p*3]   / 255;
+        colors[j*3+1] = rgb[p*3+1] / 255;
+        colors[j*3+2] = rgb[p*3+2] / 255;
+        j++;
+      }
+    } else {
+      const pts3d = cfg.gt_3d;
+      if (!pts3d || !pts3d[fi]) return;
+      const ptColors = cfg.pt_colors_rgb || [];
+      const N = pts3d[fi].length;
+      const buf_pos = [], buf_col = [];
+      for (let p = 0; p < N; p++) {
+        const pt = pts3d[fi][p];
+        const c  = ptColors[p];
+        if (!pt || !Number.isFinite(pt[0]) || !c) continue;
+        buf_pos.push(pt[0], -pt[1], -pt[2]);
+        buf_col.push(c[0]/255, c[1]/255, c[2]/255);
+      }
+      if (!buf_pos.length) return;
+      positions = new Float32Array(buf_pos);
+      colors    = new Float32Array(buf_col);
     }
-    if (!positions.length) return;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    g.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
     const m = makeDiscMaterial({ size: Settings.objCloudPointPx });
     m.uniforms.uViewport.value = this.canvas.height || 400;
     const cloud = new THREE.Points(g, m);
@@ -2554,6 +2608,74 @@ async function loadPCBinary(url) {
   const colors = new Float32Array(N * 3);
   for (let i = 0; i < N * 3; i++) colors[i] = colorsU8[i] / 255;
   return { N, positions, colors };
+}
+
+// HOT3D consolidated GT binary loader. Layout (see prepare_hot3d.py
+// write_gt3d_binary): 'GT3D' | u32 ver | u32 N | u32 F | u32 nObj |
+// f32×3 axisMin | f32×3 axisMax | u8×N obj_ids | u8×(N*3) rgb |
+// i16×(F*N*3) quant (frame-major). Sentinel −32768 = invisible.
+//
+// The Int16 buffer is dequantized to a Float32Array(positions) using
+//   pos = q/32767 * half[axis] + center[axis]
+// with NaN substituted for the sentinel — _addObjectCloudLayer just
+// checks Number.isFinite to skip invisible points.
+async function loadGT3DBinary(url) {
+  const buf = await fetch(url + '?v=' + Date.now()).then(r => r.arrayBuffer());
+  const dv  = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1),
+                                    dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'GT3D') throw new Error('bad gt3d magic: ' + magic);
+  const version = dv.getUint32(4,  true);
+  const N       = dv.getUint32(8,  true);
+  const F       = dv.getUint32(12, true);
+  const nObj    = dv.getUint32(16, true);
+  const axisMin = [dv.getFloat32(20, true), dv.getFloat32(24, true), dv.getFloat32(28, true)];
+  const axisMax = [dv.getFloat32(32, true), dv.getFloat32(36, true), dv.getFloat32(40, true)];
+  let off = 44;
+  const obj_ids = new Uint8Array(buf, off, N).slice(); off += N;
+  const rgb     = new Uint8Array(buf, off, N * 3).slice(); off += N * 3;
+  // Copy quant out of the master buffer to guarantee 2-byte alignment.
+  const quant = new Int16Array(buf.slice(off, off + F * N * 3 * 2));
+  // Dequantize to Float32 with NaN sentinel.
+  const center = [(axisMin[0]+axisMax[0]) / 2,
+                  (axisMin[1]+axisMax[1]) / 2,
+                  (axisMin[2]+axisMax[2]) / 2];
+  const half   = [(axisMax[0]-axisMin[0]) / 2,
+                  (axisMax[1]-axisMin[1]) / 2,
+                  (axisMax[2]-axisMin[2]) / 2];
+  const positions = new Float32Array(F * N * 3);
+  const SENTINEL = -32768;
+  for (let i = 0, len = positions.length; i < len; i++) {
+    const q = quant[i];
+    if (q === SENTINEL) { positions[i] = NaN; continue; }
+    const a = i % 3;
+    positions[i] = (q / 32767) * half[a] + center[a];
+  }
+  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, positions };
+}
+
+// HOT3D camera binary loader. Layout: 'CAM4' | u32 ver | u32 F |
+// f32×4 intrinsics | f32×(F*16) c2w (row-major flatten of each 4×4).
+async function loadCamBinary(url) {
+  const buf = await fetch(url + '?v=' + Date.now()).then(r => r.arrayBuffer());
+  const dv  = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1),
+                                    dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'CAM4') throw new Error('bad cam magic: ' + magic);
+  const version = dv.getUint32(4, true);
+  const F       = dv.getUint32(8, true);
+  const intr    = [dv.getFloat32(12, true), dv.getFloat32(16, true),
+                   dv.getFloat32(20, true), dv.getFloat32(24, true)];
+  const c2wFlat = new Float32Array(buf.slice(28, 28 + F * 16 * 4));
+  const c2w_per_frame = new Array(F);
+  for (let f = 0; f < F; f++) {
+    const row0 = [c2wFlat[f*16+0],  c2wFlat[f*16+1],  c2wFlat[f*16+2],  c2wFlat[f*16+3]];
+    const row1 = [c2wFlat[f*16+4],  c2wFlat[f*16+5],  c2wFlat[f*16+6],  c2wFlat[f*16+7]];
+    const row2 = [c2wFlat[f*16+8],  c2wFlat[f*16+9],  c2wFlat[f*16+10], c2wFlat[f*16+11]];
+    const row3 = [c2wFlat[f*16+12], c2wFlat[f*16+13], c2wFlat[f*16+14], c2wFlat[f*16+15]];
+    c2w_per_frame[f] = [row0, row1, row2, row3];
+  }
+  return { version, F, intrinsics: intr, c2w_per_frame };
 }
 
 // Pre-compute smoothed camera (position + forward direction) for the
@@ -2799,10 +2921,36 @@ async function init() {
       console.log(`PC extra @frame=${ex.frame}: ${pc.N} pts from ${ex.url}`);
     }
   }
-  // HOT3D side-channel: per-scene-PC-point pixel distance to the nearest
-  // anchor-frame 2D track. Used by buildStatic to mask out the object
-  // region of the MoGe-lifted scene cloud (so the GT object cloud isn't
-  // double-drawn). 1:1 with clipData._pc, so no extra index plumbing.
+  // HOT3D consolidated binaries: gt3d.bin (Int16-quantized per-frame 3D
+  // positions + per-track RGB + per-track object id) and cam.bin (per-frame
+  // 4×4 c2w + intrinsics). When present they replace inline JSON gt_3d /
+  // pred_3d / pt_colors_rgb and camera.c2w_per_frame respectively.
+  if (clipData.gt3d_bin?.url) {
+    clipData._gt3d = await loadGT3DBinary(clipData.gt3d_bin.url);
+    console.log(`gt3d: N=${clipData._gt3d.N} F=${clipData._gt3d.F} from ${clipData.gt3d_bin.url}`);
+    // The HOT3D bundle ships gt_3d / pred_3d / gt_2d / pt_colors_rgb as
+    // null in the JSON — actual data lives in clipData._gt3d. Other parts
+    // of the viewer reference cfg.gt_3d[t][p] / cfg.gt_3d[0].length for
+    // headers, picker selection, paper-mode tail trim, etc., so we install
+    // a sparse-array stub: length is correct but indexing returns
+    // `undefined`, which all the usual `if (!pt) continue` guards skip
+    // gracefully. Sparse arrays cost ~F + 1 array allocations total (the
+    // inner empty frame is shared by reference across every frame slot).
+    const T = clipData._gt3d.F, N_obj = clipData._gt3d.N;
+    const emptyFrame = new Array(N_obj);  // sparse: length=N, no real entries
+    cfg.gt_3d = new Array(T);
+    for (let i = 0; i < T; i++) cfg.gt_3d[i] = emptyFrame;
+    cfg.pred_3d = null;
+    cfg.gt_2d = null;
+    cfg.pred_2d = null;
+    cfg.pt_colors_rgb = new Array(N_obj);   // sparse
+  }
+  if (clipData.cam_bin?.url) {
+    const cam = await loadCamBinary(clipData.cam_bin.url);
+    clipData.camera.c2w_per_frame  = cam.c2w_per_frame;
+    clipData.camera.intrinsics_per_frame = Array(cam.F).fill(cam.intrinsics);
+    console.log(`cam: F=${cam.F} from ${clipData.cam_bin.url}`);
+  }
   if (clipData.pc_dist_bin?.url) {
     const r = await fetch(clipData.pc_dist_bin.url + '?v=' + Date.now());
     const buf = new Uint8Array(await r.arrayBuffer());
