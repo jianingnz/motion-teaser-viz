@@ -800,11 +800,11 @@ footer a { color: #2563eb; text-decoration: none; }
         </div>
         <div class="fld-grid">
           <div class="fld">
-            <div class="lbl-row"><span title="Panel ⑤ filter: keep a scene-PC point only if its K-th nearest tracked point is within R metres.">Object R (m)</span><span class="v" id="obj-R-lbl">0.05</span></div>
-            <input type="range" id="obj-R" min="0.005" max="0.20" step="0.005" value="0.05">
+            <div class="lbl-row"><span title="Distance threshold (metres). A scene-PC point is kept only if it's within this distance of the object's tracked-point cloud at frame 0.">Object distance (m)</span><span class="v" id="obj-R-lbl">0.100</span></div>
+            <input type="range" id="obj-R" min="0.005" max="0.50" step="0.005" value="0.10">
           </div>
           <div class="fld">
-            <div class="lbl-row"><span>Object K</span><span class="v" id="obj-K-lbl">4</span></div>
+            <div class="lbl-row"><span title="Context count. Each scene-PC point must have at least K tracked points within the distance threshold to be kept — higher K rejects lonely 'stray track' false positives.">Object context (K)</span><span class="v" id="obj-K-lbl">4</span></div>
             <input type="range" id="obj-K" min="1" max="20" step="1" value="4">
           </div>
           <div class="fld">
@@ -1107,7 +1107,16 @@ const Settings = {
   // scene PC points that happen to brush against ONE stray track (hand,
   // table edge, etc.) while still preserving every part of the object that
   // is densely covered by tracks.
-  objectFilterR: 0.05,
+  // Object-PC filter (defines what counts as "near the object" in panel ⑤):
+  //   R = distance threshold (metres) — a scene-PC point qualifies only if
+  //       its K-th nearest tracked point at frame 0 is within R.
+  //   K = context count — higher K demands the point sit inside a denser
+  //       neighbourhood of tracked points, so it rejects lonely scene-PC
+  //       points that happen to graze a single stray track and biases the
+  //       result toward the well-covered object surface.
+  // Defaults pick a small "object + tight halo" setting; the sliders go up
+  // to 0.50 m / K=20 if more scene context is wanted.
+  objectFilterR: 0.10,
   objectFilterK: 4,
   initialDotScale: 2.5,       // multiplier on rMax for the panel-⑤ tracked-point highlight spheres
   lineScale:  1.0,            // multiplier on trail line widths
@@ -2724,7 +2733,7 @@ async function init() {
     // filtered via the strict K-th-NN-within-R rule + object-RGB highlight
     // dots at every tracked point so the manipulated object pops even when
     // the relaxed filter still catches a bit of the hand.
-    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:false, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
