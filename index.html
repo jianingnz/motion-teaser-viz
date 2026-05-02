@@ -817,8 +817,8 @@ footer a { color: #2563eb; text-decoration: none; }
           <input type="range" id="obj-cloud-size" min="2" max="40" step="0.5" value="14">
         </div>
         <div class="fld">
-          <div class="lbl-row"><span title="Object-cloud trail polyline opacity. Lower = trails recede as motion-direction cues, surface cloud dominates.">Trail opacity</span><span class="v" id="obj-cloud-trail-opacity-lbl">0.55</span></div>
-          <input type="range" id="obj-cloud-trail-opacity" min="0" max="1" step="0.02" value="0.55">
+          <div class="lbl-row"><span title="Object-cloud trail polyline opacity. High = trails occlude any ghost-cloud dots that fall behind them; low = trails recede as faint motion cues and ghosts bleed through.">Trail opacity</span><span class="v" id="obj-cloud-trail-opacity-lbl">0.95</span></div>
+          <input type="range" id="obj-cloud-trail-opacity" min="0" max="1" step="0.02" value="0.95">
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
@@ -1248,7 +1248,7 @@ const Settings = {
   // Settings.gtAlpha which still controls the GT trail in regular
   // bundles). Lower default so the surface cloud reads as dominant
   // and the trails act as supporting motion-direction cues.
-  objectCloudTrailOpacity: 0.55,
+  objectCloudTrailOpacity: 0.95,
 
   // Motion-magnitude filter: each track has a precomputed bbox-diagonal
   // motion magnitude (clipData._gt3d.motionMag). Tracks below the
@@ -2752,12 +2752,16 @@ class Panel {
     //   trails:      renderOrder 0   (transparent, drawn first)
     //   ghosts:      renderOrder 1   (transparent, between)
     //   live cloud:  renderOrder 10  (opaque, drawn LAST → on top)
-    // renderOrder hierarchy across the static/moving split:
+    // renderOrder hierarchy across the static/moving split + ghost clouds:
     //   static (objFilter='static')  →  0  (drawn first, writes depth)
-    //   trails + ghosts              →  5  (depth-tested behind static)
+    //   GHOST clouds                 →  3  (behind the trails — without
+    //       this they leaked through as small darker dots ON the trail
+    //       wherever the moving object's frame-0/frame-45 position
+    //       happened to fall along the trail polyline)
+    //   trails                       →  5  (depth-tested behind static)
     //   moving  (objFilter='moving') → 10  (drawn last, always on top)
     if (isGhost) {
-      cloud.renderOrder = 5;
+      cloud.renderOrder = 3;
     } else if (objFilter === 'static') {
       cloud.renderOrder = 0;
     } else {
