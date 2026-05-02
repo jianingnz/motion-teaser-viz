@@ -801,6 +801,21 @@ footer a { color: #2563eb; text-decoration: none; }
           <div class="lbl-row"><span title="0 = no depth shading on the scene PC. Higher dims far-away points so the foreground reads.">PC depth shade</span><span class="v" id="pc-shade-lbl">0.00</span></div>
           <input type="range" id="pc-shade" min="0" max="1.5" step="0.05" value="0">
         </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="HOT3D-only: drop scene-PC points whose nearest anchor-frame 2D-track is closer than this many pixels (so MoGe-lifted object pixels disappear and only the GT object cloud represents the foreground).">Object mask radius (px)</span><span class="v" id="obj-mask-radius-lbl">30 px</span></div>
+          <input type="range" id="obj-mask-radius" min="0" max="200" step="1" value="30">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Drops scene-PC points whose anchor-frame Z-depth (metres) exceeds this. For HOT3D the camera looks down +Z so this acts as a tabletop / room divider — keep the close stuff, hide the far wall.">Max scene depth (m)</span><span class="v" id="max-scene-depth-lbl">10.00 m</span></div>
+          <input type="range" id="max-scene-depth" min="0.10" max="10.0" step="0.05" value="10">
+        </div>
+        <div class="toggle-grid" style="margin-top:6px;">
+          <button class="btn full" id="t-object-cloud" title="Render gt_3d at the playhead as a colored Points cloud using pt_colors_rgb (HOT3D mode).">object cloud</button>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Disc size (CSS pixels) for the object cloud points.">Object cloud size</span><span class="v" id="obj-cloud-size-lbl">14.0</span></div>
+          <input type="range" id="obj-cloud-size" min="2" max="40" step="0.5" value="14">
+        </div>
         <div class="fld-grid">
           <div class="fld">
             <div class="lbl-row"><span title="Distance threshold (metres). A scene-PC point is kept only if it's within this distance of the object's tracked-point cloud at frame 0.">Object distance (m)</span><span class="v" id="obj-R-lbl">0.100</span></div>
@@ -1162,6 +1177,26 @@ const Settings = {
   // clicks. Reset via the "Reset hidden PC" button in the Layers section.
   pcClickHide:    true,
   pcClickRadius:  0.01,         // fraction of trajectory spread → world threshold
+
+  // ── HOT3D / object cloud mode ──────────────────────────────────
+  // For bundles that ship a per-scene-point 2D-track distance (HOT3D
+  // cross-clip example): drop scene-PC points whose nearest anchor-frame
+  // 2D-track is closer than this many pixels. Lets the user trade off
+  // "show MoGe object pixels" vs "show only the GT object cloud here".
+  objMaskRadiusPx: 30,
+  // Depth-based scene PC trim (anchor-frame Z, metres). For HOT3D the
+  // camera sits at the origin and looks down +Z, so dropping points past
+  // this distance keeps the table-top context and removes the far-room
+  // wall / ceiling. Bundles without anchor-frame coords leave this at +∞
+  // (10 m default) so it's effectively a no-op.
+  maxSceneDepth:  10.0,
+
+  // When ON, render gt_3d at the current frame as a coloured Points cloud
+  // using cfg.pt_colors_rgb. Bypasses the trail-ball/line layers — used
+  // by the HOT3D bundle (auto-enabled via viewer_defaults). Other bundles
+  // can flip this on manually for an alternative view.
+  objectCloud:    false,
+  objCloudPointPx: 14,           // disc size in CSS pixels at the screen
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -1680,31 +1715,49 @@ class Panel {
           colors[i*3+2] = clipData.pc_colors[i][2] / 255;
         }
       }
-      // Apply per-clip "hidden indices" filter (built up by click-to-remove)
-      // ONLY on the main scene PC. Object-only / alt PCs derive from
-      // separate filtered arrays so their indices don't line up with the
-      // user's click history; we leave them alone.
-      if (_pcKind === 'main' && clipData._pcHidden && clipData._pcHidden.size) {
+      // Build a per-point keep-mask combining every active scene-PC filter:
+      //   * click-to-hide indices (clipData._pcHidden), main PC only
+      //   * 2D-track proximity mask (clipData._pcDist < objMaskRadiusPx),
+      //     used by HOT3D so the MoGe-lifted object pixels disappear and
+      //     only the GT object cloud represents the foreground objects
+      //   * anchor-frame Z-depth threshold (Settings.maxSceneDepth),
+      //     drops far-room background and keeps the tabletop in HOT3D
+      // Filters that don't apply (no _pcDist; depth threshold of +∞) are
+      // no-ops, so non-HOT3D bundles see no behaviour change.
+      if (_pcKind === 'main') {
         const hidden = clipData._pcHidden;
-        const Nfull = positions.length / 3;
-        const M = Nfull - hidden.size;
-        if (M > 0) {
-          const pos2 = new Float32Array(M * 3);
-          const col2 = new Float32Array(M * 3);
-          const idx2 = new Int32Array(M);
-          let j = 0;
+        const dist   = clipData._pcDist || null;
+        const maskR  = (dist && Settings.objMaskRadiusPx > 0) ? Settings.objMaskRadiusPx : -1;
+        const maxZ   = (Settings.maxSceneDepth > 0) ? Settings.maxSceneDepth : Infinity;
+        const Nfull  = positions.length / 3;
+        const anyFilter = (hidden && hidden.size) || maskR > 0 || Number.isFinite(maxZ);
+        if (anyFilter) {
+          const keep = new Uint8Array(Nfull);
+          let M = 0;
           for (let i = 0; i < Nfull; i++) {
-            if (hidden.has(i)) continue;
-            pos2[j*3]   = positions[i*3];
-            pos2[j*3+1] = positions[i*3+1];
-            pos2[j*3+2] = positions[i*3+2];
-            col2[j*3]   = colors[i*3];
-            col2[j*3+1] = colors[i*3+1];
-            col2[j*3+2] = colors[i*3+2];
-            idx2[j] = i;
-            j++;
+            if (hidden && hidden.has(i)) continue;
+            if (maskR > 0 && dist[i] < maskR) continue;
+            if (positions[i*3 + 2] > maxZ)    continue;
+            keep[i] = 1; M++;
           }
-          positions = pos2; colors = col2; _indexMap = idx2;
+          if (M > 0 && M !== Nfull) {
+            const pos2 = new Float32Array(M * 3);
+            const col2 = new Float32Array(M * 3);
+            const idx2 = new Int32Array(M);
+            let j = 0;
+            for (let i = 0; i < Nfull; i++) {
+              if (!keep[i]) continue;
+              pos2[j*3]   = positions[i*3];
+              pos2[j*3+1] = positions[i*3+1];
+              pos2[j*3+2] = positions[i*3+2];
+              col2[j*3]   = colors[i*3];
+              col2[j*3+1] = colors[i*3+1];
+              col2[j*3+2] = colors[i*3+2];
+              idx2[j] = i;
+              j++;
+            }
+            positions = pos2; colors = col2; _indexMap = idx2;
+          }
         }
       }
       const g = new THREE.BufferGeometry();
@@ -2028,6 +2081,15 @@ class Panel {
     if (this.cfgOverride) cfg = this.cfgOverride;
     while (this.dynGroup.children.length) this.dynGroup.remove(this.dynGroup.children[0]);
     const isPaper = !!this.opts.paperMode;
+    // GT object cloud (HOT3D-style) renders BEFORE the early-return so it's
+    // always visible — including before any video frame has been decoded
+    // (fiFrac < 0) and in paper mode. We clamp the frame index to [0, T-1].
+    if (Settings.objectCloud && cfg.pt_colors_rgb) {
+      const T = cfg.gt_3d?.length || 0;
+      const fiClamp = Math.max(0, Math.min(T - 1,
+        isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
+      this._addObjectCloudLayer(cfg, fiClamp);
+    }
     if (!isPaper && fiFrac < 0) return;
 
     const nHist = cfg.n_hist || 0;
@@ -2199,6 +2261,9 @@ class Panel {
     // trail ball layer above. The newest ball (largest + most vivid) at
     // `lastFi` serves as the "current frame" indicator on the trajectory.
 
+    // (GT object cloud is rendered up-top so it's visible even when the
+    // video hasn't decoded a frame yet; see the early-return guard above.)
+
     // ── Camera frustum + recent-trail polyline + (optional) video texture ──
     // Mimics the design in viz_website/templates/index.html: world-up basis
     // (no roll), centripetal-Catmull-Rom-smoothed trail covering the last
@@ -2362,6 +2427,37 @@ class Panel {
     return this._frustumMat;
   }
 
+  // Render gt_3d at one specific frame as a colored Points cloud using
+  // pt_colors_rgb (per-track RGB held constant across all frames). This
+  // is the HOT3D representation: the foreground objects ARE the cloud,
+  // there is no separate track / GT-trail distinction. Uses the same
+  // disc-AA shader as the scene PC so depth shading and point-size
+  // sliders apply identically.
+  _addObjectCloudLayer(cfg, fi) {
+    const pts3d = cfg.gt_3d;
+    if (!pts3d || !pts3d[fi]) return;
+    const ptColors = cfg.pt_colors_rgb || [];
+    const N = pts3d[fi].length;
+    const positions = [], colors = [];
+    for (let p = 0; p < N; p++) {
+      const pt = pts3d[fi][p];
+      const c  = ptColors[p];
+      if (!pt || !Number.isFinite(pt[0]) || !c) continue;
+      // Same y/z flip used everywhere else in the scene.
+      positions.push(pt[0], -pt[1], -pt[2]);
+      colors.push(c[0]/255, c[1]/255, c[2]/255);
+    }
+    if (!positions.length) return;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    g.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
+    const m = makeDiscMaterial({ size: Settings.objCloudPointPx });
+    m.uniforms.uViewport.value = this.canvas.height || 400;
+    const cloud = new THREE.Points(g, m);
+    cloud.userData = { pcKind: 'objectCloud' };  // not click-hideable
+    this.dynGroup.add(cloud);
+  }
+
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
     const N = ptIdx.length;
     const geom = new THREE.SphereGeometry(radius, 12, 10);
@@ -2511,6 +2607,59 @@ function precomputeSmoothCamera(clipData) {
   clipData._camSmooth = { pos, fwd, T, aspect: dimHW[1] / dimHW[0] };
 }
 
+// Apply bundle-level `viewer_defaults` (HOT3D-style) to the live Settings
+// + per-panel toggles + DOM input controls. Each bundle declares which
+// rendering mode it wants (e.g. object cloud + no pred/hist for HOT3D)
+// without baking that decision into the viewer source. Fields not
+// recognized are silently ignored — keeps the format forward-compatible.
+function applyBundleViewerDefaults(clipData) {
+  const vd = clipData?.viewer_defaults;
+  if (!vd) return;
+  // 1) Per-panel layer toggles via the existing `t-*` buttons. Simulating
+  //    a click + state set keeps the visual on/off icons in sync.
+  const togglePanelLayer = (key, btnId, on) => {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.classList.toggle('on', !!on);
+    for (const p of panels) p.opts[key] = !!on;
+  };
+  if (vd.showHist !== undefined) togglePanelLayer('showHist', 't-hist', vd.showHist);
+  if (vd.showPred !== undefined) togglePanelLayer('showPred', 't-pred', vd.showPred);
+  if (vd.showGT   !== undefined) togglePanelLayer('showGT',   't-gt',   vd.showGT);
+  if (vd.showPC   !== undefined) togglePanelLayer('showPC',   't-pc',   vd.showPC);
+  if (vd.showRaw  !== undefined) togglePanelLayer('showRaw',  't-raw',  vd.showRaw);
+
+  // 2) Settings flags / numbers + matching DOM inputs.
+  const setSlider = (id, lblId, v, fmt = (x) => x) => {
+    const el = document.getElementById(id);
+    if (el) el.value = String(v);
+    const lbl = document.getElementById(lblId);
+    if (lbl) lbl.textContent = fmt(v);
+  };
+  if (vd.objMaskRadiusPx !== undefined) {
+    Settings.objMaskRadiusPx = vd.objMaskRadiusPx;
+    setSlider('obj-mask-radius', 'obj-mask-radius-lbl', vd.objMaskRadiusPx, v => `${v|0} px`);
+  }
+  if (vd.maxSceneDepth !== undefined) {
+    Settings.maxSceneDepth = vd.maxSceneDepth;
+    setSlider('max-scene-depth', 'max-scene-depth-lbl', vd.maxSceneDepth, v => `${v.toFixed(2)} m`);
+  }
+  if (vd.objectCloud !== undefined) {
+    Settings.objectCloud = !!vd.objectCloud;
+    const t = document.getElementById('t-object-cloud');
+    if (t) t.classList.toggle('on', Settings.objectCloud);
+  }
+  if (vd.objCloudPointPx !== undefined) {
+    Settings.objCloudPointPx = vd.objCloudPointPx;
+    setSlider('obj-cloud-size', 'obj-cloud-size-lbl', vd.objCloudPointPx, v => v.toFixed(1));
+  }
+  if (vd.trackSmoothWindow !== undefined) {
+    Settings.trackSmoothWindow = vd.trackSmoothWindow;
+    setSlider('track-smooth', 'track-smooth-lbl', vd.trackSmoothWindow,
+              v => v <= 1 ? '1 (original)' : String(v));
+  }
+}
+
 // Snapshot the un-smoothed track arrays so the smoothing slider can move
 // freely between "very smooth" and "raw" without ever losing the source
 // signal. We snapshot per-config (gt_3d, pred_3d) and once at the bundle
@@ -2613,6 +2762,12 @@ async function init() {
   }
   // Populate the per-clip object selector (only visible when there's >1 config).
   populateObjSelector(clipData, cfg);
+  // Apply bundle viewer-defaults BEFORE precomputing camera + smoothing
+  // so any defaults that affect those caches (e.g. trackSmoothWindow) take
+  // effect on the first computation. The HOT3D bundle uses this to declare
+  // "render as object cloud, hide pred + hist" without needing a separate
+  // viewer build.
+  applyBundleViewerDefaults(clipData);
   // Cache smoothed camera positions/forwards for frustum + trail rendering.
   precomputeSmoothCamera(clipData);
   // Snapshot raw tracks before any smoothing pass touches them — the slider
@@ -2643,6 +2798,16 @@ async function init() {
       clipData._pcExtras.push({ ...pc, frame: ex.frame });
       console.log(`PC extra @frame=${ex.frame}: ${pc.N} pts from ${ex.url}`);
     }
+  }
+  // HOT3D side-channel: per-scene-PC-point pixel distance to the nearest
+  // anchor-frame 2D track. Used by buildStatic to mask out the object
+  // region of the MoGe-lifted scene cloud (so the GT object cloud isn't
+  // double-drawn). 1:1 with clipData._pc, so no extra index plumbing.
+  if (clipData.pc_dist_bin?.url) {
+    const r = await fetch(clipData.pc_dist_bin.url + '?v=' + Date.now());
+    const buf = new Uint8Array(await r.arrayBuffer());
+    clipData._pcDist = new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
+    console.log(`pc_dist: ${clipData._pcDist.length} per-point distances`);
   }
   if (!clipData.pc_bin && clipData.pc_xyz && clipData.pc_colors) {
     // JSON-fallback PC (DROID/DAVIS source clips that don't ship a separate
@@ -2762,6 +2927,10 @@ async function init() {
     altPanel.cfgOverride = buildFullCfg(clipData);
     panels.push(altPanel);
   }
+  // Re-apply bundle viewer-defaults now that panels exist; the first call
+  // (before panels were created) only affected Settings + DOM inputs, this
+  // second pass propagates layer-toggle flags into each panel.opts.
+  applyBundleViewerDefaults(clipData);
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
@@ -3951,6 +4120,24 @@ function bindControls() {
              v => { Settings.objectFilterK = v|0; recomputeObjectPC(); });
   wireSlider('obj-dot', 'obj-dot-lbl', v => `${v.toFixed(2)}×`,
              v => { Settings.initialDotScale = v; rerenderAll(); });
+  // HOT3D-only knobs (no-ops on bundles without _pcDist or anchor-frame
+  // coords). The PC mask + max-depth filters both live in buildStatic so
+  // changing them needs a full static rebuild, not just rerenderAll().
+  wireSlider('obj-mask-radius', 'obj-mask-radius-lbl', v => `${v|0} px`,
+             v => { Settings.objMaskRadiusPx = v|0; rebuildAllStatic(); });
+  wireSlider('max-scene-depth', 'max-scene-depth-lbl', v => `${v.toFixed(2)} m`,
+             v => { Settings.maxSceneDepth = v;     rebuildAllStatic(); });
+  wireSlider('obj-cloud-size', 'obj-cloud-size-lbl', v => v.toFixed(1),
+             v => { Settings.objCloudPointPx = v;   rerenderAll(); });
+  const tObjCloud = document.getElementById('t-object-cloud');
+  if (tObjCloud) {
+    tObjCloud.classList.toggle('on', Settings.objectCloud);
+    tObjCloud.onclick = () => {
+      Settings.objectCloud = !Settings.objectCloud;
+      tObjCloud.classList.toggle('on', Settings.objectCloud);
+      rerenderAll();
+    };
+  }
   wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
              v => applyLineScale(v));
   wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),

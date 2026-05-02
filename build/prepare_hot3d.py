@@ -244,9 +244,17 @@ def main():
     chrono_path = out_video / f"{args.name}_chrono.jpg"
     cv2.imwrite(str(chrono_path), bg, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
 
-    # ── 6. Scene PC binary ──
+    # ── 6. Scene PC binary + per-point min-pixel-distance side-channel ──
     pc_path = out_data / f"{args.name}_pc.bin"
     write_pc_binary(pc_path, scene[:, :3], scene[:, 3:6])
+    # min_pix_dist is 1:1 with scene[:, 0]; ship as a parallel float32 file so
+    # the viewer can mask out points within `obj_mask_radius_px` of any
+    # anchor 2D-track at runtime (the live "Object mask radius" slider).
+    min_pix_dist = np.fromfile(SRC / "min_pix_dist.bin", dtype=np.float32)
+    assert min_pix_dist.shape[0] == scene.shape[0], \
+        f"min_pix_dist len {min_pix_dist.shape[0]} != scene N {scene.shape[0]}"
+    pc_dist_path = out_data / f"{args.name}_pc_dist.bin"
+    pc_dist_path.write_bytes(min_pix_dist.astype(np.float32).tobytes())
 
     # ── 7. Bundle JSON ──
     config = {
@@ -304,6 +312,31 @@ def main():
             "video_dim_HW": [args.target_height, args.target_height],
             "c2w_per_frame": c2w_per_frame.tolist(),
             "intrinsics_per_frame": [[float(fx), float(fy), float(cx), float(cy)]] * F,
+        },
+        # Side-channel: per-scene-PC-point pixel distance to nearest visible
+        # 2D track in the anchor frame. The viewer uses it to mask out the
+        # MoGe-lifted object pixels (so the GT object cloud isn't doubled).
+        "pc_dist_bin": {
+            "url": f"static/data/{args.name}_pc_dist.bin",
+            "n_points": int(scene.shape[0]),
+            "format": "float32 N",
+            "n_2d_tracks": int(meta["moge"]["track_pix_count"]),
+        },
+        # Defaults a HOT3D-aware viewer should apply at clip-load time.
+        # The bundle declaratively describes the visualization mode;
+        # non-HOT3D bundles omit this field and the viewer falls back to its
+        # standard hist/gt/pred trail rendering. Slider values shown here
+        # are dragged into Settings + the matching DOM input on load.
+        "viewer_defaults": {
+            "objMaskRadiusPx": int(meta["moge"]["obj_mask_radius_px_default"]) * 3,
+            "objectCloud": True,             # render gt_3d[fi] as a coloured PC
+            "objCloudPointPx": 14,
+            "showHist": False,               # HOT3D has no separate history concept
+            "showPred": False,               # no prediction model evaluated here
+            "trackSmoothWindow": 1,          # don't pre-smooth the GT object cloud
+            # Anchor-frame Z (metres). Scene xyz spans roughly z=[0.44, 0.92];
+            # 0.85 m keeps the table-top + nearby cabinet, drops the back wall.
+            "maxSceneDepth": 0.85,
         },
     }
     out_json = out_data / f"{args.name}.json"
