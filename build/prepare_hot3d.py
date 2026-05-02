@@ -363,6 +363,37 @@ def main():
         mean_obj[fi] = obj_arr[m, fi].mean(axis=0) if m.any() else cam_pos[fi]
     c2w_per_frame = build_c2w_per_frame(cam_pos, mean_obj)
 
+    # ── Camera-side half cut ──────────────────────────────────────────
+    # The source `vis` flag from vis_clips_backproject.py uses a 10%
+    # depth tolerance for its self-occlusion test, which lets the back
+    # of thin meshes (mugs, bottle walls) through and makes the cloud
+    # read as the FULL object mesh instead of just the camera-facing
+    # surface. Per (frame, object), we drop every point whose
+    # projection onto the camera→object_centroid axis is on the FAR
+    # side of the centroid — i.e., behind the object's own midline as
+    # seen from the camera. Halves the visible per-object point count
+    # but matches "what the camera actually sees".
+    print("applying camera-side half-cut to vis_arr...")
+    cs_dropped = 0
+    for fi in range(F):
+        for obj in range(N_OBJ):
+            obj_visible = np.where(vis_arr[:, fi] & (obj_ids == obj))[0]
+            if len(obj_visible) < 3: continue
+            pts = obj_arr[obj_visible, fi]                       # (n, 3)
+            centroid = pts.mean(axis=0)
+            view = (centroid - cam_pos[fi]).astype(np.float32)
+            n = np.linalg.norm(view)
+            if n < 1e-6: continue
+            view /= n
+            # Projection of (pt - centroid) onto view direction; positive
+            # = behind the centroid as seen from camera (far side).
+            proj = (pts - centroid) @ view
+            far_mask = proj > 0.0
+            if far_mask.any():
+                vis_arr[obj_visible[far_mask], fi] = False
+                cs_dropped += int(far_mask.sum())
+    print(f"  dropped {cs_dropped} far-side points across all frames")
+
     # ── Stitched mp4 ───────────────────────────────────────────────
     mp4_dst = out_video / f"{args.name}.mp4"
     stitch_mp4(mp4_dst, target_height=args.target_height, fps=args.fps)
