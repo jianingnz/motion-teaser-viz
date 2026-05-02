@@ -868,6 +868,11 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn on" id="t-pc">scene PC</button>
           <button class="btn on" id="t-frustum">camera frustum</button>
         </div>
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:10px 0 4px 0;">Scene PC editing</div>
+        <div class="toggle-grid">
+          <button class="btn on" id="t-pc-click" title="Click any point in a 3D panel to hide it. Off = clicks orbit the camera only.">click to hide</button>
+          <button class="btn full" id="pc-hidden-reset" title="Restore every point hidden by clicks for the current clip.">↺ restore all hidden points (<span id="pc-hidden-count">0</span>)</button>
+        </div>
       </div>
     </details>
 
@@ -890,6 +895,16 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="fld">
           <div class="lbl-row"><span title="How many past camera frames are spline-rendered as the camera trail polyline.">Trail length (frames)</span><span class="v" id="frustum-trail-lbl">20</span></div>
           <input type="range" id="frustum-trail" min="0" max="80" step="1" value="20">
+        </div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Pixel width of the frustum wireframe (LineMaterial — works on every platform, unlike LineBasicMaterial).">Frustum line width</span><span class="v" id="frustum-lw-lbl">2.5</span></div>
+            <input type="range" id="frustum-lw" min="0.5" max="8" step="0.1" value="2.5">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Pixel width of the camera-trail polyline.">Trail line width</span><span class="v" id="frustum-path-lw-lbl">1.8</span></div>
+            <input type="range" id="frustum-path-lw" min="0.5" max="8" step="0.1" value="1.8">
+          </div>
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Symmetric moving-average kernel applied to camera positions and forwards. 1 = no smoothing; 5 is a good default.">Camera smoothing</span><span class="v" id="cam-smooth-lbl">5</span></div>
@@ -1127,6 +1142,15 @@ const Settings = {
   ballMinFrac:    0.48,  // smallest ball / largest ball ratio in the trail
   pcDepthShade:   0.0,   // 0 = no shading; >0 dims far-away PC points
 
+  // ── Click-to-hide PC points ────────────────────────────────────
+  // Single-click anywhere on a 3D panel that shows the main scene PC and
+  // the nearest scene-PC point disappears. Hidden indices live on
+  // clipData._pcHidden (Set<number>) so every panel that shows the main
+  // PC drops the same point. Object-only / extras / altPC panels ignore
+  // clicks. Reset via the "Reset hidden PC" button in the Layers section.
+  pcClickHide:    true,
+  pcClickRadius:  0.01,         // fraction of trajectory spread → world threshold
+
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
   // texture mapped onto the far rectangle. Mimics the design in
@@ -1148,6 +1172,8 @@ const Settings = {
   endpointAlpha:  1.0,
   frustumOpacity: 0.85,
   frustumPathOpacity: 0.7,
+  frustumLineWidth: 2.5,        // px (LineMaterial uses CSS pixels)
+  frustumPathLineWidth: 1.8,
   showFrustum:    true,
   frustumSize:    0.10,         // depth (m) of the pyramid from camera origin
   frustumColor:   '#66aaff',    // wire colour (matches reference design)
@@ -1508,11 +1534,15 @@ class Panel {
   }
 
   _setupInput() {
-    let drag = false, pm = {x:0, y:0};
-    this.canvas.addEventListener('mousedown', e => { drag=true; pm={x:e.clientX, y:e.clientY}; });
+    let drag = false, pm = {x:0, y:0}, downXY = null, moved = 0;
+    this.canvas.addEventListener('mousedown', e => {
+      drag = true; pm = {x:e.clientX, y:e.clientY};
+      downXY = {x:e.clientX, y:e.clientY}; moved = 0;
+    });
     window.addEventListener('mouseup', () => { drag=false; });
     this.canvas.addEventListener('mousemove', e => {
       if (!drag) return;
+      moved += Math.abs(e.clientX - pm.x) + Math.abs(e.clientY - pm.y);
       camState.yaw -= (e.clientX - pm.x) * 0.005;
       camState.pitch -= (e.clientY - pm.y) * 0.005;
       camState.pitch = Math.max(-1.5, Math.min(1.5, camState.pitch));
@@ -1525,6 +1555,49 @@ class Panel {
       e.preventDefault();
     }, { passive:false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+    // Click-to-hide for the main scene PC. We piggy-back on mouseup
+    // (instead of the native `click` event) so we can reject clicks that
+    // were actually orbit drags. `moved < 4 px` ⇒ treat as a true click.
+    this.canvas.addEventListener('mouseup', (e) => {
+      if (moved >= 4) return;
+      this._handlePCClick(e);
+    });
+  }
+
+  // Raycast against the panel's main scene PC and add the hit point's
+  // ORIGINAL index to clipData._pcHidden, then trigger a global rebuild
+  // so every panel showing the main PC drops the same point. The
+  // raycaster's threshold is tied to the trajectory layout spread so the
+  // tolerance scales with scene size — looks the same on a tiny clip
+  // and a huge one.
+  _handlePCClick(e) {
+    if (!clipData?._pc || Settings.pcClickHide === false) return;
+    if (this.opts.objectPCOnly) return;          // only the full PC is clickable
+    const rect = this.canvas.getBoundingClientRect();
+    const x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+    const y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+    const ray = new THREE.Raycaster();
+    const spread = this._layout?.spread || 1;
+    ray.params.Points.threshold = Math.max(0.005, spread * (Settings.pcClickRadius || 0.01));
+    ray.setFromCamera(new THREE.Vector2(x, y), this.camera);
+    // Collect every Points object whose userData.pcKind === 'main'. We
+    // intersect just those — extras (frame-33 etc.) and altPC are left alone
+    // for now since they'd need their own hidden sets.
+    const targets = [];
+    this.staticGroup.traverse(obj => {
+      if (obj.isPoints && obj.userData?.pcKind === 'main') targets.push(obj);
+    });
+    if (!targets.length) return;
+    const hits = ray.intersectObjects(targets, false);
+    if (!hits.length) return;
+    if (!clipData._pcHidden) clipData._pcHidden = new Set();
+    // Translate the rendered-array index back to the original _pc index.
+    const obj = hits[0].object;
+    const map = obj.userData?.indexMap;
+    const renderedIdx = hits[0].index;
+    const origIdx = (map && Number.isFinite(map[renderedIdx])) ? map[renderedIdx] : renderedIdx;
+    clipData._pcHidden.add(origIdx);
+    rebuildAllStatic();
   }
 
   applyCamera() {
@@ -1564,6 +1637,7 @@ class Panel {
       // EgoDex only), or object-only filtered subset (`_pcObject`). Panels pick
       // by setting useAltPC / objectPCOnly on opts.
       let positions, colors;
+      let _pcKind = 'unknown', _indexMap = null;   // for click-to-hide
       const fullPC   = clipData._pc;
       const altPC    = clipData._altPC;
       const objectPC = clipData._pcObject;
@@ -1572,12 +1646,15 @@ class Panel {
       if (useObj) {
         positions = objectPC.positions;
         colors    = objectPC.colors;
+        _pcKind = 'object';
       } else if (useAlt) {
         positions = altPC.positions;
         colors    = altPC.colors;
+        _pcKind = 'alt';
       } else if (fullPC) {
         positions = fullPC.positions;
         colors    = fullPC.colors;
+        _pcKind = 'main';
       } else {
         const N = clipData.pc_xyz.length;
         positions = new Float32Array(N * 3);
@@ -1591,6 +1668,33 @@ class Panel {
           colors[i*3+2] = clipData.pc_colors[i][2] / 255;
         }
       }
+      // Apply per-clip "hidden indices" filter (built up by click-to-remove)
+      // ONLY on the main scene PC. Object-only / alt PCs derive from
+      // separate filtered arrays so their indices don't line up with the
+      // user's click history; we leave them alone.
+      if (_pcKind === 'main' && clipData._pcHidden && clipData._pcHidden.size) {
+        const hidden = clipData._pcHidden;
+        const Nfull = positions.length / 3;
+        const M = Nfull - hidden.size;
+        if (M > 0) {
+          const pos2 = new Float32Array(M * 3);
+          const col2 = new Float32Array(M * 3);
+          const idx2 = new Int32Array(M);
+          let j = 0;
+          for (let i = 0; i < Nfull; i++) {
+            if (hidden.has(i)) continue;
+            pos2[j*3]   = positions[i*3];
+            pos2[j*3+1] = positions[i*3+1];
+            pos2[j*3+2] = positions[i*3+2];
+            col2[j*3]   = colors[i*3];
+            col2[j*3+1] = colors[i*3+1];
+            col2[j*3+2] = colors[i*3+2];
+            idx2[j] = i;
+            j++;
+          }
+          positions = pos2; colors = col2; _indexMap = idx2;
+        }
+      }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
       g.setAttribute('color',    new THREE.BufferAttribute(colors,    3));
@@ -1601,6 +1705,7 @@ class Panel {
       // Match the y/z-flip convention used elsewhere in the scene (world Y-up
       // becomes three.js Y-down, hence the negative scale on Y and Z).
       pc.scale.set(1, -1, -1);
+      pc.userData = { pcKind: _pcKind, indexMap: _indexMap };
       this.staticGroup.add(pc);
 
       // Extra per-frame PCs (e.g. part4_pour_1027 ships a frame-33 PC). They
@@ -2135,7 +2240,8 @@ class Panel {
         if (!this._frustumPathMat) {
           this._frustumPathMat = new LineMaterial({
             color: new THREE.Color(Settings.frustumPathColor).getHex(),
-            linewidth: 1.8, dashed: false, worldUnits: false,
+            linewidth: Settings.frustumPathLineWidth,
+            dashed: false, worldUnits: false,
             vertexColors: false, transparent: true,
             opacity: Settings.frustumPathOpacity,
           });
@@ -2143,6 +2249,7 @@ class Panel {
           this._frustumPathMat.color = new THREE.Color(Settings.frustumPathColor);
         }
         this._frustumPathMat.opacity = Settings.frustumPathOpacity;
+        this._frustumPathMat.linewidth = Settings.frustumPathLineWidth;
         this._frustumPathMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
         this.dynGroup.add(new LineSegments2(g, this._frustumPathMat));
       }
@@ -2171,10 +2278,19 @@ class Panel {
       const c1 = off( 1,  1);
       const c2 = off( 1, -1);
       const c3 = off(-1, -1);
+      // Use Line2/LineSegments2 + LineMaterial so the user-controllable
+      // pixel width actually takes effect (THREE.LineBasicMaterial caps
+      // linewidth to 1 on most platforms).
       const fp = [origin, c0, origin, c1, origin, c2, origin, c3,
                   c0, c1, c1, c2, c2, c3, c3, c0];
-      const fg = new THREE.BufferGeometry().setFromPoints(fp);
-      this.dynGroup.add(new THREE.LineSegments(fg, this._getFrustumMat()));
+      const fSegs = [];
+      for (let i = 0; i < fp.length; i += 2) {
+        fSegs.push(fp[i].x,   fp[i].y,   fp[i].z,
+                   fp[i+1].x, fp[i+1].y, fp[i+1].z);
+      }
+      const fg = new LineSegmentsGeometry();
+      fg.setPositions(fSegs);
+      this.dynGroup.add(new LineSegments2(fg, this._getFrustumMat()));
 
       // Video texture on the far rectangle. Uses the live <video id="rgb-video">
       // element so the projected image is always the current frame. We
@@ -2219,14 +2335,18 @@ class Panel {
   // Settings each call so the colour picker is live.
   _getFrustumMat() {
     if (!this._frustumMat) {
-      this._frustumMat = new THREE.LineBasicMaterial({
-        color: new THREE.Color(Settings.frustumColor),
+      this._frustumMat = new LineMaterial({
+        color: new THREE.Color(Settings.frustumColor).getHex(),
+        linewidth: Settings.frustumLineWidth,
+        dashed: false, worldUnits: false, vertexColors: false,
         transparent: true, opacity: Settings.frustumOpacity,
       });
     } else {
       this._frustumMat.color = new THREE.Color(Settings.frustumColor);
     }
     this._frustumMat.opacity = Settings.frustumOpacity;
+    this._frustumMat.linewidth = Settings.frustumLineWidth;
+    this._frustumMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
     return this._frustumMat;
   }
 
@@ -2604,7 +2724,7 @@ async function init() {
     // filtered via the strict K-th-NN-within-R rule + object-RGB highlight
     // dots at every tracked point so the manipulated object pops even when
     // the relaxed filter still catches a bit of the hand.
-    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:false, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
@@ -3585,6 +3705,35 @@ function bindControls() {
   const tEnds = document.getElementById('t-endpoints');
   if (tEnds) { tEnds.classList.add('on'); tEnds.onclick = (e) => toggleLayer(e, 'showEndpoints'); }
   document.getElementById('t-camera-reset').onclick = resetCamera;
+  // PC editing: click-to-hide toggle + reset button.
+  const tPcClick = document.getElementById('t-pc-click');
+  if (tPcClick) {
+    tPcClick.classList.toggle('on', Settings.pcClickHide);
+    tPcClick.onclick = () => {
+      Settings.pcClickHide = !Settings.pcClickHide;
+      tPcClick.classList.toggle('on', Settings.pcClickHide);
+    };
+  }
+  const pcReset = document.getElementById('pc-hidden-reset');
+  const pcCount = document.getElementById('pc-hidden-count');
+  if (pcReset) {
+    pcReset.onclick = () => {
+      if (clipData?._pcHidden) clipData._pcHidden.clear();
+      if (pcCount) pcCount.textContent = '0';
+      rebuildAllStatic();
+    };
+  }
+  // Keep the "(N)" badge fresh — patch rebuildAllStatic to update after each
+  // rebuild. Cheap O(1) DOM write.
+  const _origRebuild = rebuildAllStatic;
+  window._patchedRebuild = true;
+  // (We don't actually monkey-patch — instead the click handler updates
+  // `pc-hidden-count` directly via a small watcher below.)
+  setInterval(() => {
+    if (!pcCount || !clipData) return;
+    const n = clipData._pcHidden ? clipData._pcHidden.size : 0;
+    if (pcCount.textContent !== String(n)) pcCount.textContent = String(n);
+  }, 500);
   // Camera-frustum toggle + size slider + colour picker. Frustum lives in
   // dynGroup so it follows the playhead — toggling just flips the Settings
   // flag and asks every panel to redraw at the current frame.
@@ -3626,6 +3775,23 @@ function bindControls() {
       rerenderAll();
     };
   }
+  // Frustum + path pixel widths.
+  const wireWidth = (id, lblId, fmt, fn) => {
+    const el = document.getElementById(id);
+    const lbl = document.getElementById(lblId);
+    if (!el) return;
+    el.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      if (lbl) lbl.textContent = fmt(v);
+      fn(v);
+      rerenderAll();
+    };
+  };
+  wireWidth('frustum-lw',      'frustum-lw-lbl',      v => v.toFixed(1),
+            v => { Settings.frustumLineWidth = v; });
+  wireWidth('frustum-path-lw', 'frustum-path-lw-lbl', v => v.toFixed(1),
+            v => { Settings.frustumPathLineWidth = v; });
+
   const frustumTrail = document.getElementById('frustum-trail');
   const frustumTrailLbl = document.getElementById('frustum-trail-lbl');
   if (frustumTrail) {
@@ -3914,6 +4080,21 @@ function rerenderAll() {
   }
   if (App?._lastFi >= 0) drawVideoOverlay(App._lastFi);
   drawChronoOverlay();
+}
+
+// Heavier than rerenderAll: also re-runs buildStatic on every panel so any
+// changes that affect the static scene (PC hidden-set, PC point sizes,
+// object filter sliders that change _pcObject) get picked up. Used by the
+// click-to-hide handler on the PC.
+function rebuildAllStatic() {
+  if (!panels || !cfg) return;
+  const fi = (typeof App !== 'undefined' && App._lastFi >= 0) ? App._lastFi : -1;
+  const paperFi = (clipData?.num_frames || 1) - 1;
+  for (const p of panels) {
+    p.buildStatic(clipData, cfg);
+    p.updateDynamic(cfg, p.opts.paperMode ? paperFi : fi);
+    p.applyCamera(); p.render();
+  }
 }
 
 // Recompute the curated GT/Pred index lists when N_GT_KEEP changes. Mirrors
