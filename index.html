@@ -2210,25 +2210,28 @@ class Panel {
       const T = cfg.gt_3d?.length || 0;
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
-      // GHOST clouds first (drawn behind so the live cloud sits on top
-      // visually). Each requested ghost frame is a transparent copy of
-      // the GT cloud at that frame, useful for "object was here, then
-      // here, now solid here" motion-history readouts in a single still.
+      // Z-order (back-to-front, scene-tree order = render order):
+      //   1. Per-track trail polylines  — drawn FIRST so the cloud
+      //      sits cleanly on top of them; the trail material has
+      //      depthTest:false / depthWrite:false so the live cloud's
+      //      depth-write below paints over wherever they overlap in
+      //      screen space.
+      //   2. Ghost clouds at the requested past frames — semi-
+      //      transparent, depthWrite:false so they don't z-block the
+      //      live cloud and don't depth-block each other.
+      //   3. Live (solid) cloud at the current playhead — rendered
+      //      LAST so it visually sits on top of everything else in the
+      //      object-cloud layer stack.
+      if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
+        this._addObjectCloudTrails(cfg, fiClamp);
+      }
       const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
       for (const gf of ghosts) {
         const f = Math.round(gf);
         if (!Number.isFinite(f) || f < 0 || f >= T || f === fiClamp) continue;
         this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity);
       }
-      // Live (solid) cloud at the playhead.
       this._addObjectCloudLayer(cfg, fiClamp);
-      // Per-track trajectory polylines back through Settings.objectCloudTrailLen
-      // frames. Sub-sampled to Settings.objectCloudTrailCount tracks so the
-      // viewer can show a manageable number even when the bundle ships
-      // 100k tracks. Vertex-coloured: pale at oldest → vivid at newest.
-      if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
-        this._addObjectCloudTrails(cfg, fiClamp);
-      }
     }
     if (!isPaper && fiFrac < 0) return;
 
