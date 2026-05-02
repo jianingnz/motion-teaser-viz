@@ -234,6 +234,11 @@ def main():
     ap.add_argument("--caption", default="HOT3D cross-clip stitch · clip-001995 → clip-001996 (16k pts/object)")
     ap.add_argument("--target-height", type=int, default=480)
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--force-random-scene-pc", action="store_true",
+                    help="Overwrite the structured stride-sampled scene PC "
+                         "(built by regen_hot3d_dense_scene_pc.py) with the "
+                         "canonical random sub-sample. Off by default — re-runs "
+                         "of this script preserve the structured PC.")
     args = ap.parse_args()
 
     out_data  = args.out_dir / "static" / "data";  out_data.mkdir(parents=True, exist_ok=True)
@@ -369,12 +374,24 @@ def main():
     cv2.imwrite(str(chrono_path), bg, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
 
     # ── Scene PC + per-pt distance side-channel ────────────────────
-    scene = np.fromfile(SCENE_DIR / "scene.bin", dtype=np.float32).reshape(-1, 6)
-    pc_path = out_data / f"{args.name}_pc.bin"
-    write_pc_binary(pc_path, scene[:, :3], scene[:, 3:6])
-    min_pix_dist = np.fromfile(SCENE_DIR / "min_pix_dist.bin", dtype=np.float32)
+    # If the structured stride-sampled scene PC is already in place
+    # (built by build/regen_hot3d_dense_scene_pc.py), keep it — that
+    # file lives in the viewer repo and reflects MoGe-stride sampling
+    # which is way better than the visual_example random sub-sample.
+    # Otherwise fall back to the canonical (random) scene.bin.
+    pc_path      = out_data / f"{args.name}_pc.bin"
     pc_dist_path = out_data / f"{args.name}_pc_dist.bin"
-    pc_dist_path.write_bytes(min_pix_dist.astype(np.float32).tobytes())
+    structured_present = pc_path.exists() and pc_dist_path.exists()
+    if structured_present and not args.force_random_scene_pc:
+        scene_n = struct.unpack("<I", pc_path.open("rb").read(4))[0]
+        print(f"keeping existing structured scene PC at {pc_path} (N={scene_n})")
+    else:
+        scene = np.fromfile(SCENE_DIR / "scene.bin", dtype=np.float32).reshape(-1, 6)
+        write_pc_binary(pc_path, scene[:, :3], scene[:, 3:6])
+        min_pix_dist = np.fromfile(SCENE_DIR / "min_pix_dist.bin", dtype=np.float32)
+        pc_dist_path.write_bytes(min_pix_dist.astype(np.float32).tobytes())
+        scene_n = scene.shape[0]
+        print(f"wrote canonical (random) scene PC at {pc_path} (N={scene_n})")
 
     # ── GT3D bin (positions int16-quantized, RGB uint8, obj_ids uint8) ──
     gt3d_path = out_data / f"{args.name}_gt3d.bin"
@@ -418,14 +435,14 @@ def main():
         },
         "pc_bin": {
             "url": f"static/data/{args.name}_pc.bin",
-            "n_points": int(scene.shape[0]),
+            "n_points": int(scene_n),
             "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
             "n_concat_frames": 1, "subsample": 1,
             "frame_indices_original": [T_A_START],
         },
         "pc_dist_bin": {
             "url": f"static/data/{args.name}_pc_dist.bin",
-            "n_points": int(scene.shape[0]),
+            "n_points": int(scene_n),
             "format": "float32 N",
         },
         "gt3d_bin": {
@@ -459,7 +476,7 @@ def main():
           f"{K_total} pts × {F} frames Int16-quantized)")
     print(f"wrote {cam_path}      ({cam_path.stat().st_size} B)")
     print(f"wrote {mp4_dst}       ({mp4_dst.stat().st_size//1024} KB, {F} frames @ {args.fps} fps)")
-    print(f"wrote {pc_path}       ({pc_path.stat().st_size//1024//1024} MB, {scene.shape[0]} pts)")
+    print(f"wrote {pc_path}       ({pc_path.stat().st_size//1024//1024} MB, {scene_n} pts)")
     print(f"wrote {pc_dist_path}  ({pc_dist_path.stat().st_size//1024} KB)")
     print(f"wrote {chrono_path}   ({chrono_path.stat().st_size//1024} KB)")
 
