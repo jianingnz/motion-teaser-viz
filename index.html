@@ -2904,7 +2904,12 @@ class Panel {
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
           const qx = quant[base];
-          if (qx === SENT) { prevValid = false; continue; }
+          // Bridge across invisibility: skip the SENTINEL frame (no
+          // position to anchor to), but DON'T reset prevValid — so when
+          // the next visible frame comes we draw one straight segment
+          // from the last visible position to the new one. This keeps
+          // the polyline continuous through occlusion / mask gaps.
+          if (qx === SENT) continue;
           const qy = quant[base + 1], qz = quant[base + 2];
           const cx_ = (qx * K) * hx + cx;
           const cy_ = -((qy * K) * hy + cy);
@@ -2950,7 +2955,9 @@ class Panel {
         let prev = null, prevF = -1;
         for (let f = fStart; f <= fiNow; f++) {
           const pt = cfg.gt_3d[f]?.[p];
-          if (!pt || !Number.isFinite(pt[0])) { prev = null; continue; }
+          // Bridge across invalid frames (don't reset prev) so the trail
+          // stays continuous through occlusion gaps.
+          if (!pt || !Number.isFinite(pt[0])) continue;
           const cur = [pt[0], -pt[1], -pt[2]];
           if (prev) {
             segs.push(prev[0], prev[1], prev[2], cur[0], cur[1], cur[2]);
