@@ -261,17 +261,18 @@
   },
   "pc_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc.bin",
-    "n_points": 220900,
+    "n_points": 79524,
     "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
     "n_concat_frames": 1,
-    "subsample": 1,
+    "subsample": 5,
     "frame_indices_original": [
       84
-    ]
+    ],
+    "sampling": "pixel-stride"
   },
   "pc_dist_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_dist.bin",
-    "n_points": 220900,
+    "n_points": 79524,
     "format": "float32 N"
   },
   "gt3d_bin": {
