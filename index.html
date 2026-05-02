@@ -832,8 +832,20 @@ footer a { color: #2563eb; text-decoration: none; }
           <input type="range" id="obj-cloud-trail-len" min="2" max="106" step="1" value="20">
         </div>
         <div class="color-row">
-          <input type="color" id="obj-cloud-trail-col" value="#34d399" title="Object-cloud trail base hue. Pale→vivid gradient over time uses this as the vivid end.">
-          <span class="cn">Trail colour</span>
+          <input type="color" id="obj-cloud-trail-col" value="#34d399" title="Trail colour at the NEWEST end of the gradient (the playhead-side end of the trail).">
+          <span class="cn">Trail colour (newest)</span>
+        </div>
+        <div class="color-row">
+          <input type="color" id="obj-cloud-trail-col-old" value="#ffffff" title="Trail colour at the OLDEST end of the gradient (the far-back end of the trail).">
+          <span class="cn">Trail colour (oldest)</span>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Trail-gradient floor. 0 = trail starts at the oldest colour at frame 0; higher values bias the whole trail toward the newest colour.">Trail gradient floor</span><span class="v" id="obj-cloud-trail-mixlo-lbl">0.18</span></div>
+          <input type="range" id="obj-cloud-trail-mixlo" min="0" max="0.95" step="0.02" value="0.18">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Trail-gradient curve exponent. <1 boosts the bright (newest) end; >1 stretches the pale (oldest) end.">Trail gradient curve</span><span class="v" id="obj-cloud-trail-exp-lbl">1.00</span></div>
+          <input type="range" id="obj-cloud-trail-exp" min="0.2" max="3" step="0.05" value="1">
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Pixel width of the object-cloud trail polylines. Lower = thinner streaks so the cloud dominates.">Trail line width</span><span class="v" id="obj-cloud-trail-width-lbl">0.9</span></div>
@@ -1242,7 +1254,15 @@ const Settings = {
   objectCloudTrails:      true,
   objectCloudTrailCount:  256,   // # tracks to render trails for (0 = none)
   objectCloudTrailLen:    20,    // frames of trail behind the playhead
-  objectCloudTrailColor:  '#34d399',  // base hue (green by default)
+  // Track gradient endpoints. The trail polyline is vertex-coloured to
+  // lerp from the OLD-end colour at the oldest frame in the window to
+  // the NEW-end colour at the playhead. Both ends are independently
+  // pickable. The existing mixLo / tExp knobs (in the Time-gradient
+  // section) still control the gradient floor and curve.
+  objectCloudTrailColor:    '#34d399',   // newest-frame end (default green)
+  objectCloudTrailColorOld: '#ffffff',   // oldest-frame end (default white)
+  objectCloudTrailMixLo:    0.18,        // gradient floor (lerp t at oldest frame)
+  objectCloudTrailExp:      1.0,         // gradient curve exponent
   objectCloudTrailWidth:  0.9,   // CSS pixels (Line2 honours this everywhere)
   // Dedicated opacity for the object-cloud trails (decoupled from
   // Settings.gtAlpha which still controls the GT trail in regular
@@ -2783,10 +2803,16 @@ class Panel {
   _addObjectCloudTrails(cfg, fiNow) {
     const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
     const fStart   = Math.max(0, fiNow - trailLen);
-    const baseCol = new THREE.Color(Settings.objectCloudTrailColor || '#34d399');
-    const r0 = baseCol.r, g0 = baseCol.g, b0 = baseCol.b;
-    const MIX_LO = Settings.mixLo;
-    const T_EXP  = Settings.tExp;
+    // Two-color gradient between the oldest-frame end and the newest-
+    // frame end of the trail window. With both colours pickable the
+    // user can do orange→cyan, white→red, etc. instead of being locked
+    // to fade-toward-white.
+    const newCol = new THREE.Color(Settings.objectCloudTrailColor    || '#34d399');
+    const oldCol = new THREE.Color(Settings.objectCloudTrailColorOld || '#ffffff');
+    const rN = newCol.r, gN = newCol.g, bN = newCol.b;
+    const rO = oldCol.r, gO = oldCol.g, bO = oldCol.b;
+    const MIX_LO = Settings.objectCloudTrailMixLo ?? Settings.mixLo;
+    const T_EXP  = Settings.objectCloudTrailExp   ?? Settings.tExp;
     const Tdenom = Math.max(1, fiNow - fStart);
 
     // Pre-compute the gradient color per frame in the trail window. With
@@ -2797,9 +2823,10 @@ class Panel {
     for (let i = 0; i < winN; i++) {
       const t = i / Tdenom;
       const k = MIX_LO + (1 - MIX_LO) * Math.pow(Math.max(0, Math.min(1, t)), T_EXP);
-      colorTable[i*3]   = r0 * k + (1 - k);
-      colorTable[i*3+1] = g0 * k + (1 - k);
-      colorTable[i*3+2] = b0 * k + (1 - k);
+      // k = 0 (oldest) → pure oldCol; k = 1 (newest) → pure newCol
+      colorTable[i*3]   = rN * k + rO * (1 - k);
+      colorTable[i*3+1] = gN * k + gO * (1 - k);
+      colorTable[i*3+2] = bN * k + bO * (1 - k);
     }
 
     if (clipData?._gt3d) {
@@ -4804,6 +4831,15 @@ function bindControls() {
     Settings.objectCloudTrailColor = e.target.value;
     rerenderAll();
   };
+  const objTrailColOld = document.getElementById('obj-cloud-trail-col-old');
+  if (objTrailColOld) objTrailColOld.oninput = (e) => {
+    Settings.objectCloudTrailColorOld = e.target.value;
+    rerenderAll();
+  };
+  wireSlider('obj-cloud-trail-mixlo', 'obj-cloud-trail-mixlo-lbl', v => v.toFixed(2),
+             v => { Settings.objectCloudTrailMixLo = v; rerenderAll(); });
+  wireSlider('obj-cloud-trail-exp',   'obj-cloud-trail-exp-lbl',   v => v.toFixed(2),
+             v => { Settings.objectCloudTrailExp   = v; rerenderAll(); });
   wireSlider('obj-cloud-trail-width', 'obj-cloud-trail-width-lbl', v => v.toFixed(1),
              v => { Settings.objectCloudTrailWidth = v; rerenderAll(); });
   wireSlider('obj-cloud-trail-opacity', 'obj-cloud-trail-opacity-lbl', v => v.toFixed(2),
