@@ -269,8 +269,17 @@ footer a { color: #2563eb; text-decoration: none; }
 }
 /* Inline label-with-color — used for color picker rows */
 .color-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
-.color-row .cn { font-size: .72rem; color: var(--text); flex: 1; }
+.color-row .cn { font-size: .72rem; color: var(--text); flex: 1; min-width: 0; }
 .color-row .cn .h { font-family: monospace; font-size: .65rem; color: var(--text-muted); margin-left: 4px; }
+/* Inline alpha slider sitting next to the color picker. Shorter than the
+   standard fld-grid sliders so it doesn't crowd the colour swatch. */
+.color-row .alpha {
+  flex: 0 0 64px; min-width: 64px; height: 14px; accent-color: #1f2937;
+}
+.color-row .alpha-lbl {
+  flex: 0 0 32px; text-align: right;
+  font-family: monospace; font-size: .65rem; color: var(--text-muted);
+}
 
 /* Toggle button grid — square-ish chips, 2-up */
 .toggle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
@@ -605,14 +614,20 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="color-row">
           <input type="color" id="col-gt" value="#f0529c" title="GT trail color (used when rainbow mode is OFF).">
           <span class="cn">GT future <span class="h" id="col-gt-h">#f0529c</span></span>
+          <input type="range" class="alpha" id="alpha-gt" min="0" max="1" step="0.02" value="0.98" title="GT trail opacity (0 = invisible, 1 = opaque).">
+          <span class="alpha-lbl" id="alpha-gt-lbl">0.98</span>
         </div>
         <div class="color-row">
           <input type="color" id="col-pred" value="#34d399" title="Pred trail color (used when rainbow mode is OFF).">
           <span class="cn">Prediction <span class="h" id="col-pred-h">#34d399</span></span>
+          <input type="range" class="alpha" id="alpha-pred" min="0" max="1" step="0.02" value="0.98" title="Prediction trail opacity.">
+          <span class="alpha-lbl" id="alpha-pred-lbl">0.98</span>
         </div>
         <div class="color-row">
           <input type="color" id="col-endpoint" value="#fde047" title="Bright accent for the start/end markers.">
           <span class="cn">Endpoint accent <span class="h" id="col-endpoint-h">#fde047</span></span>
+          <input type="range" class="alpha" id="alpha-endpoint" min="0" max="1" step="0.02" value="1" title="Endpoint sphere opacity.">
+          <span class="alpha-lbl" id="alpha-endpoint-lbl">1.00</span>
         </div>
         <div class="color-row">
           <input type="color" id="col-bg" value="#555555" title="Background color for every 3D panel.">
@@ -883,10 +898,14 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="color-row">
           <input type="color" id="frustum-col" value="#66aaff" title="Frustum wireframe colour.">
           <span class="cn">Frustum colour</span>
+          <input type="range" class="alpha" id="alpha-frustum" min="0" max="1" step="0.02" value="0.85" title="Frustum opacity.">
+          <span class="alpha-lbl" id="alpha-frustum-lbl">0.85</span>
         </div>
         <div class="color-row">
           <input type="color" id="frustum-path-col" value="#cccccc" title="Camera trail polyline colour.">
           <span class="cn">Trail colour</span>
+          <input type="range" class="alpha" id="alpha-frustum-path" min="0" max="1" step="0.02" value="0.7" title="Trail polyline opacity.">
+          <span class="alpha-lbl" id="alpha-frustum-path-lbl">0.70</span>
         </div>
         <div class="toggle-grid" style="margin-top:10px;">
           <button class="btn full" id="t-camera-reset" title="Reset the viewer camera (orbit/zoom) — does not affect the recording-camera frustum.">↻ Reset viewer camera</button>
@@ -1119,6 +1138,16 @@ const Settings = {
   // and raw_3d at clip-load time and again whenever the slider moves. 1 =
   // identity (raw tracks); larger values denoise but flatten fast motion.
   trackSmoothWindow: 1,
+  // Per-role transparency (0 = invisible, 1 = opaque). Applied to the
+  // line material for trails and to the dedicated endpoint sphere material;
+  // ball trails inherit the line role visually since their colour and alpha
+  // intent reads as one with the line.
+  gtAlpha:        0.98,
+  predAlpha:      0.98,
+  histAlpha:      0.95,
+  endpointAlpha:  1.0,
+  frustumOpacity: 0.85,
+  frustumPathOpacity: 0.7,
   showFrustum:    true,
   frustumSize:    0.10,         // depth (m) of the pyramid from camera origin
   frustumColor:   '#66aaff',    // wire colour (matches reference design)
@@ -1852,6 +1881,18 @@ class Panel {
       colorAttr[i*3+2] = c.b;
     }
     inst.instanceColor = new THREE.InstancedBufferAttribute(colorAttr, 3);
+    // Use a dedicated endpoint material so its alpha is independent of the
+    // other ball trails (which share `sphereMat`). Lazily created and
+    // refreshed each call so `Settings.endpointAlpha` is live-tunable.
+    if (!this._endpointMat) {
+      this._endpointMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, depthTest: false, depthWrite: false,
+        transparent: true, opacity: Settings.endpointAlpha,
+      });
+    } else {
+      this._endpointMat.opacity = Settings.endpointAlpha;
+    }
+    inst.material = this._endpointMat;
     this.dynGroup.add(inst);
   }
 
@@ -2095,11 +2136,13 @@ class Panel {
           this._frustumPathMat = new LineMaterial({
             color: new THREE.Color(Settings.frustumPathColor).getHex(),
             linewidth: 1.8, dashed: false, worldUnits: false,
-            vertexColors: false, transparent: true, opacity: 0.7,
+            vertexColors: false, transparent: true,
+            opacity: Settings.frustumPathOpacity,
           });
         } else {
           this._frustumPathMat.color = new THREE.Color(Settings.frustumPathColor);
         }
+        this._frustumPathMat.opacity = Settings.frustumPathOpacity;
         this._frustumPathMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
         this.dynGroup.add(new LineSegments2(g, this._frustumPathMat));
       }
@@ -2178,11 +2221,12 @@ class Panel {
     if (!this._frustumMat) {
       this._frustumMat = new THREE.LineBasicMaterial({
         color: new THREE.Color(Settings.frustumColor),
-        transparent: true, opacity: 0.85,
+        transparent: true, opacity: Settings.frustumOpacity,
       });
     } else {
       this._frustumMat.color = new THREE.Color(Settings.frustumColor);
     }
+    this._frustumMat.opacity = Settings.frustumOpacity;
     return this._frustumMat;
   }
 
@@ -3642,6 +3686,32 @@ function bindControls() {
   // history-color dropdown.
   const colGt = document.getElementById('col-gt');
   if (colGt) colGt.oninput = (e) => setRoleColor('gt', e.target.value);
+  // Inline alpha sliders for the colour rows. setRoleAlpha lives below
+  // setRoleColor and walks every panel's lineMats[role] in place.
+  const wireAlpha = (id, lblId, onChange) => {
+    const el  = document.getElementById(id);
+    const lbl = document.getElementById(lblId);
+    if (!el) return;
+    el.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      if (lbl) lbl.textContent = v.toFixed(2);
+      onChange(v);
+    };
+  };
+  wireAlpha('alpha-gt',   'alpha-gt-lbl',   v => setRoleAlpha('gt', v));
+  wireAlpha('alpha-pred', 'alpha-pred-lbl', v => setRoleAlpha('pred', v));
+  wireAlpha('alpha-endpoint', 'alpha-endpoint-lbl', v => {
+    Settings.endpointAlpha = v;
+    rerenderAll();   // endpoint material is recreated in _addEndpointSpheres
+  });
+  wireAlpha('alpha-frustum', 'alpha-frustum-lbl', v => {
+    Settings.frustumOpacity = v;
+    rerenderAll();
+  });
+  wireAlpha('alpha-frustum-path', 'alpha-frustum-path-lbl', v => {
+    Settings.frustumPathOpacity = v;
+    rerenderAll();
+  });
   const colPred = document.getElementById('col-pred');
   if (colPred) colPred.oninput = (e) => setRoleColor('pred', e.target.value);
   // Endpoint accent color (start/end spheres). Live-applied to all panels.
@@ -3920,6 +3990,30 @@ function _hexToRgb(hex) {
   const v = parseInt(hex.replace('#',''), 16);
   return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
 }
+// Live trail-alpha setter. Walks every panel's LineMaterial for the role
+// (and the matching paper-mode material when present) and writes the new
+// opacity in place. LineMaterial supports per-material opacity natively
+// when transparent:true is set (which it already is). History inherits
+// from gt/pred via setHistoryColor — for alpha we just touch all three
+// when the GT slider moves.
+function setRoleAlpha(role, alpha) {
+  const a = Math.max(0, Math.min(1, alpha));
+  if (role === 'gt')   Settings.gtAlpha   = a;
+  if (role === 'pred') Settings.predAlpha = a;
+  if (role === 'hist') Settings.histAlpha = a;
+  for (const p of panels) {
+    if (p.lineMats[role]) p.lineMats[role].opacity = a;
+    // Mirror to history if it currently inherits from this role — keeps the
+    // history trail visually consistent with GT/Pred without a separate
+    // hist-alpha slider.
+    if ((role === 'gt' || role === 'pred') && _histColorMode === role) {
+      if (p.lineMats.hist) p.lineMats.hist.opacity = a;
+      Settings.histAlpha = a;
+    }
+  }
+  rerenderAll();
+}
+
 function setRoleColor(role, hex) {
   const rgb = _hexToRgb(hex);
   TRAIL_COLORS[role] = parseInt(hex.replace('#',''), 16);
