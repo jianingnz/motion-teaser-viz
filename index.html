@@ -822,6 +822,7 @@ footer a { color: #2563eb; text-decoration: none; }
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
+          <button class="btn full" id="t-object-cloud-trail-honor-vis" title="OFF (default): the trail uses GT mesh-pose positions through occluded frames so the polyline stays smooth across visibility gaps. ON: the trail breaks (cuts) at frames where the track is occluded — the legacy 'visible-only' look.">trail honors visibility</button>
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Number of object-cloud tracks to draw a trail polyline for. Tracks are sub-sampled evenly within the auto-detected moving object's surface points (HOT3D = the manipulated object). Drag up to the per-object track count to render every track of the moving object.">Trail # tracks</span><span class="v" id="obj-cloud-trail-count-lbl">256</span></div>
@@ -1252,6 +1253,12 @@ const Settings = {
   // dedicated baseColor so it doesn't fight with the GT trail layer's
   // rainbow gradient on bundles where both happen to be on.
   objectCloudTrails:      true,
+  // mode A (default, false) = trail uses positions for every annotated
+  // frame, including occluded ones, so the polyline follows the actual
+  // mesh-pose motion through occlusion gaps. mode B (true) = trail
+  // breaks at frames where the track is occluded (vis byte = 0), the
+  // legacy v1 'cut' look.
+  objectCloudTrailHonorVis: false,
   objectCloudTrailCount:  256,   // # tracks to render trails for (0 = none)
   objectCloudTrailLen:    20,    // frames of trail behind the playhead
   // Track gradient endpoints. The trail polyline is vertex-coloured to
@@ -2681,8 +2688,11 @@ class Panel {
     let positions = null, colors = null;
     if (clipData?._gt3d) {
       // On-the-fly dequantization from Int16 quant + per-axis center/half.
-      // Sentinel −32768 = invisible (the int16 valid range is ±32767).
-      const { N, F, quant, rgb, center, half, motionMag, obj_ids } = clipData._gt3d;
+      // SENT (−32768) means 'no annotation this frame' (v2) or 'invisible'
+      // (v1). visBytes (v2 only) further marks each annotated track as
+      // visible/occluded; cloud rendering skips occluded points so the
+      // back of the mesh doesn't bleed through.
+      const { N, F, quant, rgb, center, half, motionMag, obj_ids, visBytes } = clipData._gt3d;
       if (fi < 0 || fi >= F) return;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
@@ -2699,9 +2709,11 @@ class Panel {
           : obj_ids[p] !== movObj;
       };
       const base = fi * N * 3;
+      const visBase = visBytes ? (fi * N) : 0;
       let M = 0;
       for (let p = 0; p < N; p++) {
         if (quant[base + p*3] === SENT) continue;
+        if (visBytes && !visBytes[visBase + p]) continue;
         if (motionMag && motionMag[p] < motionMin) continue;
         if (!acceptObj(p)) continue;
         M++;
@@ -2713,6 +2725,7 @@ class Panel {
       for (let p = 0; p < N; p++) {
         const qx = quant[base + p*3];
         if (qx === SENT) continue;
+        if (visBytes && !visBytes[visBase + p]) continue;
         if (motionMag && motionMag[p] < motionMin) continue;
         if (!acceptObj(p)) continue;
         const qy = quant[base + p*3 + 1];
@@ -2842,10 +2855,16 @@ class Panel {
     }
 
     if (clipData?._gt3d) {
-      const { N, quant, center, half, motionMag, obj_ids, nObj } = clipData._gt3d;
+      const { N, quant, center, half, motionMag, obj_ids, nObj, visBytes } = clipData._gt3d;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
+      // 'honour visibility' = mode B: break the polyline at frames where
+      // the track is occluded (vis byte = 0) — produces the v1-style cut
+      // look. Default off: trails bridge through occlusion using the
+      // actual mesh-pose positions encoded in v2 gt3d.bin, so the line
+      // follows the real motion instead of cutting a corner.
+      const honorVis = !!Settings.objectCloudTrailHonorVis;
       const M = Math.min(Settings.objectCloudTrailCount | 0, N);
       if (M <= 0) return;
       // STEP 1 — find the "moving object" (the object whose tracks have
@@ -2904,12 +2923,19 @@ class Panel {
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
           const qx = quant[base];
-          // Bridge across invisibility: skip the SENTINEL frame (no
-          // position to anchor to), but DON'T reset prevValid — so when
-          // the next visible frame comes we draw one straight segment
-          // from the last visible position to the new one. This keeps
-          // the polyline continuous through occlusion / mask gaps.
-          if (qx === SENT) continue;
+          if (qx === SENT) {
+            // Truly no position this frame (v2: object not annotated;
+            // v1: invisible). honorVis=true ⇒ break the line; default
+            // bridges across without resetting prevValid.
+            if (honorVis) prevValid = false;
+            continue;
+          }
+          if (honorVis && visBytes && !visBytes[f * N + p]) {
+            // mode B: positions exist but the track is occluded —
+            // break the polyline so the cut matches the v1 look.
+            prevValid = false;
+            continue;
+          }
           const qy = quant[base + 1], qz = quant[base + 2];
           const cx_ = (qx * K) * hx + cx;
           const cy_ = -((qy * K) * hy + cy);
@@ -3099,14 +3125,17 @@ async function loadPCBinary(url) {
 }
 
 // HOT3D consolidated GT binary loader. Layout (see prepare_hot3d.py
-// write_gt3d_binary): 'GT3D' | u32 ver | u32 N | u32 F | u32 nObj |
-// f32×3 axisMin | f32×3 axisMax | u8×N obj_ids | u8×(N*3) rgb |
-// i16×(F*N*3) quant (frame-major). Sentinel −32768 = invisible.
-//
-// The Int16 buffer is dequantized to a Float32Array(positions) using
-//   pos = q/32767 * half[axis] + center[axis]
-// with NaN substituted for the sentinel — _addObjectCloudLayer just
-// checks Number.isFinite to skip invisible points.
+// write_gt3d_binary):
+//   v1: 'GT3D' | u32 ver=1 | u32 N | u32 F | u32 nObj |
+//        f32×3 axisMin | f32×3 axisMax | u8×N obj_ids | u8×(N*3) rgb |
+//        i16×(F*N*3) quant (frame-major). Sentinel −32768 = invisible
+//        (conflates 'not annotated' with 'occluded').
+//   v2: same prefix as v1, then u8×(F*N) vis appended at the end.
+//        Sentinel in quant now means 'not annotated' only; per-frame
+//        per-track visibility is in the vis byte. Cloud renderer skips
+//        vis=0 points; trails optionally honour vis when the user opts
+//        in via Settings.objectCloudTrailHonorVis (default off, so the
+//        trail uses positions through occluded frames).
 async function loadGT3DBinary(urlOrList) {
   // Accept either a single URL or an ordered list of URL chunks; the
   // chunks concatenate byte-wise back into the original GT3D file.
@@ -3150,7 +3179,15 @@ async function loadGT3DBinary(urlOrList) {
   // 122 MB Float32Array AND holding the 58 MB Int16Array AND the merged
   // 58 MB master buffer simultaneously was triggering "Array buffer
   // allocation failed" on machines with constrained JS heap.
-  const quant = new Int16Array(buf, off, F * N * 3);
+  const quant = new Int16Array(buf, off, F * N * 3); off += F * N * 3 * 2;
+  // v2: per-frame per-track visibility byte (1 = camera-facing & in modal
+  // mask, 0 = occluded but position still valid). v1 files don't ship
+  // this — leave visBytes null and the renderer falls back to the SENT
+  // check (which in v1 carries both meanings).
+  let visBytes = null;
+  if (version >= 2) {
+    visBytes = new Uint8Array(buf, off, F * N); off += F * N;
+  }
   const center = [(axisMin[0]+axisMax[0]) / 2,
                   (axisMin[1]+axisMax[1]) / 2,
                   (axisMin[2]+axisMax[2]) / 2];
@@ -3190,8 +3227,8 @@ async function loadGT3DBinary(urlOrList) {
   console.log(`gt3d motion magnitudes: max=${mMax.toFixed(3)}m, median≈${
     motionMag[Math.floor(N/2)].toFixed(3)}m`);
 
-  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, quant, center, half,
-           motionMag, motionMagMax: mMax };
+  return { version, N, F, nObj, axisMin, axisMax, obj_ids, rgb, quant, visBytes,
+           center, half, motionMag, motionMagMax: mMax };
 }
 
 // HOT3D camera binary loader. Layout: 'CAM4' | u32 ver | u32 F |
@@ -4842,6 +4879,15 @@ function bindControls() {
     tObjTrails.onclick = () => {
       Settings.objectCloudTrails = !Settings.objectCloudTrails;
       tObjTrails.classList.toggle('on', Settings.objectCloudTrails);
+      rerenderAll();
+    };
+  }
+  const tObjTrailHonorVis = document.getElementById('t-object-cloud-trail-honor-vis');
+  if (tObjTrailHonorVis) {
+    tObjTrailHonorVis.classList.toggle('on', Settings.objectCloudTrailHonorVis);
+    tObjTrailHonorVis.onclick = () => {
+      Settings.objectCloudTrailHonorVis = !Settings.objectCloudTrailHonorVis;
+      tObjTrailHonorVis.classList.toggle('on', Settings.objectCloudTrailHonorVis);
       rerenderAll();
     };
   }

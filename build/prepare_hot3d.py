@@ -141,54 +141,56 @@ def build_c2w_per_frame(cam_pos, mean_obj_pos):
 
 
 def write_gt3d_binary(path: Path, positions: np.ndarray, vis: np.ndarray,
-                      obj_ids: np.ndarray, rgb_u8: np.ndarray, n_obj: int):
-    """positions: (N, F, 3) float32; vis: (N, F) bool; obj_ids: (N,) uint8;
-       rgb_u8: (N, 3) uint8.
+                      annotated: np.ndarray, obj_ids: np.ndarray,
+                      rgb_u8: np.ndarray, n_obj: int):
+    """positions: (N, F, 3) float32; vis: (N, F) bool; annotated: (N, F) bool;
+       obj_ids: (N,) uint8; rgb_u8: (N, 3) uint8.
 
-    Layout (little-endian):
+    Layout v2 (little-endian):
       MAGIC                           4 bytes 'GT3D'
-      version                         uint32 = 1
+      version                         uint32 = 2
       N (#tracks)                     uint32
       F (#frames)                     uint32
       n_objects                       uint32
       x_min, x_max, y_min, y_max, z_min, z_max     float32 ×6  (per-axis bounds)
       obj_ids                         uint8 × N
       rgb                             uint8 × (N*3)
-      positions                       int16 × (N*F*3)   (sentinel -32768 = invisible)
+      positions                       int16 × (F*N*3)   (sentinel -32768 = NOT annotated)
+      vis                             uint8 × (F*N)     (1 = visible/cloud-eligible, 0 = occluded)
+
+    Compared with v1 (where SENT = invisible conflated 'object not in
+    annotations' with 'occluded'), v2 separates the two:
+      • position SENT  ⇔ object not annotated this frame (no pose available)
+      • vis = 0        ⇔ position IS available, but point fails the
+                         camera-facing / modal-mask / depth-buffer test
+    Trails default to using positions through occluded frames (smooth);
+    the cloud renderer respects the vis byte to suppress non-camera-facing
+    points. A viewer toggle ('trail honors visibility') flips the trail
+    to break at vis=0 frames as well — the v1 'cut' look.
     """
     N, F, _ = positions.shape
     assert vis.shape == (N, F)
+    assert annotated.shape == (N, F)
     assert obj_ids.shape == (N,)
     assert rgb_u8.shape == (N, 3)
-    # Camera-facing-and-not-occluded mode. The source `vis` flag from
-    # vis_clips_backproject.py is True iff the surface point is
-    # camera-facing (normal · view_dir < 0) AND inside the per-frame
-    # modal mask (not occluded by another object). Encoding the
-    # SENTINEL where !vis means the renderer naturally shows ONLY the
-    # camera-side half of each object and hides occluded parts; the
-    # 'back' of the cloud doesn't bleed through.
-    valid_mask = vis & np.isfinite(positions).all(axis=-1)   # (N, F)
+    valid_mask = annotated & np.isfinite(positions).all(axis=-1)   # (N, F)
     if not valid_mask.any():
-        raise RuntimeError("no valid positions to encode")
-    valid_pts = positions[valid_mask]                        # (M, 3)
+        raise RuntimeError("no annotated positions to encode")
+    valid_pts = positions[valid_mask]                              # (M, 3)
     axis_min = valid_pts.min(axis=0).astype(np.float32)
     axis_max = valid_pts.max(axis=0).astype(np.float32)
     center = (axis_max + axis_min) / 2.0
     half = (axis_max - axis_min) / 2.0
     half = np.where(half < 1e-9, 1e-9, half)
     quant = np.full((N, F, 3), -32768, dtype=np.int16)
-    if valid_mask.any():
-        normed = (positions[valid_mask] - center) / half
-        normed = np.clip(np.round(normed * 32767.0), -32767, 32767).astype(np.int16)
-        quant[valid_mask] = normed
-    # Transpose to FRAME-major (F, N, 3) so the JS renderer can read all
-    # points of one frame in one contiguous slice — `_addObjectCloudLayer`
-    # iterates a frame at a time, so frame-major makes the per-render scan
-    # cache-friendly.
-    quant_fnt = np.ascontiguousarray(quant.transpose(1, 0, 2))   # (F, N, 3)
+    normed = (positions[valid_mask] - center) / half
+    normed = np.clip(np.round(normed * 32767.0), -32767, 32767).astype(np.int16)
+    quant[valid_mask] = normed
+    quant_fnt = np.ascontiguousarray(quant.transpose(1, 0, 2))     # (F, N, 3)
+    vis_fn    = np.ascontiguousarray(vis.T.astype(np.uint8))       # (F, N)
     with open(path, 'wb') as f:
         f.write(b"GT3D")
-        f.write(struct.pack("<I", 1))      # version
+        f.write(struct.pack("<I", 2))      # version
         f.write(struct.pack("<I", N))
         f.write(struct.pack("<I", F))
         f.write(struct.pack("<I", n_obj))
@@ -197,8 +199,9 @@ def write_gt3d_binary(path: Path, positions: np.ndarray, vis: np.ndarray,
         f.write(obj_ids.astype(np.uint8).tobytes())
         f.write(rgb_u8.astype(np.uint8).tobytes())
         f.write(quant_fnt.tobytes())
+        f.write(vis_fn.tobytes())
     return {
-        "format":   "GT3D v1",
+        "format":   "GT3D v2",
         "n_tracks": int(N),
         "n_frames": int(F),
         "n_objects": int(n_obj),
@@ -287,14 +290,24 @@ def main():
     M_anchor_from_B0    = M_anchor_from_world @ T_we_B0 @ diag4(R_ROT90.T)
 
     # ── Stitched per-frame data ─────────────────────────────────────
+    # `annotated_arr` is True at frames where the object's pose was in the
+    # source clip's `*.objects.json` — i.e., a real 3D position is available
+    # (whether or not the point is camera-facing / inside the modal mask).
+    # vis_clips_backproject leaves `points_3d` at zero for non-annotated
+    # frames, so all-zero rows distinguish missing-from-annotations from
+    # 'annotated but invisible'. v2 gt3d.bin stores positions for all
+    # annotated frames so the viewer can render a smooth trail through
+    # occlusion gaps; the cloud renderer separately respects vis_arr.
     F = (T_A_END - T_A_START + 1) + (T_B_END - T_B_START + 1)
-    obj_arr = np.zeros((K_total, F, 3), dtype=np.float32)
-    vis_arr = np.zeros((K_total, F), dtype=bool)
+    obj_arr  = np.zeros((K_total, F, 3), dtype=np.float32)
+    vis_arr  = np.zeros((K_total, F), dtype=bool)
+    annot_arr = np.zeros((K_total, F), dtype=bool)
     cam_pos = np.zeros((F, 3), dtype=np.float32)
     for fi, t in enumerate(range(T_A_START, T_A_END + 1)):
         P = pts3_A[sub_idx, t, :]
         obj_arr[:, fi] = transform(M_anchor_from_A0, P).astype(np.float32)
         vis_arr[:, fi] = vis3_A[sub_idx, t]
+        annot_arr[:, fi] = (P != 0).any(axis=1)
         cam_h = np.append(T_we_A[fi][:3, 3], 1.0)
         cam_pos[fi] = (M_anchor_from_world @ cam_h)[:3]
     for j, t in enumerate(range(T_B_START, T_B_END + 1)):
@@ -302,6 +315,7 @@ def main():
         P = pts3_B[sub_idx, t, :]
         obj_arr[:, fi] = transform(M_anchor_from_B0, P).astype(np.float32)
         vis_arr[:, fi] = vis3_B[sub_idx, t]
+        annot_arr[:, fi] = (P != 0).any(axis=1)
         cam_h = np.append(T_we_B[j][:3, 3], 1.0)
         cam_pos[fi] = (M_anchor_from_world @ cam_h)[:3]
 
@@ -439,7 +453,8 @@ def main():
     # at an arbitrary byte boundary is safe since the loader reassembles
     # the full buffer before parsing the GT3D layout.
     gt3d_path = out_data / f"{args.name}_gt3d.bin"
-    gt3d_meta = write_gt3d_binary(gt3d_path, obj_arr, vis_arr, obj_ids, rgb_u8, N_OBJ)
+    gt3d_meta = write_gt3d_binary(gt3d_path, obj_arr, vis_arr, annot_arr,
+                                   obj_ids, rgb_u8, N_OBJ)
     gt3d_urls = [f"static/data/{args.name}_gt3d.bin"]
     if gt3d_path.stat().st_size > 49_000_000:
         data = gt3d_path.read_bytes()
