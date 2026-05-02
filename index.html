@@ -816,6 +816,21 @@ footer a { color: #2563eb; text-decoration: none; }
           <div class="lbl-row"><span title="Disc size (CSS pixels) for the object cloud points.">Object cloud size</span><span class="v" id="obj-cloud-size-lbl">14.0</span></div>
           <input type="range" id="obj-cloud-size" min="2" max="40" step="0.5" value="14">
         </div>
+        <div class="toggle-grid" style="margin-top:6px;">
+          <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Number of object-cloud tracks to draw a trail polyline for. Tracks are sub-sampled evenly across the full N so the same set is drawn every frame.">Trail # tracks</span><span class="v" id="obj-cloud-trail-count-lbl">64</span></div>
+          <input type="range" id="obj-cloud-trail-count" min="0" max="1024" step="1" value="64">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Number of past frames each trail extends back from the current playhead.">Trail length (frames)</span><span class="v" id="obj-cloud-trail-len-lbl">20</span></div>
+          <input type="range" id="obj-cloud-trail-len" min="2" max="106" step="1" value="20">
+        </div>
+        <div class="color-row">
+          <input type="color" id="obj-cloud-trail-col" value="#34d399" title="Object-cloud trail base hue. Pale→vivid gradient over time uses this as the vivid end.">
+          <span class="cn">Trail colour</span>
+        </div>
         <div class="fld-grid">
           <div class="fld">
             <div class="lbl-row"><span title="Distance threshold (metres). A scene-PC point is kept only if it's within this distance of the object's tracked-point cloud at frame 0.">Object distance (m)</span><span class="v" id="obj-R-lbl">0.100</span></div>
@@ -1197,6 +1212,16 @@ const Settings = {
   // can flip this on manually for an alternative view.
   objectCloud:    false,
   objCloudPointPx: 14,           // disc size in CSS pixels at the screen
+  // Object-cloud trajectory polylines (HOT3D dense bundle). When on we
+  // sub-sample objectCloudTrailCount tracks evenly across the full N and
+  // render a vertex-coloured polyline back through `objectCloudTrailLen`
+  // frames (oldest → pale, newest → vivid). Uses Settings.gtAlpha and a
+  // dedicated baseColor so it doesn't fight with the GT trail layer's
+  // rainbow gradient on bundles where both happen to be on.
+  objectCloudTrails:      true,
+  objectCloudTrailCount:  64,    // # tracks to render trails for (0 = none)
+  objectCloudTrailLen:    20,    // frames of trail behind the playhead
+  objectCloudTrailColor:  '#34d399',  // base hue (green by default)
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -2107,6 +2132,13 @@ class Panel {
       const fiClamp = Math.max(0, Math.min(T - 1,
         isPaper ? (T - 1) : (fiFrac < 0 ? 0 : Math.round(fiFrac))));
       this._addObjectCloudLayer(cfg, fiClamp);
+      // Per-track trajectory polylines back through Settings.objectCloudTrailLen
+      // frames. Sub-sampled to Settings.objectCloudTrailCount tracks so the
+      // viewer can show a manageable number even when the bundle ships
+      // 100k tracks. Vertex-coloured: pale at oldest → vivid at newest.
+      if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
+        this._addObjectCloudTrails(cfg, fiClamp);
+      }
     }
     if (!isPaper && fiFrac < 0) return;
 
@@ -2510,6 +2542,95 @@ class Panel {
     const cloud = new THREE.Points(g, m);
     cloud.userData = { pcKind: 'objectCloud' };  // not click-hideable
     this.dynGroup.add(cloud);
+  }
+
+  // Per-track trajectory polylines for the object cloud, vertex-coloured
+  // green-gradient (pale-oldest → vivid-newest). Sub-samples N tracks
+  // evenly across the full [0, totalN-1] range so the chosen IDs are
+  // deterministic across frames — a track's polyline is the same set of
+  // segments every render, just truncated/extended by the current playhead.
+  // Reads positions from the typed-array store (clipData._gt3d.positions)
+  // when present, falls back to the nested-array cfg.gt_3d otherwise.
+  _addObjectCloudTrails(cfg, fiNow) {
+    const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
+    const fStart   = Math.max(0, fiNow - trailLen);
+    const segs = [], cols = [];
+    const baseCol = new THREE.Color(Settings.objectCloudTrailColor || '#34d399');
+    const r0 = baseCol.r, g0 = baseCol.g, b0 = baseCol.b;
+    const MIX_LO = Settings.mixLo;       // pale-floor (existing slider)
+    const T_EXP  = Settings.tExp;        // gradient curve
+    const Tdenom = Math.max(1, fiNow - fStart);
+    // Per-frame colour for a vertex at frame f in [fStart, fiNow]:
+    //   t = (f - fStart) / Tdenom        ∈ [0, 1]
+    //   k = MIX_LO + (1 - MIX_LO) * t^EXP
+    //   rgb = (k * baseRGB) + (1-k) * white     // toward-white pale
+    const colorAt = (f) => {
+      const t = (f - fStart) / Tdenom;
+      const k = MIX_LO + (1 - MIX_LO) * Math.pow(Math.max(0, Math.min(1, t)), T_EXP);
+      return [r0 * k + (1 - k), g0 * k + (1 - k), b0 * k + (1 - k)];
+    };
+    const pushSeg = (pa, pb, fa, fb) => {
+      segs.push(pa[0], pa[1], pa[2], pb[0], pb[1], pb[2]);
+      const ca = colorAt(fa), cb = colorAt(fb);
+      cols.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
+    };
+
+    if (clipData?._gt3d) {
+      const { N, F, positions: posAll } = clipData._gt3d;
+      // Evenly-spaced track IDs: 0, N/M, 2*N/M, ...
+      const M = Math.min(Settings.objectCloudTrailCount | 0, N);
+      if (M <= 0) return;
+      const step = N / M;
+      // We need to read posAll[(f*N + p)*3 + axis] (frame-major) and apply
+      // the y/z scene flip when emitting world-space vertices.
+      for (let m = 0; m < M; m++) {
+        const p = Math.min(N - 1, Math.floor(m * step));
+        // Walk the trail; gather contiguous valid sub-paths between gaps.
+        let prev = null, prevF = -1;
+        for (let f = fStart; f <= fiNow; f++) {
+          const base = (f * N + p) * 3;
+          const x = posAll[base];
+          if (!Number.isFinite(x)) { prev = null; continue; }
+          const cur = [x, -posAll[base + 1], -posAll[base + 2]];
+          if (prev) pushSeg(prev, cur, prevF, f);
+          prev = cur; prevF = f;
+        }
+      }
+    } else if (cfg.gt_3d) {
+      const Nfull = (cfg.gt_3d[0] || []).length || 0;
+      const M = Math.min(Settings.objectCloudTrailCount | 0, Nfull);
+      if (M <= 0) return;
+      const step = Nfull / M;
+      for (let m = 0; m < M; m++) {
+        const p = Math.min(Nfull - 1, Math.floor(m * step));
+        let prev = null, prevF = -1;
+        for (let f = fStart; f <= fiNow; f++) {
+          const pt = cfg.gt_3d[f]?.[p];
+          if (!pt || !Number.isFinite(pt[0])) { prev = null; continue; }
+          const cur = [pt[0], -pt[1], -pt[2]];
+          if (prev) pushSeg(prev, cur, prevF, f);
+          prev = cur; prevF = f;
+        }
+      }
+    } else {
+      return;
+    }
+
+    if (!segs.length) return;
+    const g = new LineSegmentsGeometry();
+    g.setPositions(segs);
+    g.setColors(cols);
+    if (!this._objCloudTrailMat) {
+      this._objCloudTrailMat = new LineMaterial({
+        color: 0xffffff, vertexColors: true,
+        linewidth: 1.6, transparent: true, opacity: Settings.gtAlpha,
+        depthTest: false, depthWrite: false, dashed: false,
+      });
+    }
+    this._objCloudTrailMat.opacity = Settings.gtAlpha;
+    this._objCloudTrailMat.linewidth = 1.6 * Settings.lineScale;
+    this._objCloudTrailMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
+    this.dynGroup.add(new LineSegments2(g, this._objCloudTrailMat));
   }
 
   _addSphereLayerFrac(pts3d, fiFrac, ptColors, ptIdx, radius, brightness) {
@@ -4286,6 +4407,24 @@ function bindControls() {
       rerenderAll();
     };
   }
+  const tObjTrails = document.getElementById('t-object-cloud-trails');
+  if (tObjTrails) {
+    tObjTrails.classList.toggle('on', Settings.objectCloudTrails);
+    tObjTrails.onclick = () => {
+      Settings.objectCloudTrails = !Settings.objectCloudTrails;
+      tObjTrails.classList.toggle('on', Settings.objectCloudTrails);
+      rerenderAll();
+    };
+  }
+  wireSlider('obj-cloud-trail-count', 'obj-cloud-trail-count-lbl', v => `${v|0}`,
+             v => { Settings.objectCloudTrailCount = v|0; rerenderAll(); });
+  wireSlider('obj-cloud-trail-len', 'obj-cloud-trail-len-lbl', v => `${v|0}`,
+             v => { Settings.objectCloudTrailLen = v|0; rerenderAll(); });
+  const objTrailCol = document.getElementById('obj-cloud-trail-col');
+  if (objTrailCol) objTrailCol.oninput = (e) => {
+    Settings.objectCloudTrailColor = e.target.value;
+    rerenderAll();
+  };
   wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
              v => applyLineScale(v));
   wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
