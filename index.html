@@ -820,8 +820,8 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
         </div>
         <div class="fld">
-          <div class="lbl-row"><span title="Number of object-cloud tracks to draw a trail polyline for. Tracks are sub-sampled evenly across the full N so the same set is drawn every frame.">Trail # tracks</span><span class="v" id="obj-cloud-trail-count-lbl">64</span></div>
-          <input type="range" id="obj-cloud-trail-count" min="0" max="1024" step="1" value="64">
+          <div class="lbl-row"><span title="Number of object-cloud tracks to draw a trail polyline for. Tracks are sub-sampled evenly within the auto-detected moving object's surface points (HOT3D = the manipulated object). Drag up to the per-object track count to render every track of the moving object.">Trail # tracks</span><span class="v" id="obj-cloud-trail-count-lbl">256</span></div>
+          <input type="range" id="obj-cloud-trail-count" min="0" max="6000" step="1" value="256">
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Number of past frames each trail extends back from the current playhead.">Trail length (frames)</span><span class="v" id="obj-cloud-trail-len-lbl">20</span></div>
@@ -1236,7 +1236,7 @@ const Settings = {
   // dedicated baseColor so it doesn't fight with the GT trail layer's
   // rainbow gradient on bundles where both happen to be on.
   objectCloudTrails:      true,
-  objectCloudTrailCount:  64,    // # tracks to render trails for (0 = none)
+  objectCloudTrailCount:  256,   // # tracks to render trails for (0 = none)
   objectCloudTrailLen:    20,    // frames of trail behind the playhead
   objectCloudTrailColor:  '#34d399',  // base hue (green by default)
   objectCloudTrailWidth:  1.6,   // CSS pixels (Line2 honours this on every platform)
@@ -2679,27 +2679,54 @@ class Panel {
     }
 
     if (clipData?._gt3d) {
-      const { N, quant, center, half, motionMag } = clipData._gt3d;
+      const { N, quant, center, half, motionMag, obj_ids, nObj } = clipData._gt3d;
       const cx = center[0], cy = center[1], cz = center[2];
       const hx = half[0],   hy = half[1],   hz = half[2];
       const SENT = -32768, K = 1 / 32767;
       const M = Math.min(Settings.objectCloudTrailCount | 0, N);
       if (M <= 0) return;
-      // Lazy-cache top-K-by-motion ordering.
-      let ranked = clipData._gt3d._motionRank;
-      if (!ranked && motionMag) {
-        ranked = new Int32Array(N);
-        for (let i = 0; i < N; i++) ranked[i] = i;
-        const arr = Array.from(ranked).sort((a, b) => motionMag[b] - motionMag[a]);
-        for (let i = 0; i < N; i++) ranked[i] = arr[i];
-        clipData._gt3d._motionRank = ranked;
+      // STEP 1 — find the "moving object" (the object whose tracks have
+      // the largest mean motion magnitude). HOT3D scenes are typically
+      // 5 stationary objects + 1 manipulated object; this auto-picks
+      // the manipulated one without per-clip metadata. Cached once on
+      // clipData._gt3d so repeated trail builds reuse the same answer.
+      let movObj = clipData._gt3d._movingObjId;
+      if (movObj === undefined && motionMag && obj_ids && nObj > 0) {
+        const sumMag = new Float32Array(nObj);
+        const cnt    = new Uint32Array(nObj);
+        for (let p = 0; p < N; p++) {
+          const o = obj_ids[p];
+          sumMag[o] += motionMag[p];
+          cnt[o]++;
+        }
+        let bestObj = 0, bestMean = -1;
+        for (let o = 0; o < nObj; o++) {
+          const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
+          if (mean > bestMean) { bestMean = mean; bestObj = o; }
+        }
+        movObj = bestObj;
+        clipData._gt3d._movingObjId = movObj;
+        console.log(`gt3d: moving object id = ${movObj} (mean motion ${bestMean.toFixed(3)} m)`);
       }
+      // STEP 2 — build the candidate pool = every track on the moving
+      // object that also clears the user-set motion threshold.
       const motionMin = Math.max(0, Settings.motionMinMag || 0);
-      const trackIds = [];
-      for (let r = 0; r < N && trackIds.length < M; r++) {
-        const p = ranked ? ranked[r] : (Math.floor(r * (N / M)) % N);
-        if (motionMag && motionMag[p] < motionMin) break;
-        trackIds.push(p);
+      const pool = [];
+      for (let p = 0; p < N; p++) {
+        if (obj_ids && obj_ids[p] !== movObj) continue;
+        if (motionMag && motionMag[p] < motionMin) continue;
+        pool.push(p);
+      }
+      // STEP 3 — sub-sample the pool evenly to M so a track-count slider
+      // change spreads the chosen surface points uniformly across the
+      // moving object instead of clustering at one end of the index range.
+      let trackIds;
+      if (pool.length <= M) {
+        trackIds = pool;
+      } else {
+        trackIds = new Array(M);
+        const step = pool.length / M;
+        for (let i = 0; i < M; i++) trackIds[i] = pool[Math.floor(i * step)];
       }
       if (!trackIds.length) return;
       // Pre-allocate. Worst case = M tracks × trailLen segments per track.
