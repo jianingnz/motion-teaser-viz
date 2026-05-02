@@ -853,6 +853,10 @@ footer a { color: #2563eb; text-decoration: none; }
           <input type="range" id="obj-cloud-trail-width" min="0.3" max="8" step="0.1" value="0.9">
         </div>
         <div class="fld">
+          <div class="lbl-row"><span title="Multiplier on every RGB channel of the trail's gradient end-points before rendering. 1.0 = picker colours unchanged. >1 saturates / brightens (channels clip to 1, washed-out tones read as more vivid). <1 dims toward black.">Trail colour boost</span><span class="v" id="obj-cloud-trail-boost-lbl">1.00</span></div>
+          <input type="range" id="obj-cloud-trail-boost" min="0.3" max="2.5" step="0.05" value="1.00">
+        </div>
+        <div class="fld">
           <div class="lbl-row"><span title="Hide tracks whose total motion (bbox diagonal across all frames) is below this threshold. In HOT3D — where one object moves and the others sit still — set this above the static-object jitter floor (~0.005 m) to surface only the moving object's tracks.">Min track motion (m)</span><span class="v" id="motion-min-lbl">0.000</span></div>
           <input type="range" id="motion-min" min="0" max="0.5" step="0.001" value="0">
         </div>
@@ -1268,6 +1272,10 @@ const Settings = {
   // section) still control the gradient floor and curve.
   objectCloudTrailColor:    '#34d399',   // newest-frame end (default green)
   objectCloudTrailColorOld: '#ffffff',   // oldest-frame end (default white)
+  // Multiplier on every RGB channel of the gradient end-points; clamps
+  // to [0, 1] after multiplying so values >1 saturate the colour
+  // (washed-out trails read as more vivid). 1 = picker colours unchanged.
+  objectCloudTrailColorBoost: 1.0,
   objectCloudTrailMixLo:    0.18,        // gradient floor (lerp t at oldest frame)
   objectCloudTrailExp:      1.0,         // gradient curve exponent
   objectCloudTrailWidth:  0.9,   // CSS pixels (Line2 honours this everywhere)
@@ -2829,30 +2837,33 @@ class Panel {
     const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
     const fStart   = Math.max(0, fiNow - trailLen);
     // Two-color gradient between the oldest-frame end and the newest-
-    // frame end of the trail window. With both colours pickable the
-    // user can do orange→cyan, white→red, etc. instead of being locked
-    // to fade-toward-white.
+    // frame end of the trail window. The 'colorBoost' multiplier scales
+    // each RGB channel and clamps to [0, 1] — values >1 saturate the
+    // color (washed-out cloud trails read as more vivid against a busy
+    // scene cloud), values <1 dim them.
     const newCol = new THREE.Color(Settings.objectCloudTrailColor    || '#34d399');
     const oldCol = new THREE.Color(Settings.objectCloudTrailColorOld || '#ffffff');
-    const rN = newCol.r, gN = newCol.g, bN = newCol.b;
-    const rO = oldCol.r, gO = oldCol.g, bO = oldCol.b;
+    const boost = Math.max(0.05, Settings.objectCloudTrailColorBoost ?? 1.0);
+    const rN = Math.min(1, newCol.r * boost);
+    const gN = Math.min(1, newCol.g * boost);
+    const bN = Math.min(1, newCol.b * boost);
+    const rO = Math.min(1, oldCol.r * boost);
+    const gO = Math.min(1, oldCol.g * boost);
+    const bO = Math.min(1, oldCol.b * boost);
     const MIX_LO = Settings.objectCloudTrailMixLo ?? Settings.mixLo;
     const T_EXP  = Settings.objectCloudTrailExp   ?? Settings.tExp;
-    const Tdenom = Math.max(1, fiNow - fStart);
-
-    // Pre-compute the gradient color per frame in the trail window. With
-    // up to 1024 trails × 30+ frames this short table avoids 30k+ Math.pow
-    // calls (the per-segment colorAt call dominated profile time).
-    const winN = trailLen + 1;
-    const colorTable = new Float32Array(winN * 3);
-    for (let i = 0; i < winN; i++) {
-      const t = i / Tdenom;
-      const k = MIX_LO + (1 - MIX_LO) * Math.pow(Math.max(0, Math.min(1, t)), T_EXP);
-      // k = 0 (oldest) → pure oldCol; k = 1 (newest) → pure newCol
-      colorTable[i*3]   = rN * k + rO * (1 - k);
-      colorTable[i*3+1] = gN * k + gO * (1 - k);
-      colorTable[i*3+2] = bN * k + bO * (1 - k);
-    }
+    // Inline color-at-t helper (replaces the per-frame colorTable).
+    // Path-length gradient means we can't pre-tabulate by frame index —
+    // each track has its own [0, 1] arc-length parametrisation. The cost
+    // is one Math.pow per emitted vertex (~M tracks × trailLen vertices
+    // = ~5k pow calls per render, negligible).
+    const colorAt = (t) => {
+      const tc = t < 0 ? 0 : (t > 1 ? 1 : t);
+      const k = MIX_LO + (1 - MIX_LO) * Math.pow(tc, T_EXP);
+      return [rN * k + rO * (1 - k),
+              gN * k + gO * (1 - k),
+              bN * k + bO * (1 - k)];
+    };
 
     if (clipData?._gt3d) {
       const { N, quant, center, half, motionMag, obj_ids, nObj, visBytes } = clipData._gt3d;
@@ -2916,46 +2927,72 @@ class Panel {
       const segs = new Float32Array(maxSegs * 6);
       const cols = new Float32Array(maxSegs * 6);
       let si = 0;   // segment count actually filled
+      // Per-track buffers reused across the loop — sized for the worst-
+      // case trail-window length so we don't reallocate on every track.
+      const winLen = trailLen + 1;
+      const xBuf = new Float32Array(winLen);
+      const yBuf = new Float32Array(winLen);
+      const zBuf = new Float32Array(winLen);
+      const lBuf = new Float32Array(winLen);   // per-vertex cumulative arc length
+      const breakBuf = new Uint8Array(winLen); // 1 = a polyline break occurred BEFORE this vertex
       for (let mi = 0; mi < trackIds.length; mi++) {
         const p = trackIds[mi];
-        let prevValid = false;
-        let prevX = 0, prevY = 0, prevZ = 0, prevColIdx = 0;
+        // PASS 1: walk the trail window, emit a vertex for every annotated
+        // (and, in honorVis, visible) frame. Track cumulative path length.
+        // Polyline breaks (mode B at occluded frames, or honorVis-on at
+        // SENT) set breakBuf[i] for the vertex that *follows* the break,
+        // so PASS 2 skips that segment.
+        let n = 0;
+        let cumLen = 0;
+        let lastValid = false;
+        let lastX = 0, lastY = 0, lastZ = 0;
+        let pendingBreak = false;
         for (let f = fStart; f <= fiNow; f++) {
           const base = (f * N + p) * 3;
           const qx = quant[base];
           if (qx === SENT) {
             // Truly no position this frame (v2: object not annotated;
-            // v1: invisible). honorVis=true ⇒ break the line; default
-            // bridges across without resetting prevValid.
-            if (honorVis) prevValid = false;
+            // v1: invisible). honorVis ⇒ break; default ⇒ bridge.
+            if (honorVis) { pendingBreak = true; lastValid = false; }
             continue;
           }
           if (honorVis && visBytes && !visBytes[f * N + p]) {
-            // mode B: positions exist but the track is occluded —
-            // break the polyline so the cut matches the v1 look.
-            prevValid = false;
+            pendingBreak = true; lastValid = false;
             continue;
           }
           const qy = quant[base + 1], qz = quant[base + 2];
-          const cx_ = (qx * K) * hx + cx;
-          const cy_ = -((qy * K) * hy + cy);
-          const cz_ = -((qz * K) * hz + cz);
-          const colIdx = (f - fStart) * 3;
-          if (prevValid) {
-            const o = si * 6;
-            segs[o]   = prevX; segs[o+1] = prevY; segs[o+2] = prevZ;
-            segs[o+3] = cx_;   segs[o+4] = cy_;   segs[o+5] = cz_;
-            cols[o]   = colorTable[prevColIdx];
-            cols[o+1] = colorTable[prevColIdx+1];
-            cols[o+2] = colorTable[prevColIdx+2];
-            cols[o+3] = colorTable[colIdx];
-            cols[o+4] = colorTable[colIdx+1];
-            cols[o+5] = colorTable[colIdx+2];
-            si++;
+          const x = (qx * K) * hx + cx;
+          const y = -((qy * K) * hy + cy);
+          const z = -((qz * K) * hz + cz);
+          if (lastValid) {
+            const dx = x - lastX, dy = y - lastY, dz = z - lastZ;
+            cumLen += Math.sqrt(dx*dx + dy*dy + dz*dz);
           }
-          prevX = cx_; prevY = cy_; prevZ = cz_;
-          prevColIdx = colIdx;
-          prevValid = true;
+          xBuf[n] = x; yBuf[n] = y; zBuf[n] = z;
+          lBuf[n] = cumLen;
+          breakBuf[n] = pendingBreak ? 1 : 0;
+          pendingBreak = false;
+          lastX = x; lastY = y; lastZ = z; lastValid = true;
+          n++;
+        }
+        if (n < 2) continue;
+        const totalLen = lBuf[n - 1] > 1e-9 ? lBuf[n - 1] : 1;
+        // PASS 2: build segments. Color t = cumulative arc length /
+        // total arc length, so the gradient is uniform along the
+        // POLYLINE (not along time). Frames where the object barely
+        // moves contribute almost zero arc length and hence almost zero
+        // color change; fast-motion frames stretch the gradient.
+        for (let i = 1; i < n; i++) {
+          if (breakBuf[i]) continue;   // skip the bridging segment past a break
+          const t0 = lBuf[i - 1] / totalLen;
+          const t1 = lBuf[i]     / totalLen;
+          const c0 = colorAt(t0), c1 = colorAt(t1);
+          const o = si * 6;
+          segs[o]   = xBuf[i-1]; segs[o+1] = yBuf[i-1]; segs[o+2] = zBuf[i-1];
+          segs[o+3] = xBuf[i];   segs[o+4] = yBuf[i];   segs[o+5] = zBuf[i];
+          cols[o]   = c0[0]; cols[o+1] = c0[1]; cols[o+2] = c0[2];
+          cols[o+3] = c1[0]; cols[o+4] = c1[1]; cols[o+5] = c1[2];
+          si++;
         }
       }
       if (si === 0) return;
@@ -2978,20 +3015,28 @@ class Panel {
       const segs = [], cols = [];
       for (let m = 0; m < M; m++) {
         const p = Math.min(Nfull - 1, Math.floor(m * step));
-        let prev = null, prevF = -1;
+        // Two-pass arc-length gradient (mirror of the typed-array path).
+        const xs = [], ys = [], zs = [], ls = [];
+        let cumLen = 0;
+        let lastValid = false, lastX = 0, lastY = 0, lastZ = 0;
         for (let f = fStart; f <= fiNow; f++) {
           const pt = cfg.gt_3d[f]?.[p];
-          // Bridge across invalid frames (don't reset prev) so the trail
-          // stays continuous through occlusion gaps.
           if (!pt || !Number.isFinite(pt[0])) continue;
-          const cur = [pt[0], -pt[1], -pt[2]];
-          if (prev) {
-            segs.push(prev[0], prev[1], prev[2], cur[0], cur[1], cur[2]);
-            const ca = colorTable.subarray((prevF - fStart) * 3, (prevF - fStart) * 3 + 3);
-            const cb = colorTable.subarray((f     - fStart) * 3, (f     - fStart) * 3 + 3);
-            cols.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
+          const x = pt[0], y = -pt[1], z = -pt[2];
+          if (lastValid) {
+            const dx = x - lastX, dy = y - lastY, dz = z - lastZ;
+            cumLen += Math.sqrt(dx*dx + dy*dy + dz*dz);
           }
-          prev = cur; prevF = f;
+          xs.push(x); ys.push(y); zs.push(z); ls.push(cumLen);
+          lastX = x; lastY = y; lastZ = z; lastValid = true;
+        }
+        if (xs.length < 2) continue;
+        const totalLen = ls[ls.length - 1] > 1e-9 ? ls[ls.length - 1] : 1;
+        for (let i = 1; i < xs.length; i++) {
+          segs.push(xs[i-1], ys[i-1], zs[i-1], xs[i], ys[i], zs[i]);
+          const ca = colorAt(ls[i-1] / totalLen);
+          const cb = colorAt(ls[i]   / totalLen);
+          cols.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2]);
         }
       }
       if (!segs.length) return;
@@ -4911,6 +4956,8 @@ function bindControls() {
              v => { Settings.objectCloudTrailExp   = v; rerenderAll(); });
   wireSlider('obj-cloud-trail-width', 'obj-cloud-trail-width-lbl', v => v.toFixed(1),
              v => { Settings.objectCloudTrailWidth = v; rerenderAll(); });
+  wireSlider('obj-cloud-trail-boost', 'obj-cloud-trail-boost-lbl', v => v.toFixed(2),
+             v => { Settings.objectCloudTrailColorBoost = v; rerenderAll(); });
   wireSlider('obj-cloud-trail-opacity', 'obj-cloud-trail-opacity-lbl', v => v.toFixed(2),
              v => { Settings.objectCloudTrailOpacity = v; rerenderAll(); });
   wireSlider('motion-min', 'motion-min-lbl', v => v.toFixed(3),
