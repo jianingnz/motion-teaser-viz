@@ -264,11 +264,10 @@
     "n_points": 220900,
     "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
     "n_concat_frames": 1,
-    "subsample": 3,
+    "subsample": 1,
     "frame_indices_original": [
       84
-    ],
-    "sampling": "pixel-stride"
+    ]
   },
   "pc_dist_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_dist.bin",
@@ -276,7 +275,11 @@
     "format": "float32 N"
   },
   "gt3d_bin": {
-    "url": "static/data/hot3d_clip1995_clip1996_gt3d.bin",
+    "url": null,
+    "urls": [
+      "static/data/hot3d_clip1995_clip1996_gt3d_a.bin",
+      "static/data/hot3d_clip1995_clip1996_gt3d_b.bin"
+    ],
     "format": "GT3D v1",
     "n_tracks": 96000,
     "n_frames": 106,

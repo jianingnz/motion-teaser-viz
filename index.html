@@ -2740,8 +2740,28 @@ async function loadPCBinary(url) {
 //   pos = q/32767 * half[axis] + center[axis]
 // with NaN substituted for the sentinel — _addObjectCloudLayer just
 // checks Number.isFinite to skip invisible points.
-async function loadGT3DBinary(url) {
-  const buf = await fetch(url + '?v=' + Date.now()).then(r => r.arrayBuffer());
+async function loadGT3DBinary(urlOrList) {
+  // Accept either a single URL or an ordered list of URL chunks; the
+  // chunks concatenate byte-wise back into the original GT3D file.
+  // GitHub Pages caps individual files at ~50 MB, so the dense HOT3D
+  // bundle ships its 58 MB gt3d as two ~29 MB halves.
+  const urls = Array.isArray(urlOrList) ? urlOrList : [urlOrList];
+  const parts = await Promise.all(
+    urls.map(u => fetch(u + '?v=' + Date.now()).then(r => r.arrayBuffer())));
+  let buf;
+  if (parts.length === 1) {
+    buf = parts[0];
+  } else {
+    let total = 0;
+    for (const p of parts) total += p.byteLength;
+    const merged = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) {
+      merged.set(new Uint8Array(p), off);
+      off += p.byteLength;
+    }
+    buf = merged.buffer;
+  }
   const dv  = new DataView(buf);
   const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1),
                                     dv.getUint8(2), dv.getUint8(3));
@@ -3046,9 +3066,11 @@ async function init() {
   // positions + per-track RGB + per-track object id) and cam.bin (per-frame
   // 4×4 c2w + intrinsics). When present they replace inline JSON gt_3d /
   // pred_3d / pt_colors_rgb and camera.c2w_per_frame respectively.
-  if (clipData.gt3d_bin?.url) {
-    clipData._gt3d = await loadGT3DBinary(clipData.gt3d_bin.url);
-    console.log(`gt3d: N=${clipData._gt3d.N} F=${clipData._gt3d.F} from ${clipData.gt3d_bin.url}`);
+  if (clipData.gt3d_bin?.urls || clipData.gt3d_bin?.url) {
+    const src = clipData.gt3d_bin.urls || clipData.gt3d_bin.url;
+    clipData._gt3d = await loadGT3DBinary(src);
+    console.log(`gt3d: N=${clipData._gt3d.N} F=${clipData._gt3d.F} from ${
+      Array.isArray(src) ? src.length + ' chunks' : src}`);
     // The HOT3D bundle ships gt_3d / pred_3d / gt_2d / pt_colors_rgb as
     // null in the JSON — actual data lives in clipData._gt3d. Other parts
     // of the viewer reference cfg.gt_3d[t][p] / cfg.gt_3d[0].length for

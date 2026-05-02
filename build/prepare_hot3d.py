@@ -394,8 +394,28 @@ def main():
         print(f"wrote canonical (random) scene PC at {pc_path} (N={scene_n})")
 
     # ── GT3D bin (positions int16-quantized, RGB uint8, obj_ids uint8) ──
+    # GitHub Pages has a 50 MB soft per-file limit (the warning we hit on
+    # earlier pushes). Single-file at 16k pts/obj × 6 obj × 106 frames
+    # comes out to ~58 MB — over the limit and known to "Failed to fetch"
+    # on some browsers. We write the bin then SPLIT byte-wise into two
+    # ~30 MB parts that the viewer concatenates back together. Splitting
+    # at an arbitrary byte boundary is safe since the loader reassembles
+    # the full buffer before parsing the GT3D layout.
     gt3d_path = out_data / f"{args.name}_gt3d.bin"
     gt3d_meta = write_gt3d_binary(gt3d_path, obj_arr, vis_arr, obj_ids, rgb_u8, N_OBJ)
+    gt3d_urls = [f"static/data/{args.name}_gt3d.bin"]
+    if gt3d_path.stat().st_size > 49_000_000:
+        data = gt3d_path.read_bytes()
+        mid  = len(data) // 2
+        a_path = out_data / f"{args.name}_gt3d_a.bin"
+        b_path = out_data / f"{args.name}_gt3d_b.bin"
+        a_path.write_bytes(data[:mid])
+        b_path.write_bytes(data[mid:])
+        gt3d_path.unlink()
+        gt3d_urls = [f"static/data/{args.name}_gt3d_a.bin",
+                     f"static/data/{args.name}_gt3d_b.bin"]
+        print(f"split gt3d into {a_path.name} ({a_path.stat().st_size//1024//1024} MB) "
+              f"+ {b_path.name} ({b_path.stat().st_size//1024//1024} MB)")
 
     # ── Camera bin (per-frame 4×4 + intrinsics) ────────────────────
     cam_path = out_data / f"{args.name}_cam.bin"
@@ -446,7 +466,11 @@ def main():
             "format": "float32 N",
         },
         "gt3d_bin": {
-            "url": f"static/data/{args.name}_gt3d.bin",
+            # If split, the viewer fetches each url and concatenates the
+            # ArrayBuffers in order before parsing. Single-file bundles
+            # still set `url` for backward compatibility.
+            "url": gt3d_urls[0] if len(gt3d_urls) == 1 else None,
+            "urls": gt3d_urls,
             **gt3d_meta,
         },
         "cam_bin": {
@@ -472,8 +496,13 @@ def main():
     out_json.write_text(json.dumps(bundle, indent=2))
 
     print(f"\nwrote {out_json}     ({out_json.stat().st_size//1024} KB)")
-    print(f"wrote {gt3d_path}     ({gt3d_path.stat().st_size//1024//1024} MB, "
-          f"{K_total} pts × {F} frames Int16-quantized)")
+    if gt3d_path.exists():
+        print(f"wrote {gt3d_path}     ({gt3d_path.stat().st_size//1024//1024} MB, "
+              f"{K_total} pts × {F} frames Int16-quantized)")
+    else:
+        total_mb = sum((out_data / Path(u).name).stat().st_size for u in gt3d_urls) // 1024 // 1024
+        print(f"wrote split gt3d ({len(gt3d_urls)} chunks, {total_mb} MB total, "
+              f"{K_total} pts × {F} frames Int16-quantized)")
     print(f"wrote {cam_path}      ({cam_path.stat().st_size} B)")
     print(f"wrote {mp4_dst}       ({mp4_dst.stat().st_size//1024} KB, {F} frames @ {args.fps} fps)")
     print(f"wrote {pc_path}       ({pc_path.stat().st_size//1024//1024} MB, {scene_n} pts)")
