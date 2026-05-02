@@ -2752,16 +2752,18 @@ class Panel {
     //   trails:      renderOrder 0   (transparent, drawn first)
     //   ghosts:      renderOrder 1   (transparent, between)
     //   live cloud:  renderOrder 10  (opaque, drawn LAST → on top)
-    // renderOrder hierarchy across the static/moving split + ghost clouds:
-    //   static (objFilter='static')  →  0  (drawn first, writes depth)
-    //   GHOST clouds                 →  3  (behind the trails — without
-    //       this they leaked through as small darker dots ON the trail
-    //       wherever the moving object's frame-0/frame-45 position
-    //       happened to fall along the trail polyline)
-    //   trails                       →  5  (depth-tested behind static)
-    //   moving  (objFilter='moving') → 10  (drawn last, always on top)
+    // renderOrder hierarchy. Both the live cloud and the past-frame
+    // ghost clouds are 'moving object', so they BOTH sit in front of
+    // the trail — the moving object always reads as on top of its own
+    // trajectory regardless of opacity.
+    //
+    //   static  (objFilter='static')  →  0  (drawn first, writes depth)
+    //   trails                        →  5  (depth-tested behind static)
+    //   ghosts  (alpha < 1.0)         →  7  (moving object at past frames,
+    //                                        in front of the trail)
+    //   live    (objFilter='moving')  → 10  (always on top)
     if (isGhost) {
-      cloud.renderOrder = 3;
+      cloud.renderOrder = 7;
     } else if (objFilter === 'static') {
       cloud.renderOrder = 0;
     } else {
