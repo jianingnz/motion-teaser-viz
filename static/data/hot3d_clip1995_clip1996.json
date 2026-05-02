@@ -240,7 +240,7 @@
   "video_fps_mult": 1,
   "caption": "HOT3D cross-clip stitch \u00b7 clip-001995 \u2192 clip-001996 (16k pts/object)",
   "raw_meta": {
-    "n_points": 96000,
+    "n_points": 36000,
     "n_frames": 106,
     "video_dim_HW": [
       480,
@@ -249,7 +249,7 @@
     "src_clip_start": 0,
     "src_clip_end": 105,
     "source_3d": "/weka/prior-default/jianingz/home/dataset/hot3d_repo/tmp/hot3d_dense_16k",
-    "note": "HOT3D cross-clip; 6 obj \u00d7 16000 pts (dense)."
+    "note": "HOT3D cross-clip; 6 obj \u00d7 6000 pts (dense)."
   },
   "chrono": {
     "image_url": "static/videos/hot3d_clip1995_clip1996_chrono.jpg",
@@ -275,24 +275,23 @@
     "format": "float32 N"
   },
   "gt3d_bin": {
-    "url": null,
+    "url": "static/data/hot3d_clip1995_clip1996_gt3d.bin",
     "urls": [
-      "static/data/hot3d_clip1995_clip1996_gt3d_a.bin",
-      "static/data/hot3d_clip1995_clip1996_gt3d_b.bin"
+      "static/data/hot3d_clip1995_clip1996_gt3d.bin"
     ],
     "format": "GT3D v1",
-    "n_tracks": 96000,
+    "n_tracks": 36000,
     "n_frames": 106,
     "n_objects": 6,
     "axis_min": [
-      -0.08361774682998657,
-      -0.033679962158203125,
-      0.07492267340421677
+      -0.08351036161184311,
+      -0.033574189990758896,
+      0.07486817985773087
     ],
     "axis_max": [
-      0.7728552222251892,
-      0.3312418460845947,
-      0.6672309637069702
+      0.7723734378814697,
+      0.33087158203125,
+      0.6673674583435059
     ]
   },
   "cam_bin": {
