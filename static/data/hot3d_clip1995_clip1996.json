@@ -261,18 +261,17 @@
   },
   "pc_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc.bin",
-    "n_points": 220900,
+    "n_points": 120000,
     "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
     "n_concat_frames": 1,
-    "subsample": 3,
+    "subsample": 1,
     "frame_indices_original": [
       84
-    ],
-    "sampling": "pixel-stride"
+    ]
   },
   "pc_dist_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_dist.bin",
-    "n_points": 220900,
+    "n_points": 120000,
     "format": "float32 N"
   },
   "gt3d_bin": {
@@ -282,14 +281,14 @@
     "n_frames": 106,
     "n_objects": 6,
     "axis_min": [
-      -0.08287158608436584,
+      -0.08361774682998657,
       -0.033679962158203125,
-      0.09639988839626312
+      0.07492267340421677
     ],
     "axis_max": [
-      0.7725363969802856,
+      0.7728552222251892,
       0.3312418460845947,
-      0.6654360890388489
+      0.6672309637069702
     ]
   },
   "cam_bin": {

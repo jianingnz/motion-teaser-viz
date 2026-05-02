@@ -160,7 +160,13 @@ def write_gt3d_binary(path: Path, positions: np.ndarray, vis: np.ndarray,
     assert vis.shape == (N, F)
     assert obj_ids.shape == (N,)
     assert rgb_u8.shape == (N, 3)
-    valid_mask = vis & np.isfinite(positions).all(axis=-1)   # (N, F)
+    # Always-visible mode: ignore the per-frame occlusion `vis` flag and
+    # only drop points whose 3D coords are non-finite (rare). The user
+    # wants every track to render every frame using its constant per-
+    # track colour, so the rendered cloud reads as a single coherent
+    # surface that just MOVES — it never blinks in/out as parts of the
+    # objects rotate behind themselves.
+    valid_mask = np.isfinite(positions).all(axis=-1)         # (N, F)
     if not valid_mask.any():
         raise RuntimeError("no valid positions to encode")
     valid_pts = positions[valid_mask]                        # (M, 3)
@@ -238,9 +244,11 @@ def main():
     d3A = np.load(tracks_root / f"{CLIP_A}_3d.npz")
     d2A = np.load(tracks_root / f"{CLIP_A}_2d.npz")
     d3B = np.load(tracks_root / f"{CLIP_B}_3d.npz")
+    d2B = np.load(tracks_root / f"{CLIP_B}_2d.npz")
     pts3_A = d3A["points_3d"]; vis3_A = d3A["visibility"].squeeze()
     tracks_A = d2A["tracks"];   vis2_A = d2A["visibility"]
     pts3_B = d3B["points_3d"]; vis3_B = d3B["visibility"].squeeze()
+    tracks_B = d2B["tracks"];   vis2_B = d2B["visibility"]
     print("source: A", pts3_A.shape, "B", pts3_B.shape)
     assert pts3_A.shape[0] % N_OBJ == 0, pts3_A.shape
     pts_per_obj = pts3_A.shape[0] // N_OBJ
@@ -280,31 +288,67 @@ def main():
         cam_h = np.append(T_we_B[j][:3, 3], 1.0)
         cam_pos[fi] = (M_anchor_from_world @ cam_h)[:3]
 
-    # ── Anchor RGB → per-track colour ───────────────────────────────
-    cap = cv2.VideoCapture(RGB_TPL.format(clip=CLIP_A))
-    cap.set(cv2.CAP_PROP_POS_FRAMES, T_A_START)
-    ok, anchor_bgr = cap.read(); cap.release()
-    assert ok
-    anchor_rgb = cv2.cvtColor(anchor_bgr, cv2.COLOR_BGR2RGB)
+    # ── Per-track RGB sampled at the FIRST frame each track becomes
+    #    visible. Held constant for that track across all frames so the
+    #    cloud reads as one consistent surface even when a particular
+    #    track is invisible at the anchor (we no longer leave those grey).
+    #    This requires per-frame RGB lookups — load both clips' video
+    #    frames into memory once (clip-A frames 84..149 + clip-B frames
+    #    0..39, ≈ 106 frames at 1408×1408 = ~630 MB raw, manageable). ──
+    print("loading per-frame RGB for per-track colour sampling...")
+    def load_clip_frames(clip, fr_start, fr_end):
+        cap = cv2.VideoCapture(RGB_TPL.format(clip=clip))
+        out = []
+        for f in range(fr_start, fr_end + 1):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+            ok, bgr = cap.read()
+            if not ok: raise RuntimeError(f"failed to read {clip} frame {f}")
+            out.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        cap.release()
+        return out
+    rgb_A = load_clip_frames(CLIP_A, T_A_START, T_A_END)
+    rgb_B = load_clip_frames(CLIP_B, T_B_START, T_B_END)
+    print(f"  loaded {len(rgb_A)} A-frames + {len(rgb_B)} B-frames")
 
-    uv_anchor = tracks_A[T_A_START][sub_idx]
-    u_raw, v_raw = uv_anchor[:, 0], uv_anchor[:, 1]
-    valid_uv = np.isfinite(u_raw) & np.isfinite(v_raw)
-    u = np.where(valid_uv, u_raw, 0.0)
-    v = np.where(valid_uv, v_raw, 0.0)
-    u0 = np.clip(np.floor(u).astype(int), 0, W_SRC - 2)
-    v0 = np.clip(np.floor(v).astype(int), 0, H_SRC - 2)
-    u1, v1 = u0 + 1, v0 + 1
-    du = (u - u0)[:, None]; dv = (v - v0)[:, None]
-    rgbf = anchor_rgb.astype(np.float32)
-    obj_color = (
-        rgbf[v0, u0] * (1 - du) * (1 - dv)
-      + rgbf[v0, u1] *      du  * (1 - dv)
-      + rgbf[v1, u0] * (1 - du) *      dv
-      + rgbf[v1, u1] *      du  *      dv
-    )
-    obj_color[~valid_uv] = 128.0   # neutral gray for not-anchor-visible
-    rgb_u8 = np.clip(obj_color, 0, 255).astype(np.uint8)
+    # For each track, find the FIRST stitched frame where it's visible
+    # AND has finite uv, then sample THAT frame's RGB at that uv.
+    rgb_u8 = np.full((K_total, 3), 128, dtype=np.uint8)   # neutral fallback
+    F_A = T_A_END - T_A_START + 1
+    for k in range(K_total):
+        # Walk stitched frames 0..F-1 in order:
+        #   stitched f in [0, F_A) → clip A frame T_A_START + f
+        #   stitched f in [F_A, F) → clip B frame T_B_START + (f - F_A)
+        found = False
+        for f in range(F):
+            if not vis_arr[k, f]: continue
+            if f < F_A:
+                src_f = T_A_START + f
+                uv = tracks_A[src_f, sub_idx[k]]
+                vis2 = vis2_A[src_f, sub_idx[k]]
+                img = rgb_A[f]
+            else:
+                src_f = T_B_START + (f - F_A)
+                uv = tracks_B[src_f, sub_idx[k]]
+                vis2 = vis2_B[src_f, sub_idx[k]]
+                img = rgb_B[f - F_A]
+            if not vis2: continue
+            u_raw, v_raw = float(uv[0]), float(uv[1])
+            if not (np.isfinite(u_raw) and np.isfinite(v_raw)): continue
+            if not (0 <= u_raw < W_SRC - 1 and 0 <= v_raw < H_SRC - 1): continue
+            u0 = int(np.floor(u_raw)); v0 = int(np.floor(v_raw))
+            du = u_raw - u0; dv = v_raw - v0
+            rgbf = img.astype(np.float32)
+            c = (rgbf[v0, u0]   * (1 - du) * (1 - dv)
+               + rgbf[v0, u0+1] *      du  * (1 - dv)
+               + rgbf[v0+1, u0] * (1 - du) *      dv
+               + rgbf[v0+1, u0+1] *    du  *      dv)
+            rgb_u8[k] = np.clip(c, 0, 255).astype(np.uint8)
+            found = True
+            break
+        # if `found` is False, the track was never visible AND in-bounds
+        # in this 106-frame window — leave at neutral grey.
+    print(f"  per-track colour sampled (fallback grey for "
+          f"{(rgb_u8 == 128).all(axis=1).sum()} never-visible tracks)")
 
     # ── Per-frame mean object centre (drives the synthesised camera fwd) ──
     mean_obj = np.zeros((F, 3), dtype=np.float32)
