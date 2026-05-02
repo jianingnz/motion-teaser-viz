@@ -2248,6 +2248,18 @@ class Panel {
     // semantically active (canvas-all, canvas-gt, canvas-cmp,
     // canvas-paper) and lets the small history / pred / object-PC
     // panels skip the work entirely.
+    // Special "first-frame moving-object only" panel mode (canvas-pcrgb).
+    // Render JUST the moving-object cloud at frame 0 — no trails, no
+    // ghosts, no scene PC, no playhead following. Static cloud is also
+    // hidden so the panel reads as "what's the manipulated object look
+    // like right at the start of the clip?". Skips out before the
+    // regular cloud-rendering path so the small-panel _isBigPanel gate
+    // doesn't suppress this view.
+    if (this.opts.firstFrameMovingCloud && cfg.pt_colors_rgb && clipData?._gt3d) {
+      this._addObjectCloudLayer(cfg, 0, 1.0, 'moving');
+      return;
+    }
+
     // Gate the dense GT object cloud + trails to BIG panels only
     // (canvas-all + canvas-paper). Small comparison panels were rebuilding
     // 36k-pt BufferGeometries every frame, eating ~3 MB / frame each
@@ -3576,7 +3588,11 @@ async function init() {
     // filtered via the strict K-th-NN-within-R rule + object-RGB highlight
     // dots at every tracked point so the manipulated object pops even when
     // the relaxed filter still catches a bit of the hand.
-    new Panel('canvas-pcrgb',{ showPC:true, objectPCOnly:true, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    // canvas-pcrgb (initial-position panel ⑤). Renders ONLY the moving
+    // object's cloud at frame 0 — no scene PC, no trails, no ghosts,
+    // no playhead following. firstFrameMovingCloud=true bypasses the
+    // big-panel gate that the regular full-clip cloud path uses.
+    new Panel('canvas-pcrgb',{ showPC:false, objectPCOnly:false, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, firstFrameMovingCloud:true, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
