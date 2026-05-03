@@ -238,7 +238,7 @@
   "num_frames": 106,
   "fps": 30.0,
   "video_fps_mult": 1,
-  "caption": "HOT3D cross-clip stitch \u00b7 clip-001995 \u2192 clip-001996 (MonST3R 2-view scene PC)",
+  "caption": "HOT3D cross-clip stitch \u00b7 clip-001995 \u2192 clip-001996 (MonST3R single-view scene PC)",
   "raw_meta": {
     "n_points": 96000,
     "n_frames": 106,
@@ -261,18 +261,18 @@
   },
   "pc_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_monst3r.bin",
-    "n_points": 200000,
+    "n_points": 80000,
     "format": "uint32 N | float32 N*3 xyz | uint8 N*3 rgb",
     "n_concat_frames": 1,
     "subsample": 1,
     "frame_indices_original": [
       84
     ],
-    "sampling": "monst3r-pair-stride1-200k"
+    "sampling": "monst3r-pred1-only-80k"
   },
   "pc_dist_bin": {
     "url": "static/data/hot3d_clip1995_clip1996_pc_monst3r_dist.bin",
-    "n_points": 200000,
+    "n_points": 80000,
     "format": "float32 N"
   },
   "gt3d_bin": {

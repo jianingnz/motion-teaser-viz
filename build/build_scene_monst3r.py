@@ -201,9 +201,15 @@ def main():
     ap.add_argument("--swap", action="store_true",
                     help="After writing *_pc_monst3r.bin / *_pc_monst3r_dist.bin, also overwrite "
                          "the canonical *_pc.bin / *_pc_dist.bin so the bundle picks up MonST3R's PC.")
-    ap.add_argument("--max-pts", type=int, default=200_000)
+    ap.add_argument("--max-pts", type=int, default=80_000,
+                    help="Final point count after random sub-sample. Default 80k matches the MoGe scene PC size.")
     ap.add_argument("--gt-conf", type=float, default=MIN_GT_CONF)
     ap.add_argument("--pc-conf", type=float, default=MIN_PC_CONF)
+    ap.add_argument("--single-view", action="store_true",
+                    help="Use ONLY pred1 (anchor view's MonST3R lift); skip pred2 entirely. "
+                         "Avoids the MonST3R-predicted view-1→view-2 relative-pose error showing up as "
+                         "a visibly offset second cloud. Loses the wider FoV from view 2 — same coverage "
+                         "as the MoGe single-frame backprojection, just with MonST3R's depth.")
     args = ap.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -330,9 +336,15 @@ def main():
     print(f"[align] residual: median {np.median(err) * 1000:.2f} mm,  90% {np.percentile(err, 90) * 1000:.2f} mm")
 
     # ── 8. Apply transform + assemble fused PC ────────────────────
-    Pall = np.concatenate([pts1.reshape(-1, 3), pts2.reshape(-1, 3)], axis=0)
-    Call = np.concatenate([rgb1.reshape(-1, 3), rgb2.reshape(-1, 3)], axis=0)
-    Cfa  = np.concatenate([conf1.reshape(-1),    conf2.reshape(-1)],   axis=0)
+    if args.single_view:
+        Pall = pts1.reshape(-1, 3)
+        Call = rgb1.reshape(-1, 3)
+        Cfa  = conf1.reshape(-1)
+        print("[fuse] single-view mode: using pred1 only")
+    else:
+        Pall = np.concatenate([pts1.reshape(-1, 3), pts2.reshape(-1, 3)], axis=0)
+        Call = np.concatenate([rgb1.reshape(-1, 3), rgb2.reshape(-1, 3)], axis=0)
+        Cfa  = np.concatenate([conf1.reshape(-1),    conf2.reshape(-1)],   axis=0)
     Pal  = transform_pts(M, Pall)
     keep = (Cfa > args.pc_conf) & np.isfinite(Pal).all(axis=1)
     Pal, Call, Cfa = Pal[keep], Call[keep], Cfa[keep]
