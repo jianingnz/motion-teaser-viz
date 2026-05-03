@@ -224,30 +224,33 @@ def main():
     xyz_anchor = transform_pts(M_anchor_from_lastframe, xyz_lastframe).astype(np.float32)
     print(f"[lift] PC in anchor coords: {xyz_anchor.shape[0]} pts")
 
-    # ── 6. min_pix_dist against ANCHOR-frame visible 2D tracks ────
-    proj_z = xyz_anchor[:, 2]
-    in_front = proj_z > 0.05
-    proj_u = np.full(xyz_anchor.shape[0], -1.0, dtype=np.float32)
-    proj_v = np.full(xyz_anchor.shape[0], -1.0, dtype=np.float32)
-    proj_u[in_front] = (FX * xyz_anchor[in_front, 0] / proj_z[in_front] + CX).astype(np.float32)
-    proj_v[in_front] = (FY * xyz_anchor[in_front, 1] / proj_z[in_front] + CY).astype(np.float32)
-
-    d2A = np.load(f"{TRACKS_DIR}/{CLIP_A}_2d.npz")
-    tracks_uv_a = d2A["tracks"][ANCHOR_FRAME]
-    vis_a       = d2A["visibility"][ANCHOR_FRAME].astype(bool)
-    keep_a = (
-        vis_a
-        & np.isfinite(tracks_uv_a).all(axis=1)
-        & (tracks_uv_a[:, 0] >= 0) & (tracks_uv_a[:, 0] < W)
-        & (tracks_uv_a[:, 1] >= 0) & (tracks_uv_a[:, 1] < H)
+    # ── 6. min_pix_dist against LAST-frame visible 2D tracks ─────
+    # Each kept scene-PC point originated from a specific pixel in the
+    # LAST-frame display — that's what `(u, v)` above already is. Use
+    # those pixels directly and compare against the LAST frame's GT
+    # 2D-tracks, NOT the anchor frame's. Reason: static-object GT
+    # annotations drift a few pixels per frame; if we mask using the
+    # FIRST-frame track grid the carved holes don't line up with where
+    # the static objects actually are in the LAST-frame-derived scene
+    # PC, and the foreground objects render twice — once as the GT
+    # object-cloud at T-1, once as residual scene-PC pixels still
+    # inside the (slightly offset) first-frame track footprint.
+    d2B = np.load(f"{TRACKS_DIR}/{CLIP_B}_2d.npz")
+    tracks_uv_b = d2B["tracks"][LAST_FRAME]
+    vis_b       = d2B["visibility"][LAST_FRAME].astype(bool)
+    keep_b = (
+        vis_b
+        & np.isfinite(tracks_uv_b).all(axis=1)
+        & (tracks_uv_b[:, 0] >= 0) & (tracks_uv_b[:, 0] < W)
+        & (tracks_uv_b[:, 1] >= 0) & (tracks_uv_b[:, 1] < H)
     )
-    track_pix = tracks_uv_a[keep_a].astype(np.float32)
-    print(f"[mpd] anchor visible 2D tracks: {len(track_pix)}")
+    track_pix = tracks_uv_b[keep_b].astype(np.float32)
+    print(f"[mpd] last-frame visible 2D tracks: {len(track_pix)}")
 
     from scipy.spatial import cKDTree
     tree = cKDTree(track_pix)
-    md, _ = tree.query(np.stack([proj_u, proj_v], axis=-1), k=1)
-    md[~in_front] = 1e6   # behind-camera pts: never hide via the runtime mask
+    src_pix_uv = np.stack([u.astype(np.float32), v.astype(np.float32)], axis=-1)
+    md, _ = tree.query(src_pix_uv, k=1)
     md = md.astype(np.float32)
     print(f"[mpd] median {np.median(md):.1f}px  frac<30 {(md < 30).mean() * 100:.1f}%")
 
