@@ -1425,6 +1425,11 @@ const Settings = {
   //   'first'             — pin to frame 0 (input pose).
   // The lastframe bundle overrides this to 'last' via viewer_defaults.
   staticObjFrameMode:     'playhead',
+  // When true, skip rendering the static-object GT cloud entirely.
+  // Used by the lastframe-MoGe bundle, where the scene PC ALREADY
+  // contains the static objects (lifted directly from the last-frame
+  // RGB) — adding a separate GT cloud on top would paint them twice.
+  skipStaticObjCloud:     false,
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -2587,20 +2592,23 @@ class Panel {
       //                    objects in front cull the trail pixels
       //   renderOrder 10   MOVING cloud (the manipulated object),
       //                    drawn LAST → always on top of its trail
-      // Frame at which to evaluate the STATIC objects' GT pose. Default
-      // is the playhead (legacy behaviour) so static and moving share
-      // a frame index and read consistently. The 'last' override pins
-      // the static cloud to T−1, which matches the lastframe MoGe
-      // scene PC: static-object annotations drift slightly per frame
-      // (~few mm, annotation noise) and the lastframe scene PC was
-      // built from the LAST RGB, so rendering static at the same frame
-      // makes the foreground objects sit cleanly on the scene PC. Set
-      // via viewer_defaults.staticObjFrameMode in the bundle.
-      const staticMode = Settings.staticObjFrameMode || 'playhead';
-      const staticFi = staticMode === 'last'  ? (T - 1)
-                    :  staticMode === 'first' ? 0
-                    :                           fiClamp;
-      this._addObjectCloudLayer(cfg, staticFi, 1.0, 'static');
+      // Static-object cloud rendering. Two flags:
+      //   skipStaticObjCloud — bypass the static GT-cloud layer
+      //     entirely. Used by the lastframe-MoGe bundle: the scene PC
+      //     was lifted directly from the last-frame RGB so it already
+      //     contains the static objects at their real last-frame
+      //     appearance + position; rendering a separate GT cloud on
+      //     top would just paint them twice.
+      //   staticObjFrameMode — when the static cloud IS rendered,
+      //     which frame's GT pose to use ('playhead' default,
+      //     'first', or 'last' to pin to T−1).
+      if (!Settings.skipStaticObjCloud) {
+        const staticMode = Settings.staticObjFrameMode || 'playhead';
+        const staticFi = staticMode === 'last'  ? (T - 1)
+                      :  staticMode === 'first' ? 0
+                      :                           fiClamp;
+        this._addObjectCloudLayer(cfg, staticFi, 1.0, 'static');
+      }
       const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
       const predMode = !!Settings.predictionMode;
       // Prediction-mode draw order:
@@ -3813,6 +3821,9 @@ function applyBundleViewerDefaults(clipData) {
   }
   if (vd.staticObjFrameMode !== undefined) {
     Settings.staticObjFrameMode = String(vd.staticObjFrameMode);
+  }
+  if (vd.skipStaticObjCloud !== undefined) {
+    Settings.skipStaticObjCloud = !!vd.skipStaticObjCloud;
   }
 }
 

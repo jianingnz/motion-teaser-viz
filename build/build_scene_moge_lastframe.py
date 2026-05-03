@@ -224,20 +224,37 @@ def main():
     xyz_anchor = transform_pts(M_anchor_from_lastframe, xyz_lastframe).astype(np.float32)
     print(f"[lift] PC in anchor coords: {xyz_anchor.shape[0]} pts")
 
-    # ── 6. min_pix_dist against LAST-frame visible 2D tracks ─────
-    # Each kept scene-PC point originated from a specific pixel in the
-    # LAST-frame display — that's what `(u, v)` above already is. Use
-    # those pixels directly and compare against the LAST frame's GT
-    # 2D-tracks, NOT the anchor frame's. Reason: static-object GT
-    # annotations drift a few pixels per frame; if we mask using the
-    # FIRST-frame track grid the carved holes don't line up with where
-    # the static objects actually are in the LAST-frame-derived scene
-    # PC, and the foreground objects render twice — once as the GT
-    # object-cloud at T-1, once as residual scene-PC pixels still
-    # inside the (slightly offset) first-frame track footprint.
-    d2B = np.load(f"{TRACKS_DIR}/{CLIP_B}_2d.npz")
-    tracks_uv_b = d2B["tracks"][LAST_FRAME]
-    vis_b       = d2B["visibility"][LAST_FRAME].astype(bool)
+    # ── 6. min_pix_dist against MOVING-OBJECT-only last-frame tracks ──
+    # The static objects in HOT3D are already 'in' the last-frame RGB
+    # we lifted, so the lastframe-MoGe scene PC contains them at their
+    # real last-frame appearance + position. We do NOT want to carve
+    # them away with the runtime mask — we want the scene PC ALONE to
+    # represent them. So min_pix_dist is computed against only the
+    # MOVING object's last-frame tracks, leaving the static patches of
+    # the scene PC untouched. The viewer then skips its static-object
+    # GT-cloud layer (via viewer_defaults.skipStaticObjCloud) so the
+    # static objects don't get rendered twice.
+    pts3_b   = d3B["points_3d"]                         # (N, F, 3) clip-B-frame-0 display
+    vis3_b   = d3B["visibility"].squeeze()              # (N, F)
+    N_total  = pts3_b.shape[0]
+    N_OBJ    = 6                                        # HOT3D-aria fixed
+    N_PER    = N_total // N_OBJ
+    # Per-track motion magnitude = bbox diagonal across visible frames.
+    track_motion = np.zeros(N_total, dtype=np.float64)
+    for k in range(N_total):
+        visk = vis3_b[k]
+        if visk.sum() < 2:
+            continue
+        ptsk = pts3_b[k][visk]
+        bbox = ptsk.max(axis=0) - ptsk.min(axis=0)
+        track_motion[k] = float(np.linalg.norm(bbox))
+    obj_motion = np.array([track_motion[oi*N_PER:(oi+1)*N_PER].mean() for oi in range(N_OBJ)])
+    moving_obj_id = int(np.argmax(obj_motion))
+    print(f"[mpd] per-object mean motion (m): {obj_motion.round(3)}  →  moving = {moving_obj_id}")
+
+    moving_idx  = np.arange(moving_obj_id * N_PER, (moving_obj_id + 1) * N_PER)
+    tracks_uv_b = d2B["tracks"][LAST_FRAME][moving_idx]
+    vis_b       = d2B["visibility"][LAST_FRAME][moving_idx].astype(bool)
     keep_b = (
         vis_b
         & np.isfinite(tracks_uv_b).all(axis=1)
@@ -245,13 +262,21 @@ def main():
         & (tracks_uv_b[:, 1] >= 0) & (tracks_uv_b[:, 1] < H)
     )
     track_pix = tracks_uv_b[keep_b].astype(np.float32)
-    print(f"[mpd] last-frame visible 2D tracks: {len(track_pix)}")
+    print(f"[mpd] moving-object last-frame visible tracks: {len(track_pix)}")
 
     from scipy.spatial import cKDTree
-    tree = cKDTree(track_pix)
-    src_pix_uv = np.stack([u.astype(np.float32), v.astype(np.float32)], axis=-1)
-    md, _ = tree.query(src_pix_uv, k=1)
-    md = md.astype(np.float32)
+    if len(track_pix) == 0:
+        # No moving-object tracks visible at the last frame. Set every
+        # min_pix_dist to a huge sentinel so the runtime mask never
+        # culls anything — gracefully degrades to "scene PC for
+        # everything" if the moving object happens to be off-camera at
+        # the last frame.
+        md = np.full(xyz_anchor.shape[0], 1e6, dtype=np.float32)
+    else:
+        tree = cKDTree(track_pix)
+        src_pix_uv = np.stack([u.astype(np.float32), v.astype(np.float32)], axis=-1)
+        md, _ = tree.query(src_pix_uv, k=1)
+        md = md.astype(np.float32)
     print(f"[mpd] median {np.median(md):.1f}px  frac<30 {(md < 30).mean() * 100:.1f}%")
 
     # ── 7. Write outputs ──────────────────────────────────────────

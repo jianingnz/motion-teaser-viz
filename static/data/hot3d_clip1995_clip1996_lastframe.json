@@ -324,6 +324,7 @@
     "showEndpoints": false,
     "trackSmoothWindow": 1,
     "maxSceneDepth": 0.85,
-    "staticObjFrameMode": "last"
+    "staticObjFrameMode": "last",
+    "skipStaticObjCloud": true
   }
 }
