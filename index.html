@@ -617,16 +617,38 @@ footer a { color: #2563eb; text-decoration: none; }
         </div>
 
         <div class="color-row">
-          <input type="color" id="col-gt" value="#f0529c" title="GT trail color (used when rainbow mode is OFF).">
+          <input type="color" id="col-gt" value="#f0529c" title="GT trail NEW-end color (newest frame end of the gradient).">
+          <input type="color" id="col-gt-old" value="#ffffff" title="GT trail OLD-end color (oldest frame end of the gradient).">
           <span class="cn">GT future <span class="h" id="col-gt-h">#f0529c</span></span>
           <input type="range" class="alpha" id="alpha-gt" min="0" max="1" step="0.02" value="0.98" title="GT trail opacity (0 = invisible, 1 = opaque).">
           <span class="alpha-lbl" id="alpha-gt-lbl">0.98</span>
         </div>
+        <div class="fld" style="margin-top:-2px;">
+          <div class="lbl-row"><span title="Multiplier on every RGB channel of the GT trail's gradient end-points before rendering. >1 saturates / brightens (channels clip to 1, washed-out tones read as more vivid). <1 dims toward black.">GT trail brightness</span><span class="v" id="gt-boost-lbl">1.00</span></div>
+          <input type="range" id="gt-boost" min="0.3" max="2.5" step="0.05" value="1.00">
+        </div>
         <div class="color-row">
-          <input type="color" id="col-pred" value="#34d399" title="Pred trail color (used when rainbow mode is OFF).">
+          <input type="color" id="col-pred" value="#34d399" title="Pred trail NEW-end color (newest frame end of the gradient).">
+          <input type="color" id="col-pred-old" value="#ffffff" title="Pred trail OLD-end color (oldest frame end of the gradient).">
           <span class="cn">Prediction <span class="h" id="col-pred-h">#34d399</span></span>
           <input type="range" class="alpha" id="alpha-pred" min="0" max="1" step="0.02" value="0.98" title="Prediction trail opacity.">
           <span class="alpha-lbl" id="alpha-pred-lbl">0.98</span>
+        </div>
+        <div class="fld" style="margin-top:-2px;">
+          <div class="lbl-row"><span title="Brightness boost (×) for the prediction trail's gradient end-points.">Pred trail brightness</span><span class="v" id="pred-boost-lbl">1.00</span></div>
+          <input type="range" id="pred-boost" min="0.3" max="2.5" step="0.05" value="1.00">
+        </div>
+        <div class="color-row">
+          <input type="color" id="col-raw" value="#ef4444" title="Raw track NEW-end color (newest frame end of the gradient).">
+          <input type="color" id="col-raw-old" value="#ffffff" title="Raw track OLD-end color (oldest frame end of the gradient).">
+          <span class="cn">Raw tracks <span class="h" id="col-raw-h">#ef4444</span></span>
+        </div>
+        <div class="fld" style="margin-top:-2px;">
+          <div class="lbl-row"><span title="Brightness boost (×) for the raw-track gradient end-points.">Raw track brightness</span><span class="v" id="raw-boost-lbl">1.00</span></div>
+          <input type="range" id="raw-boost" min="0.3" max="2.5" step="0.05" value="1.00">
+        </div>
+        <div class="toggle-grid" style="margin-top:6px;">
+          <button class="btn full on" id="t-arc-len-grad" title="Parametrise the per-track gradient by cumulative arc length (default ON) instead of by frame index. Slow-motion frames get a tight band of colour, fast-motion frames stretch it. Applies to history / GT / pred / raw trails (and their balls layer).">gradient by arc length</button>
         </div>
         <div class="color-row">
           <input type="color" id="col-endpoint" value="#fde047" title="Bright accent for the start/end markers.">
@@ -1425,6 +1447,12 @@ const Settings = {
   //   'first'             — pin to frame 0 (input pose).
   // The lastframe bundle overrides this to 'last' via viewer_defaults.
   staticObjFrameMode:     'playhead',
+  // Trail gradient parameterised by per-track cumulative arc length
+  // instead of by frame index. Slow-motion frames get a tight band of
+  // colour, fast-motion frames stretch it. Applies to hist / GT / pred
+  // / raw trails (Panel._buildTrailLayer + the inline raw builder) and
+  // their balls layer.
+  trailGradientByArcLen:  true,
   // When true, skip rendering the static-object GT cloud entirely.
   // Used by the lastframe-MoGe bundle, where the scene PC ALREADY
   // contains the static objects (lifted directly from the last-frame
@@ -1463,6 +1491,9 @@ const Settings = {
   camSmoothWindow: 5,           // odd kernel size; 1 = no smoothing
 };
 const ERR_COLOR = 0x6b7280; // soft gray
+// Module-level white THREE.Color so the trail builder doesn't allocate one
+// per call when the role has no oldEnd-color override.
+const _COL_WHITE = new THREE.Color(0xffffff);
 
 // Background
 const BG_COLOR = 0x555555;   // 3D scene background — mid-grey (darker)
@@ -1808,11 +1839,26 @@ class Panel {
       pred: new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:true, dashSize:0.04, gapSize:0.025 }),
       err:  new LineMaterial({ color: ERR_COLOR, linewidth: 1.4, transparent:true, opacity:0.7, depthTest:false, depthWrite:false, dashed:false }),
     };
-    // THREE.Color cache for per-trail base color (used to build vertex colors).
+    // THREE.Color cache for per-trail NEW-end (vivid / playhead-side) color.
     this.lineBaseCols = {
       hist: new THREE.Color(TRAIL_COLORS.hist),
       gt:   new THREE.Color(TRAIL_COLORS.gt),
       pred: new THREE.Color(TRAIL_COLORS.pred),
+    };
+    // OLD-end (pale / oldest-frame) gradient color, default white so the
+    // legacy 'fade to white' look is preserved exactly when no picker is
+    // bound. Independent per role so the user can do orange→cyan, etc.
+    this.lineBaseColsOld = {
+      hist: new THREE.Color(0xffffff),
+      gt:   new THREE.Color(0xffffff),
+      pred: new THREE.Color(0xffffff),
+    };
+    // Brightness boost (multiplier on each RGB channel, clamped to [0, 1]
+    // post-mul). 1.0 = picker colours unchanged. >1 saturates / brightens
+    // (channels clip to 1, washed-out tones read more vivid against the
+    // scene cloud); <1 dims toward black.
+    this.lineBoost = {
+      hist: 1.0, gt: 1.0, pred: 1.0, raw: 1.0,
     };
     // Raw-track material: same line weight + opacity as the filtered trails,
     // but bright red, *no smoothing*, and a temporal pale-→-vivid gradient
@@ -1824,7 +1870,8 @@ class Panel {
       linewidth: lw, transparent:true, opacity:0.92,
       depthTest:false, depthWrite:false, dashed:false,
     });
-    this.lineBaseCols.raw = new THREE.Color(TRAIL_COLORS.raw);
+    this.lineBaseCols.raw    = new THREE.Color(TRAIL_COLORS.raw);
+    this.lineBaseColsOld.raw = new THREE.Color(0xffffff);
 
     this._setupInput();
     new ResizeObserver(() => { this.applyCamera(); this.render(); }).observe(this.canvas.parentElement);
@@ -2273,16 +2320,30 @@ class Panel {
                    role = null) {
     const segs = [];
     const cols = [];
-    const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
+    // Two-color gradient: oldEnd (pale / oldest frame) → newEnd (vivid /
+    // newest frame). With the legacy default oldEnd=white the math
+    // matches the prior single-color behaviour exactly. `boost`
+    // multiplies each RGB channel and clamps to [0, 1] post-mul so the
+    // user can saturate washed-out colours.
+    const oldCol = (role && this.lineBaseColsOld?.[role]) || _COL_WHITE;
+    const newCol = baseColor;
+    const boost  = (role && this.lineBoost?.[role]) || 1.0;
+    const oR = Math.min(1, oldCol.r * boost);
+    const oG = Math.min(1, oldCol.g * boost);
+    const oB = Math.min(1, oldCol.b * boost);
+    const nR = Math.min(1, newCol.r * boost);
+    const nG = Math.min(1, newCol.g * boost);
+    const nB = Math.min(1, newCol.b * boost);
     const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 1.00;
     const MIX_HI = 1.00;
     const isPaperGrad = mixLoOverride !== null;
     const T_EXP = isPaperGrad ? Settings.paperTExp : Settings.tExp;
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
     const useRainbow = _useRainbowFor(role);
+    const arcLen = !!Settings.trailGradientByArcLen;
     for (const p of ptIdx) {
       const raw = [];           // flat positions (x,-y,-z) for visible frames
-      const rawT = [];          // global gradient t for each visible frame
+      const rawT = [];          // global gradient t for each visible frame (time)
       for (let fi = fStart; fi < fEndExclusive; fi++) {
         if (fi < 0 || fi >= pts3d.length) continue;
         const pt = pts3d[fi]?.[p];
@@ -2295,28 +2356,48 @@ class Panel {
       const m = dense.length / 3;
       if (m < 2) continue;
       const nCtrl = raw.length / 3;
-      // Map dense sample index → global gradient t by interpolating between
-      // the rawT values of the two surrounding control points (Catmull-Rom
-      // hits each control at exact integer multiples of SAMPLES).
-      const tAt = (i) => {
-        const ctrlF = (i / (m - 1)) * (nCtrl - 1);
-        const c0 = Math.floor(ctrlF);
-        const c1 = Math.min(nCtrl - 1, c0 + 1);
-        const f = ctrlF - c0;
-        return rawT[c0] * (1 - f) + rawT[c1] * f;
-      };
+      // Per-vertex gradient parameter t∈[0,1] for the dense (smoothed)
+      // polyline. Two parametrisations:
+      //   * arc-length (default): cumulative path length along the
+      //     dense polyline / total length. Slow-motion frames get
+      //     a tight band of colour, fast-motion frames stretch it.
+      //   * time (legacy): linearly mapped from the raw control-point
+      //     time stamps fi/T via ctrl-point interpolation.
+      const tArr = new Float32Array(m);
+      if (arcLen) {
+        let total = 0;
+        for (let i = 1; i < m; i++) {
+          const dx = dense[i*3]   - dense[(i-1)*3];
+          const dy = dense[i*3+1] - dense[(i-1)*3+1];
+          const dz = dense[i*3+2] - dense[(i-1)*3+2];
+          total += Math.sqrt(dx*dx + dy*dy + dz*dz);
+          tArr[i] = total;
+        }
+        if (total < 1e-9) total = 1;
+        for (let i = 0; i < m; i++) tArr[i] /= total;
+      } else {
+        for (let i = 0; i < m; i++) {
+          const ctrlF = (i / (m - 1)) * (nCtrl - 1);
+          const c0 = Math.floor(ctrlF);
+          const c1 = Math.min(nCtrl - 1, c0 + 1);
+          const f = ctrlF - c0;
+          tArr[i] = rawT[c0] * (1 - f) + rawT[c1] * f;
+        }
+      }
       for (let i = 0; i < m - 1; i++) {
-        const t0g = tAt(i), t1g = tAt(i + 1);
+        const t0 = tArr[i], t1 = tArr[i + 1];
         let cR0, cG0, cB0, cR1, cG1, cB1;
         if (useRainbow) {
-          // Hue cycles with time → no pale-mix needed (hue itself encodes time).
-          [cR0, cG0, cB0] = rainbowRgb01(t0g, role);
-          [cR1, cG1, cB1] = rainbowRgb01(t1g, role);
+          [cR0, cG0, cB0] = rainbowRgb01(t0, role);
+          [cR1, cG1, cB1] = rainbowRgb01(t1, role);
         } else {
-          const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0g, T_EXP);
-          const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1g, T_EXP);
-          cR0 = r0*k0 + (1-k0); cG0 = g0*k0 + (1-k0); cB0 = b0*k0 + (1-k0);
-          cR1 = r0*k1 + (1-k1); cG1 = g0*k1 + (1-k1); cB1 = b0*k1 + (1-k1);
+          const tc0 = t0 < 0 ? 0 : (t0 > 1 ? 1 : t0);
+          const tc1 = t1 < 0 ? 0 : (t1 > 1 ? 1 : t1);
+          const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc0, T_EXP);
+          const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc1, T_EXP);
+          // k=0 → oldEnd, k=1 → newEnd.
+          cR0 = oR * (1 - k0) + nR * k0; cG0 = oG * (1 - k0) + nG * k0; cB0 = oB * (1 - k0) + nB * k0;
+          cR1 = oR * (1 - k1) + nR * k1; cG1 = oG * (1 - k1) + nG * k1; cB1 = oB * (1 - k1) + nB * k1;
         }
         segs.push(dense[i*3],     dense[i*3+1],     dense[i*3+2]);
         segs.push(dense[(i+1)*3], dense[(i+1)*3+1], dense[(i+1)*3+2]);
@@ -2344,26 +2425,63 @@ class Panel {
     const MIX_LO = useGradient ? (mixLoOverride ?? Settings.mixLo) : 0.92;
     const MIX_HI = 1.00;
     const T_EXP  = isPaperGrad ? Settings.paperTExp : Settings.tExp;
-    const r0 = baseColor.r, g0 = baseColor.g, b0 = baseColor.b;
+    const oldCol = (role && this.lineBaseColsOld?.[role]) || _COL_WHITE;
+    const newCol = baseColor;
+    const boost  = (role && this.lineBoost?.[role]) || 1.0;
+    const oR = Math.min(1, oldCol.r * boost);
+    const oG = Math.min(1, oldCol.g * boost);
+    const oB = Math.min(1, oldCol.b * boost);
+    const nR = Math.min(1, newCol.r * boost);
+    const nG = Math.min(1, newCol.g * boost);
+    const nB = Math.min(1, newCol.b * boost);
     const Tdenom = Math.max(1, ((T_total ?? fEndExclusive) - 1));
     const useRainbow = _useRainbowFor(role);
+    const arcLen = !!Settings.trailGradientByArcLen;
 
     const records = [];
     for (const p of ptIdx) {
+      // For arc-length parametrisation, walk the per-track polyline
+      // first (only the visible-and-finite frames within stride steps)
+      // to compute cumulative path length, then emit balls along it.
+      // Falls back to time-based t if arcLen is off.
+      const ptsKept = [];
       for (let fi = fStart; fi < fEndExclusive; fi += stride) {
         if (fi < 0 || fi >= pts3d.length) continue;
         const pt = pts3d[fi]?.[p];
         if (!pt || !Number.isFinite(pt[0])) continue;
-        const t = fi / Tdenom;            // global, fixed-once-set
+        ptsKept.push([pt[0], -pt[1], -pt[2], fi]);
+      }
+      if (!ptsKept.length) continue;
+      let tList;
+      if (arcLen) {
+        let total = 0;
+        const cum = new Float64Array(ptsKept.length);
+        for (let i = 1; i < ptsKept.length; i++) {
+          const dx = ptsKept[i][0] - ptsKept[i-1][0];
+          const dy = ptsKept[i][1] - ptsKept[i-1][1];
+          const dz = ptsKept[i][2] - ptsKept[i-1][2];
+          total += Math.sqrt(dx*dx + dy*dy + dz*dz);
+          cum[i] = total;
+        }
+        if (total < 1e-9) total = 1;
+        tList = new Float64Array(ptsKept.length);
+        for (let i = 0; i < ptsKept.length; i++) tList[i] = cum[i] / total;
+      } else {
+        tList = new Float64Array(ptsKept.length);
+        for (let i = 0; i < ptsKept.length; i++) tList[i] = ptsKept[i][3] / Tdenom;
+      }
+      for (let i = 0; i < ptsKept.length; i++) {
+        const t = tList[i];
         const radius = rMin + (rMax - rMin) * Math.pow(t, T_EXP);
         let cR, cG, cB;
         if (useRainbow) {
           [cR, cG, cB] = rainbowRgb01(t, role);
         } else {
           const k = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t, T_EXP);
-          cR = r0*k + (1-k); cG = g0*k + (1-k); cB = b0*k + (1-k);
+          cR = oR * (1 - k) + nR * k; cG = oG * (1 - k) + nG * k; cB = oB * (1 - k) + nB * k;
         }
-        records.push([pt[0], -pt[1], -pt[2], cR, cG, cB, radius]);
+        const pt = ptsKept[i];
+        records.push([pt[0], pt[1], pt[2], cR, cG, cB, radius]);
       }
     }
     if (!records.length) return;
@@ -2664,11 +2782,19 @@ class Panel {
       const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
-      const baseR = this.lineBaseCols.raw;
-      const r0 = baseR.r, g0 = baseR.g, b0 = baseR.b;
+      const oldR_ = this.lineBaseColsOld?.raw || _COL_WHITE;
+      const newR_ = this.lineBaseCols.raw;
+      const boost_ = this.lineBoost?.raw || 1.0;
+      const oR = Math.min(1, oldR_.r * boost_);
+      const oG = Math.min(1, oldR_.g * boost_);
+      const oB = Math.min(1, oldR_.b * boost_);
+      const nR = Math.min(1, newR_.r * boost_);
+      const nG = Math.min(1, newR_.g * boost_);
+      const nB = Math.min(1, newR_.b * boost_);
       const MIX_LO = isPaper ? Settings.paperMixLo : 0.18;
       const MIX_HI = 1.00;
       const T_EXP  = isPaper ? Settings.paperTExp : 1.00;
+      const arcLen = !!Settings.trailGradientByArcLen;
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -2685,15 +2811,32 @@ class Panel {
         for (const path of subpaths) {
           const m = path.length;
           if (m < 2) continue;
+          // Per-vertex gradient parameter t. Arc length (default) walks
+          // the polyline and normalises by total length; legacy time
+          // mode uses i/(m-1).
+          const tArr = new Float32Array(m);
+          if (arcLen) {
+            let total = 0;
+            for (let i = 1; i < m; i++) {
+              const dx = path[i][0] - path[i-1][0];
+              const dy = path[i][1] - path[i-1][1];
+              const dz = path[i][2] - path[i-1][2];
+              total += Math.sqrt(dx*dx + dy*dy + dz*dz);
+              tArr[i] = total;
+            }
+            if (total < 1e-9) total = 1;
+            for (let i = 0; i < m; i++) tArr[i] /= total;
+          } else {
+            for (let i = 0; i < m; i++) tArr[i] = i / (m - 1);
+          }
           for (let i = 0; i < m - 1; i++) {
-            const t0 = i / (m - 1);
-            const t1 = (i + 1) / (m - 1);
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t0, T_EXP);
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t1, T_EXP);
+            const tc0 = tArr[i], tc1 = tArr[i + 1];
+            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc0, T_EXP);
+            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc1, T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-            cols.push(r0*k0 + (1-k0), g0*k0 + (1-k0), b0*k0 + (1-k0));
-            cols.push(r0*k1 + (1-k1), g0*k1 + (1-k1), b0*k1 + (1-k1));
+            cols.push(oR*(1-k0) + nR*k0, oG*(1-k0) + nG*k0, oB*(1-k0) + nB*k0);
+            cols.push(oR*(1-k1) + nR*k1, oG*(1-k1) + nG*k1, oB*(1-k1) + nB*k1);
           }
         }
       }
@@ -5240,6 +5383,25 @@ function bindControls() {
   // history-color dropdown.
   const colGt = document.getElementById('col-gt');
   if (colGt) colGt.oninput = (e) => setRoleColor('gt', e.target.value);
+  const colGtOld = document.getElementById('col-gt-old');
+  if (colGtOld) colGtOld.oninput = (e) => setRoleColorOld('gt', e.target.value);
+  const colRaw = document.getElementById('col-raw');
+  if (colRaw) colRaw.oninput = (e) => setRoleColor('raw', e.target.value);
+  const colRawOld = document.getElementById('col-raw-old');
+  if (colRawOld) colRawOld.oninput = (e) => setRoleColorOld('raw', e.target.value);
+  wireSlider('gt-boost', 'gt-boost-lbl', v => v.toFixed(2),
+             v => { setRoleBoost('gt', v); });
+  wireSlider('raw-boost', 'raw-boost-lbl', v => v.toFixed(2),
+             v => { setRoleBoost('raw', v); });
+  const tArcLen = document.getElementById('t-arc-len-grad');
+  if (tArcLen) {
+    tArcLen.classList.toggle('on', Settings.trailGradientByArcLen);
+    tArcLen.onclick = () => {
+      Settings.trailGradientByArcLen = !Settings.trailGradientByArcLen;
+      tArcLen.classList.toggle('on', Settings.trailGradientByArcLen);
+      rerenderAll();
+    };
+  }
   // Inline alpha sliders for the colour rows. setRoleAlpha lives below
   // setRoleColor and walks every panel's lineMats[role] in place.
   const wireAlpha = (id, lblId, onChange) => {
@@ -5268,6 +5430,10 @@ function bindControls() {
   });
   const colPred = document.getElementById('col-pred');
   if (colPred) colPred.oninput = (e) => setRoleColor('pred', e.target.value);
+  const colPredOld = document.getElementById('col-pred-old');
+  if (colPredOld) colPredOld.oninput = (e) => setRoleColorOld('pred', e.target.value);
+  wireSlider('pred-boost', 'pred-boost-lbl', v => v.toFixed(2),
+             v => { setRoleBoost('pred', v); });
   // Endpoint accent color (start/end spheres). Live-applied to all panels.
   const colEnd = document.getElementById('col-endpoint');
   if (colEnd) colEnd.oninput = (e) => {
@@ -5761,6 +5927,28 @@ function setRoleColor(role, hex) {
   if (_histColorMode === role) setHistoryColor(role);
   // Time legend uses GT's hue
   if (role === 'gt') buildTimeLegend();
+  rerenderAll();
+}
+
+// OLD-end (oldest-frame / pale) gradient color for a role's trail.
+// Default white reproduces the legacy single-color 'fade to white' look;
+// flipping to e.g. cyan turns the trail into a cyan→pink (or whatever
+// newEnd is) gradient over arc length.
+function setRoleColorOld(role, hex) {
+  const col = new THREE.Color(parseInt(hex.replace('#',''), 16));
+  for (const p of panels) {
+    if (p.lineBaseColsOld?.[role]) p.lineBaseColsOld[role].copy(col);
+  }
+  rerenderAll();
+}
+
+// Per-role brightness boost (multiplier applied to both gradient ends
+// before the lerp, with channels clamped to [0, 1] post-mul).
+function setRoleBoost(role, v) {
+  const b = Math.max(0.05, Number(v) || 1.0);
+  for (const p of panels) {
+    if (p.lineBoost) p.lineBoost[role] = b;
+  }
   rerenderAll();
 }
 
