@@ -1007,6 +1007,19 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full" id="rot-reset" title="Reset all three rotation dials to 0°.">reset rotation</button>
         </div>
+
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:14px 0 4px 0;">Initial-PC tracked markers</div>
+        <div class="toggle-grid">
+          <button class="btn full on" id="t-tracked-markers" title="On the Initial-object-PC panel (⑤), overlay a vivid disc on every track that gets a polyline in the big panel. Lets you see WHICH surface points the trails follow.">show tracked markers</button>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Marker disc size in CSS pixels.">Marker size (px)</span><span class="v" id="tracked-marker-size-lbl">16.0</span></div>
+          <input type="range" id="tracked-marker-size" min="2" max="60" step="0.5" value="16">
+        </div>
+        <div class="color-row">
+          <input type="color" id="tracked-marker-col" value="#ff3366" title="Marker disc colour. Pick a high-contrast tone so the markers pop against the per-point sampled-RGB cloud underneath.">
+          <span class="cn">Marker colour</span>
+        </div>
       </div>
     </details>
 
@@ -1392,6 +1405,16 @@ const Settings = {
   // active, orbit is disabled so dragging only erases.
   eraserMode:             false,
   eraserSizePx:           30,
+  // Tracked-point markers on the Initial-object-PC panel (panel ⑤).
+  // The polyline trail builder picks a sub-sample of the moving
+  // object's tracks (Settings.objectCloudTrailCount, default 256);
+  // those are the points that get a visible polyline through time.
+  // The marker layer overlays a vivid disc on each of them in the
+  // initial-PC view so the user can see WHICH surface points the
+  // trails actually follow. Size is in CSS pixels; colour is hex.
+  trackedMarkerOnInitial: true,
+  trackedMarkerSize:      16.0,
+  trackedMarkerColor:     '#ff3366',
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -1961,15 +1984,20 @@ class Panel {
 
   render() {
     this._resizeRenderer();
-    // Apply user-dialled scene rotation (degrees → radians) on top of
-    // the orbit camera. Affects every child of the scene root, so the
-    // ground grid, PC, trails, and ghost frames all rotate together.
+    // Apply user-dialled scene rotation (degrees → radians) to the
+    // CONTENT groups only — staticGroup (scene PC) and dynGroup
+    // (object cloud + trails + ghosts). The ground grid lives at the
+    // scene root (added in _refreshGroundGrid below) and is NOT
+    // rotated, so the user can dial X/Y/Z on the cloud to align the
+    // scene to the fixed-orientation grid (e.g., to make the
+    // tabletop sit flat on the grid plane).
     const DEG = Math.PI / 180;
-    this.scene.rotation.set(
-      (Settings.sceneRotX || 0) * DEG,
-      (Settings.sceneRotY || 0) * DEG,
-      (Settings.sceneRotZ || 0) * DEG,
-    );
+    const rx = (Settings.sceneRotX || 0) * DEG;
+    const ry = (Settings.sceneRotY || 0) * DEG;
+    const rz = (Settings.sceneRotZ || 0) * DEG;
+    this.scene.rotation.set(0, 0, 0);
+    this.staticGroup.rotation.set(rx, ry, rz);
+    this.dynGroup.rotation.set(rx, ry, rz);
     this._refreshGroundGrid();
     this.renderer.render(this.scene, this.camera);
   }
@@ -2519,6 +2547,9 @@ class Panel {
     // doesn't suppress this view.
     if (this.opts.firstFrameMovingCloud && cfg.pt_colors_rgb && clipData?._gt3d) {
       this._addObjectCloudLayer(cfg, 0, 1.0, 'moving');
+      if (Settings.trackedMarkerOnInitial) {
+        this._addTrackedPointMarkers(cfg);
+      }
       return;
     }
 
@@ -2910,6 +2941,82 @@ class Panel {
     this._frustumMat.linewidth = Settings.frustumLineWidth;
     this._frustumMat.resolution.set(this.canvas.width || 600, this.canvas.height || 400);
     return this._frustumMat;
+  }
+
+  // Marker dots on the moving object's frame-0 surface, drawn at the
+  // SAME track ids the polyline trail builder picks (moving-object
+  // tracks sub-sampled to Settings.objectCloudTrailCount). Used by the
+  // Initial-object-PC panel (panel ⑤) so the viewer can see exactly
+  // which surface points get a trail in the big panel. Decoded straight
+  // from clipData._gt3d at frame 0 — no extra storage.
+  _addTrackedPointMarkers(cfg) {
+    if (!clipData?._gt3d) return;
+    const { N, F, quant, center, half, motionMag, obj_ids, visBytes } = clipData._gt3d;
+    if (F === 0 || N === 0) return;
+    const cx = center[0], cy = center[1], cz = center[2];
+    const hx = half[0],   hy = half[1],   hz = half[2];
+    const SENT = -32768, K = 1 / 32767;
+    const M = Math.min(Settings.objectCloudTrailCount | 0, N);
+    if (M <= 0) return;
+
+    // Mirror the trail builder's selection logic so markers align 1:1
+    // with the polyline subset.
+    const movObj = this._resolveMovingObj();
+    if (movObj < 0) return;
+    const motionMin = Math.max(0, Settings.motionMinMag || 0);
+    const pool = [];
+    for (let p = 0; p < N; p++) {
+      if (obj_ids && obj_ids[p] !== movObj) continue;
+      if (motionMag && motionMag[p] < motionMin) continue;
+      pool.push(p);
+    }
+    let trackIds;
+    if (pool.length <= M) {
+      trackIds = pool;
+    } else {
+      trackIds = new Array(M);
+      const step = pool.length / M;
+      for (let i = 0; i < M; i++) trackIds[i] = pool[Math.floor(i * step)];
+    }
+    if (!trackIds.length) return;
+
+    // Decode frame-0 positions for every selected track. Skip tracks
+    // that aren't annotated at frame 0 (SENT) or that are occluded
+    // there (visBytes[p] === 0).
+    const pos = new Float32Array(trackIds.length * 3);
+    let n = 0;
+    for (let i = 0; i < trackIds.length; i++) {
+      const p = trackIds[i];
+      const baseIdx = (0 * N + p) * 3;
+      const qx = quant[baseIdx];
+      if (qx === SENT) continue;
+      if (visBytes && !visBytes[0 * N + p]) continue;
+      const qy = quant[baseIdx + 1];
+      const qz = quant[baseIdx + 2];
+      pos[n*3]   =  (qx * K) * hx + cx;
+      pos[n*3+1] = -((qy * K) * hy + cy);   // y/z scene flip
+      pos[n*3+2] = -((qz * K) * hz + cz);
+      n++;
+    }
+    if (n === 0) return;
+
+    const mc = new THREE.Color(Settings.trackedMarkerColor || '#ff3366');
+    const cols = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      cols[i*3]   = mc.r; cols[i*3+1] = mc.g; cols[i*3+2] = mc.b;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos.subarray(0, n*3), 3));
+    g.setAttribute('color',    new THREE.BufferAttribute(cols, 3));
+    const size = Math.max(1, Number(Settings.trackedMarkerSize) || 16.0);
+    // forceTransparent so the markers participate in the transparent
+    // queue — that gets them drawn AFTER the per-track-RGB cloud, so
+    // they pop on top instead of being z-occluded by the underlying
+    // moving-cloud point at the same anchor pixel.
+    const mat = makeDiscMaterial({ size, alpha: 1.0, forceTransparent: true });
+    const pts = new THREE.Points(g, mat);
+    pts.renderOrder = 20;
+    this.dynGroup.add(pts);
   }
 
   // Render gt_3d at one specific frame as a colored Points cloud using
@@ -5275,6 +5382,23 @@ function bindControls() {
       const el = document.getElementById(id);
       if (el) { el.value = 0; el.dispatchEvent(new Event('input')); }
     }
+    rerenderAll();
+  };
+
+  const tTracked = document.getElementById('t-tracked-markers');
+  if (tTracked) {
+    tTracked.classList.toggle('on', Settings.trackedMarkerOnInitial);
+    tTracked.onclick = () => {
+      Settings.trackedMarkerOnInitial = !Settings.trackedMarkerOnInitial;
+      tTracked.classList.toggle('on', Settings.trackedMarkerOnInitial);
+      rerenderAll();
+    };
+  }
+  wireSlider('tracked-marker-size', 'tracked-marker-size-lbl', v => v.toFixed(1),
+             v => { Settings.trackedMarkerSize = v; rerenderAll(); });
+  const trackedCol = document.getElementById('tracked-marker-col');
+  if (trackedCol) trackedCol.oninput = (e) => {
+    Settings.trackedMarkerColor = e.target.value;
     rerenderAll();
   };
   wireSlider('obj-cloud-trail-count', 'obj-cloud-trail-count-lbl', v => `${v|0}`,
