@@ -1975,9 +1975,14 @@ class Panel {
   }
 
   // (Re)build the panel's ground-grid helper into a top-level scene
-  // child so it doesn't get cleared by buildStatic. We re-create on
-  // every render because the slider changes need to land cheaply
-  // (GridHelper is a few-hundred-vertex Line; rebuild cost is trivial).
+  // child so it inherits scene.rotation (set above in render()). We
+  // build it as Line2 / LineMaterial rather than THREE.GridHelper
+  // because GridHelper's underlying LineBasicMaterial ignores
+  // linewidth > 1 on most WebGL platforms — Line2 is the only path
+  // that respects the slider. Geometry rebuilds cheaply (a few
+  // hundred segments) and only when one of the signature fields
+  // changes; the material's linewidth/opacity/colour update in place
+  // so dragging the sliders is smooth.
   _refreshGroundGrid() {
     if (!Settings.groundGrid) {
       if (this._groundGrid) {
@@ -1994,24 +1999,48 @@ class Panel {
     const col   = new THREE.Color(Settings.groundGridColor || '#666666');
     const op    = Math.max(0, Math.min(1, Number(Settings.groundGridOpacity) ?? 0.45));
     const lw    = Math.max(0.1, Number(Settings.groundGridLineWidth) || 1.0);
-    // Cheap signature so we only rebuild when something actually changed.
-    const key = `${size}|${divs}|${y}|${col.getHexString()}|${op}|${lw}`;
-    if (this._groundGrid && this._groundGrid.userData.key === key) return;
-    if (this._groundGrid) {
-      this.scene.remove(this._groundGrid);
-      this._groundGrid.geometry.dispose();
-      this._groundGrid.material.dispose();
+    // Geometry sig — only the cell layout requires a rebuild. Y / colour /
+    // opacity / line width are pushed through the existing object below.
+    const geomKey = `${size}|${divs}`;
+    if (!this._groundGrid || this._groundGrid.userData.geomKey !== geomKey) {
+      if (this._groundGrid) {
+        this.scene.remove(this._groundGrid);
+        this._groundGrid.geometry.dispose();
+        this._groundGrid.material.dispose();
+      }
+      const segs = [];
+      const half = size / 2;
+      const step = size / divs;
+      for (let i = 0; i <= divs; i++) {
+        const t = -half + i * step;
+        // Line along X at z = t
+        segs.push(-half, 0, t,  half, 0, t);
+        // Line along Z at x = t
+        segs.push(t, 0, -half,  t, 0,  half);
+      }
+      const g = new LineSegmentsGeometry();
+      g.setPositions(segs);
+      const mat = new LineMaterial({
+        color: col.getHex(), linewidth: lw,
+        transparent: true, opacity: op,
+        depthTest: true, depthWrite: false, dashed: false,
+      });
+      mat.resolution.set(this.canvas.width || 600, this.canvas.height || 360);
+      const lines = new LineSegments2(g, mat);
+      lines.renderOrder = -1;
+      lines.userData.geomKey = geomKey;
+      this._groundGrid = lines;
+      this.scene.add(lines);
     }
-    const g = new THREE.GridHelper(size, divs, col, col);
-    g.material.transparent = true;
-    g.material.opacity = op;
-    g.material.linewidth = lw;
-    g.material.depthWrite = false;
-    g.position.set(0, y, 0);
-    g.userData.key = key;
-    g.renderOrder = -1;   // behind clouds + trails
-    this._groundGrid = g;
-    this.scene.add(g);
+    // Always refresh per-frame attributes so slider drags push through.
+    this._groundGrid.position.set(0, y, 0);
+    const m = this._groundGrid.material;
+    m.color.copy(col);
+    m.opacity = op;
+    m.linewidth = lw;
+    m.transparent = true;
+    m.resolution.set(this.canvas.width || 600, this.canvas.height || 360);
+    m.needsUpdate = true;
   }
 
   buildStatic(clipData, cfg) {
@@ -2950,7 +2979,14 @@ class Panel {
           : obj_ids[p] !== movObj;
       };
       const base = fi * N * 3;
-      const visBase = visBytes ? (fi * N) : 0;
+      // In prediction mode, the moving cloud is meant to communicate
+      // 'these are the FRAME-0 points moving through time'. Use frame-
+      // 0's visibility bitmap as the filter, regardless of which frame
+      // we're rendering. So every frame-0-visible track appears at
+      // every frame's position (subject to position SENT for missing
+      // annotations). The static cloud is unaffected.
+      const visFrame = (Settings.predictionMode && objFilter === 'moving') ? 0 : fi;
+      const visBase = visBytes ? (visFrame * N) : 0;
       let M = 0;
       for (let p = 0; p < N; p++) {
         if (quant[base + p*3] === SENT) continue;
