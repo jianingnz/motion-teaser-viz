@@ -824,6 +824,7 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full on" id="t-object-cloud-trails" title="Per-track trail polylines for the object cloud, vertex-coloured pale→vivid by time.">object cloud trails</button>
           <button class="btn full" id="t-object-cloud-trail-honor-vis" title="OFF (default): the trail uses GT mesh-pose positions through occluded frames so the polyline stays smooth across visibility gaps. ON: the trail breaks (cuts) at frames where the track is occluded — the legacy 'visible-only' look.">trail honors visibility</button>
+          <button class="btn full on" id="t-prediction-mode" title="ON (default): frame 0 of the moving object is drawn SOLID as the 'known input', every ghost frame and the playhead are drawn at ghost-opacity (the 'predicted future'), and the trail spans frame 0 → playhead regardless of trail-length. OFF: legacy mode — playhead is solid, ghost frames are ghost.">prediction mode</button>
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Number of object-cloud tracks to draw a trail polyline for. Tracks are sub-sampled evenly within the auto-detected moving object's surface points (HOT3D = the manipulated object). Drag up to the per-object track count to render every track of the moving object.">Trail # tracks</span><span class="v" id="obj-cloud-trail-count-lbl">256</span></div>
@@ -862,8 +863,8 @@ footer a { color: #2563eb; text-decoration: none; }
           <input type="range" id="motion-min" min="0" max="0.5" step="0.001" value="0">
         </div>
         <div class="fld" style="margin-top:6px;">
-          <div class="lbl-row"><span title="Comma-separated frame indices to render the GT object cloud at as transparent ghosts (e.g. '0, 45'). Lets a single still image read as 'object was here, then here, now solid here'.">Ghost frames</span></div>
-          <input type="text" id="ghost-frames" value="0, 45"
+          <div class="lbl-row"><span title="Comma-separated frame indices to render the moving object cloud at as transparent ghosts. In prediction mode, frame 0 is ALWAYS drawn solid (the 'known input') and is automatically excluded from this ghost list — leave 42 here to ghost the mid-clip pose, or add more frames like '42, 80'.">Ghost frames</span></div>
+          <input type="text" id="ghost-frames" value="42"
                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-family:monospace;font-size:.7rem;">
         </div>
         <div class="fld">
@@ -943,7 +944,68 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:10px 0 4px 0;">Scene PC editing</div>
         <div class="toggle-grid">
           <button class="btn on" id="t-pc-click" title="Click any point in a 3D panel to hide it. Off = clicks orbit the camera only.">click to hide</button>
+          <button class="btn" id="t-eraser" title="Hold-and-drag eraser. While ON, the cursor becomes a screen-space disc; mouse-down + drag hides every PC point under it. Orbit is suspended during the drag.">eraser</button>
           <button class="btn full" id="pc-hidden-reset" title="Restore every point hidden by clicks for the current clip.">↺ restore all hidden points (<span id="pc-hidden-count">0</span>)</button>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Pixel radius of the eraser disc, measured in screen-space. Higher = wider strokes hide more points per drag.">Eraser size (px)</span><span class="v" id="eraser-size-lbl">30</span></div>
+          <input type="range" id="eraser-size" min="4" max="200" step="1" value="30">
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="World-space ray tolerance for click-to-hide, expressed as a fraction of the scene spread. Smaller = stricter (only the literal nearest point under the cursor gets hidden); larger = forgiving but may hit nearby points.">Click radius (× spread)</span><span class="v" id="pc-click-radius-lbl">0.003</span></div>
+          <input type="range" id="pc-click-radius" min="0.0005" max="0.03" step="0.0005" value="0.003">
+        </div>
+
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:14px 0 4px 0;">Ground grid</div>
+        <div class="toggle-grid">
+          <button class="btn full" id="t-ground-grid" title="Toggle the flat reference grid drawn at y = Ground Y. Useful as a 'floor' anchor when judging the scale of the moving object's path.">ground grid</button>
+        </div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Total side length of the grid square, metres.">Grid size (m)</span><span class="v" id="grid-size-lbl">3.0</span></div>
+            <input type="range" id="grid-size" min="0.2" max="20" step="0.1" value="3.0">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Number of cells along each axis.">Grid cells</span><span class="v" id="grid-divs-lbl">20</span></div>
+            <input type="range" id="grid-divs" min="2" max="80" step="1" value="20">
+          </div>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="World-y of the grid plane (HOT3D anchor coords: positive Y is DOWN, so positive values place the grid below the camera origin).">Grid Y (m)</span><span class="v" id="grid-y-lbl">0.50</span></div>
+          <input type="range" id="grid-y" min="-3.0" max="3.0" step="0.01" value="0.50">
+        </div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Grid line opacity.">Grid opacity</span><span class="v" id="grid-opacity-lbl">0.45</span></div>
+            <input type="range" id="grid-opacity" min="0" max="1" step="0.02" value="0.45">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Grid line width (px).">Grid line width</span><span class="v" id="grid-lw-lbl">1.0</span></div>
+            <input type="range" id="grid-lw" min="0.3" max="6" step="0.1" value="1.0">
+          </div>
+        </div>
+        <div class="color-row">
+          <input type="color" id="grid-col" value="#666666" title="Grid line color.">
+          <span class="cn">Grid colour</span>
+        </div>
+
+        <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:14px 0 4px 0;">Scene rotation (deg)</div>
+        <div class="fld-grid">
+          <div class="fld">
+            <div class="lbl-row"><span title="Rotation around X (pitch). Applied on top of mouse-drag orbit.">X</span><span class="v" id="rot-x-lbl">0</span></div>
+            <input type="range" id="rot-x" min="-180" max="180" step="1" value="0">
+          </div>
+          <div class="fld">
+            <div class="lbl-row"><span title="Rotation around Y (yaw).">Y</span><span class="v" id="rot-y-lbl">0</span></div>
+            <input type="range" id="rot-y" min="-180" max="180" step="1" value="0">
+          </div>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Rotation around Z (roll).">Z</span><span class="v" id="rot-z-lbl">0</span></div>
+          <input type="range" id="rot-z" min="-180" max="180" step="1" value="0">
+        </div>
+        <div class="toggle-grid" style="margin-top:6px;">
+          <button class="btn full" id="rot-reset" title="Reset all three rotation dials to 0°.">reset rotation</button>
         </div>
       </div>
     </details>
@@ -1230,7 +1292,8 @@ const Settings = {
   // PC drops the same point. Object-only / extras / altPC panels ignore
   // clicks. Reset via the "Reset hidden PC" button in the Layers section.
   pcClickHide:    true,
-  pcClickRadius:  0.01,         // fraction of trajectory spread → world threshold
+  pcClickRadius:  0.003,        // fraction of trajectory spread → world threshold
+                                // (smaller = only the literal nearest point gets hidden)
 
   // ── HOT3D / object cloud mode ──────────────────────────────────
   // For bundles that ship a per-scene-point 2D-track distance (HOT3D
@@ -1300,8 +1363,35 @@ const Settings = {
   // history (e.g., "the bottle was here at frame 0, then here at 45,
   // and now solid here at the playhead"). Frames in this list that
   // equal the current playhead are skipped (no double-render).
-  ghostFrames:            [0, 45],
+  ghostFrames:            [42],
   ghostOpacity:           0.30,
+  // HOT3D prediction mode: render the moving-object cloud at frame 0
+  // SOLID (the "known input"), every ghost frame + the playhead at
+  // ghostOpacity (the "predicted" future), and extend the trail back
+  // to frame 0 regardless of trail-length so the trail reads as
+  // 'frame-0 points → predicted trajectory'.
+  predictionMode:         true,
+  // Ground grid helper. Y-offset is the world-y of the grid plane; in
+  // HOT3D anchor coords positive Y is DOWN (display convention) so a
+  // positive groundGridY drops the grid below the camera/origin.
+  groundGrid:             false,
+  groundGridSize:         3.0,
+  groundGridDivisions:    20,
+  groundGridY:            0.5,
+  groundGridColor:        '#666666',
+  groundGridOpacity:      0.45,
+  groundGridLineWidth:    1.0,
+  // Scene rotation (degrees), applied to each panel's scene root in
+  // addition to the mouse-driven yaw/pitch orbit. Independent X/Y/Z
+  // dials so the user can lock a specific orientation.
+  sceneRotX:              0,
+  sceneRotY:              0,
+  sceneRotZ:              0,
+  // Eraser tool — hides every PC point whose screen-space distance to
+  // the cursor is < eraserSizePx while the mouse is held down. While
+  // active, orbit is disabled so dragging only erases.
+  eraserMode:             false,
+  eraserSizePx:           30,
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -1704,12 +1794,23 @@ class Panel {
 
   _setupInput() {
     let drag = false, pm = {x:0, y:0}, downXY = null, moved = 0;
+    let erasing = false;
     this.canvas.addEventListener('mousedown', e => {
-      drag = true; pm = {x:e.clientX, y:e.clientY};
-      downXY = {x:e.clientX, y:e.clientY}; moved = 0;
+      if (Settings.eraserMode) {
+        erasing = true;
+        this._eraserBuildCache();
+        this._eraseAt(e);
+      } else {
+        drag = true; pm = {x:e.clientX, y:e.clientY};
+        downXY = {x:e.clientX, y:e.clientY}; moved = 0;
+      }
     });
-    window.addEventListener('mouseup', () => { drag=false; });
+    window.addEventListener('mouseup', () => {
+      drag = false;
+      if (erasing) { erasing = false; this._eraseCache = null; }
+    });
     this.canvas.addEventListener('mousemove', e => {
+      if (erasing) { this._eraseAt(e); return; }
       if (!drag) return;
       moved += Math.abs(e.clientX - pm.x) + Math.abs(e.clientY - pm.y);
       camState.yaw -= (e.clientX - pm.x) * 0.005;
@@ -1727,10 +1828,76 @@ class Panel {
     // Click-to-hide for the main scene PC. We piggy-back on mouseup
     // (instead of the native `click` event) so we can reject clicks that
     // were actually orbit drags. `moved < 4 px` ⇒ treat as a true click.
+    // In eraser mode the drag IS the action, so suppress click-to-hide.
     this.canvas.addEventListener('mouseup', (e) => {
+      if (Settings.eraserMode) return;
       if (moved >= 4) return;
       this._handlePCClick(e);
     });
+  }
+
+  // Pre-project every visible main-PC point to screen coords once at
+  // eraser-drag-start so the per-pointermove inner loop is a flat
+  // distance check (~Nfloat ops) rather than a full N×matrix-mul. The
+  // cache is dropped on mouseup so a moved camera/scrub will refresh
+  // it on the next eraser stroke.
+  _eraserBuildCache() {
+    this._eraseCache = [];
+    if (!clipData?._pc) return;
+    const rect = this.canvas.getBoundingClientRect();
+    this._eraseRect = rect;
+    const v = new THREE.Vector3();
+    // Ensure every parent transform (incl. the scene-rotation we apply
+    // inside render()) is reflected in matrixWorld before we project.
+    this.scene.updateMatrixWorld(true);
+    this.staticGroup.traverse(obj => {
+      if (!obj.isPoints || obj.userData?.pcKind !== 'main') return;
+      const positions = obj.geometry.attributes.position.array;
+      const map = obj.userData.indexMap;
+      const M = (positions.length / 3) | 0;
+      const m = obj.matrixWorld;
+      const sx = new Float32Array(M);
+      const sy = new Float32Array(M);
+      const idx = new Int32Array(M);
+      let n = 0;
+      for (let i = 0; i < M; i++) {
+        v.set(positions[i*3], positions[i*3+1], positions[i*3+2]);
+        v.applyMatrix4(m).project(this.camera);
+        if (v.z < -1 || v.z > 1) continue;       // outside near/far frustum
+        sx[n] = (v.x + 1) * 0.5 * rect.width;
+        sy[n] = (1 - v.y) * 0.5 * rect.height;
+        idx[n] = (map && Number.isFinite(map[i])) ? map[i] : i;
+        n++;
+      }
+      this._eraseCache.push({
+        sx: sx.subarray(0, n),
+        sy: sy.subarray(0, n),
+        idx: idx.subarray(0, n),
+      });
+    });
+  }
+
+  _eraseAt(e) {
+    if (!this._eraseCache || !clipData) return;
+    const rect = this._eraseRect || this.canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left;
+    const cy = e.clientY - rect.top;
+    const r  = Math.max(1, Number(Settings.eraserSizePx) || 30);
+    const r2 = r * r;
+    if (!clipData._pcHidden) clipData._pcHidden = new Set();
+    let dirtied = false;
+    for (const c of this._eraseCache) {
+      const n = c.sx.length;
+      for (let i = 0; i < n; i++) {
+        const dx = c.sx[i] - cx, dy = c.sy[i] - cy;
+        if (dx*dx + dy*dy > r2) continue;
+        if (!clipData._pcHidden.has(c.idx[i])) {
+          clipData._pcHidden.add(c.idx[i]);
+          dirtied = true;
+        }
+      }
+    }
+    if (dirtied) rebuildAllStatic();
   }
 
   // Raycast against the panel's main scene PC and add the hit point's
@@ -1794,7 +1961,57 @@ class Panel {
 
   render() {
     this._resizeRenderer();
+    // Apply user-dialled scene rotation (degrees → radians) on top of
+    // the orbit camera. Affects every child of the scene root, so the
+    // ground grid, PC, trails, and ghost frames all rotate together.
+    const DEG = Math.PI / 180;
+    this.scene.rotation.set(
+      (Settings.sceneRotX || 0) * DEG,
+      (Settings.sceneRotY || 0) * DEG,
+      (Settings.sceneRotZ || 0) * DEG,
+    );
+    this._refreshGroundGrid();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // (Re)build the panel's ground-grid helper into a top-level scene
+  // child so it doesn't get cleared by buildStatic. We re-create on
+  // every render because the slider changes need to land cheaply
+  // (GridHelper is a few-hundred-vertex Line; rebuild cost is trivial).
+  _refreshGroundGrid() {
+    if (!Settings.groundGrid) {
+      if (this._groundGrid) {
+        this.scene.remove(this._groundGrid);
+        this._groundGrid.geometry.dispose();
+        this._groundGrid.material.dispose();
+        this._groundGrid = null;
+      }
+      return;
+    }
+    const size  = Math.max(0.05, Number(Settings.groundGridSize) || 3.0);
+    const divs  = Math.max(1, (Number(Settings.groundGridDivisions) || 20) | 0);
+    const y     = Number(Settings.groundGridY) || 0;
+    const col   = new THREE.Color(Settings.groundGridColor || '#666666');
+    const op    = Math.max(0, Math.min(1, Number(Settings.groundGridOpacity) ?? 0.45));
+    const lw    = Math.max(0.1, Number(Settings.groundGridLineWidth) || 1.0);
+    // Cheap signature so we only rebuild when something actually changed.
+    const key = `${size}|${divs}|${y}|${col.getHexString()}|${op}|${lw}`;
+    if (this._groundGrid && this._groundGrid.userData.key === key) return;
+    if (this._groundGrid) {
+      this.scene.remove(this._groundGrid);
+      this._groundGrid.geometry.dispose();
+      this._groundGrid.material.dispose();
+    }
+    const g = new THREE.GridHelper(size, divs, col, col);
+    g.material.transparent = true;
+    g.material.opacity = op;
+    g.material.linewidth = lw;
+    g.material.depthWrite = false;
+    g.position.set(0, y, 0);
+    g.userData.key = key;
+    g.renderOrder = -1;   // behind clouds + trails
+    this._groundGrid = g;
+    this.scene.add(g);
   }
 
   buildStatic(clipData, cfg) {
@@ -2302,15 +2519,30 @@ class Panel {
       //                    drawn LAST → always on top of its trail
       this._addObjectCloudLayer(cfg, fiClamp, 1.0, 'static');
       const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
+      const predMode = !!Settings.predictionMode;
+      // Prediction-mode draw order:
+      //   * frame 0  (moving) — SOLID — the "known input" frame
+      //   * each user-listed ghost frame (moving) — at ghostOpacity
+      //   * playhead (moving) — at ghostOpacity (the "predicted now")
+      // Without prediction mode the legacy order is kept: ghost frames
+      // are drawn semi-transparent and the playhead's moving cloud is
+      // solid as the foreground.
+      if (predMode && fiClamp > 0) {
+        this._addObjectCloudLayer(cfg, 0, 1.0, 'moving');
+      }
       for (const gf of ghosts) {
         const f = Math.round(gf);
         if (!Number.isFinite(f) || f < 0 || f >= T || f === fiClamp) continue;
+        // In prediction mode the frame-0 'ghost' would double-draw on
+        // top of the solid frame-0 cloud — skip it.
+        if (predMode && f === 0) continue;
         this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity, 'moving');
       }
       if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
         this._addObjectCloudTrails(cfg, fiClamp);
       }
-      this._addObjectCloudLayer(cfg, fiClamp, 1.0, 'moving');
+      const playheadAlpha = (predMode && fiClamp > 0) ? Settings.ghostOpacity : 1.0;
+      this._addObjectCloudLayer(cfg, fiClamp, playheadAlpha, 'moving');
     }
     if (!isPaper && fiFrac < 0) return;
 
@@ -2836,7 +3068,13 @@ class Panel {
   // when present, falls back to the nested-array cfg.gt_3d otherwise.
   _addObjectCloudTrails(cfg, fiNow) {
     const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
-    const fStart   = Math.max(0, fiNow - trailLen);
+    // Prediction mode anchors the trail at frame 0 (full history), so
+    // every track's polyline reads as "frame-0 input → frame-fiNow
+    // predicted position", regardless of how short the trail-length
+    // slider is set. Otherwise use the rolling trailLen window.
+    const fStart   = Settings.predictionMode
+      ? 0
+      : Math.max(0, fiNow - trailLen);
     // Two-color gradient between the oldest-frame end and the newest-
     // frame end of the trail window. The 'colorBoost' multiplier scales
     // each RGB channel and clamps to [0, 1] — values >1 saturate the
@@ -4937,6 +5175,72 @@ function bindControls() {
       rerenderAll();
     };
   }
+  const tPredMode = document.getElementById('t-prediction-mode');
+  if (tPredMode) {
+    tPredMode.classList.toggle('on', Settings.predictionMode);
+    tPredMode.onclick = () => {
+      Settings.predictionMode = !Settings.predictionMode;
+      tPredMode.classList.toggle('on', Settings.predictionMode);
+      rerenderAll();
+    };
+  }
+  const tEraser = document.getElementById('t-eraser');
+  if (tEraser) {
+    tEraser.classList.toggle('on', Settings.eraserMode);
+    tEraser.onclick = () => {
+      Settings.eraserMode = !Settings.eraserMode;
+      tEraser.classList.toggle('on', Settings.eraserMode);
+      // Visual cue: change cursor on every panel canvas while eraser active.
+      document.querySelectorAll('canvas').forEach(c => {
+        c.style.cursor = Settings.eraserMode ? 'crosshair' : '';
+      });
+    };
+  }
+  wireSlider('eraser-size', 'eraser-size-lbl', v => `${v|0}`,
+             v => { Settings.eraserSizePx = v|0; });
+  wireSlider('pc-click-radius', 'pc-click-radius-lbl', v => v.toFixed(4),
+             v => { Settings.pcClickRadius = v; });
+
+  const tGroundGrid = document.getElementById('t-ground-grid');
+  if (tGroundGrid) {
+    tGroundGrid.classList.toggle('on', Settings.groundGrid);
+    tGroundGrid.onclick = () => {
+      Settings.groundGrid = !Settings.groundGrid;
+      tGroundGrid.classList.toggle('on', Settings.groundGrid);
+      rerenderAll();
+    };
+  }
+  wireSlider('grid-size', 'grid-size-lbl', v => v.toFixed(2),
+             v => { Settings.groundGridSize = v; rerenderAll(); });
+  wireSlider('grid-divs', 'grid-divs-lbl', v => `${v|0}`,
+             v => { Settings.groundGridDivisions = v|0; rerenderAll(); });
+  wireSlider('grid-y', 'grid-y-lbl', v => v.toFixed(2),
+             v => { Settings.groundGridY = v; rerenderAll(); });
+  wireSlider('grid-opacity', 'grid-opacity-lbl', v => v.toFixed(2),
+             v => { Settings.groundGridOpacity = v; rerenderAll(); });
+  wireSlider('grid-lw', 'grid-lw-lbl', v => v.toFixed(1),
+             v => { Settings.groundGridLineWidth = v; rerenderAll(); });
+  const gridCol = document.getElementById('grid-col');
+  if (gridCol) gridCol.oninput = (e) => {
+    Settings.groundGridColor = e.target.value;
+    rerenderAll();
+  };
+
+  wireSlider('rot-x', 'rot-x-lbl', v => `${v|0}°`,
+             v => { Settings.sceneRotX = v; rerenderAll(); });
+  wireSlider('rot-y', 'rot-y-lbl', v => `${v|0}°`,
+             v => { Settings.sceneRotY = v; rerenderAll(); });
+  wireSlider('rot-z', 'rot-z-lbl', v => `${v|0}°`,
+             v => { Settings.sceneRotZ = v; rerenderAll(); });
+  const rotReset = document.getElementById('rot-reset');
+  if (rotReset) rotReset.onclick = () => {
+    Settings.sceneRotX = Settings.sceneRotY = Settings.sceneRotZ = 0;
+    for (const id of ['rot-x','rot-y','rot-z']) {
+      const el = document.getElementById(id);
+      if (el) { el.value = 0; el.dispatchEvent(new Event('input')); }
+    }
+    rerenderAll();
+  };
   wireSlider('obj-cloud-trail-count', 'obj-cloud-trail-count-lbl', v => `${v|0}`,
              v => { Settings.objectCloudTrailCount = v|0; rerenderAll(); });
   wireSlider('obj-cloud-trail-len', 'obj-cloud-trail-len-lbl', v => `${v|0}`,
