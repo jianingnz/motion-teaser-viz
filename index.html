@@ -1416,6 +1416,15 @@ const Settings = {
   trackedMarkerOnInitial: true,
   trackedMarkerSize:      16.0,
   trackedMarkerColor:     '#ff3366',
+  // Frame at which to evaluate the STATIC objects' GT pose for the
+  // 'static' object-cloud layer. Three modes:
+  //   'playhead' (default) — follow the current frame, so static and
+  //                          moving share the same time index;
+  //   'last'              — pin to T−1 so the static objects sit on
+  //                          the lastframe MoGe scene PC consistently;
+  //   'first'             — pin to frame 0 (input pose).
+  // The lastframe bundle overrides this to 'last' via viewer_defaults.
+  staticObjFrameMode:     'playhead',
 
   // ── Camera frustum ─────────────────────────────────────────────
   // Wireframe pyramid + recent-trail polyline + (optional) live video
@@ -2578,7 +2587,20 @@ class Panel {
       //                    objects in front cull the trail pixels
       //   renderOrder 10   MOVING cloud (the manipulated object),
       //                    drawn LAST → always on top of its trail
-      this._addObjectCloudLayer(cfg, fiClamp, 1.0, 'static');
+      // Frame at which to evaluate the STATIC objects' GT pose. Default
+      // is the playhead (legacy behaviour) so static and moving share
+      // a frame index and read consistently. The 'last' override pins
+      // the static cloud to T−1, which matches the lastframe MoGe
+      // scene PC: static-object annotations drift slightly per frame
+      // (~few mm, annotation noise) and the lastframe scene PC was
+      // built from the LAST RGB, so rendering static at the same frame
+      // makes the foreground objects sit cleanly on the scene PC. Set
+      // via viewer_defaults.staticObjFrameMode in the bundle.
+      const staticMode = Settings.staticObjFrameMode || 'playhead';
+      const staticFi = staticMode === 'last'  ? (T - 1)
+                    :  staticMode === 'first' ? 0
+                    :                           fiClamp;
+      this._addObjectCloudLayer(cfg, staticFi, 1.0, 'static');
       const ghosts = Array.isArray(Settings.ghostFrames) ? Settings.ghostFrames : [];
       const predMode = !!Settings.predictionMode;
       // Prediction-mode draw order:
@@ -3788,6 +3810,9 @@ function applyBundleViewerDefaults(clipData) {
     Settings.trackSmoothWindow = vd.trackSmoothWindow;
     setSlider('track-smooth', 'track-smooth-lbl', vd.trackSmoothWindow,
               v => v <= 1 ? '1 (original)' : String(v));
+  }
+  if (vd.staticObjFrameMode !== undefined) {
+    Settings.staticObjFrameMode = String(vd.staticObjFrameMode);
   }
 }
 
