@@ -24,7 +24,6 @@
   /* Trail colors — bright + saturated.
      NOTE: gt/pred values were swapped from a prior version, so callsite
      references to gt/pred stay symbolic but render with the new hues. */
-  --c-hist: #8fd9f8;     /* baby blue — context */
   --c-gt:   #f0529c;     /* pink — ground truth */
   --c-pred: #34d399;     /* mint green — prediction */
 
@@ -62,7 +61,7 @@ header .hdr-actions { display:flex; gap:8px; align-items:center; }
 
 .row { display: grid; gap: 16px; margin-bottom: 16px; }
 .row.top { grid-template-columns: 1fr 1fr; }
-.row.small { grid-template-columns: repeat(4, 1fr); }
+.row.small { grid-template-columns: repeat(3, 1fr); }
 
 .card {
   background: var(--bg-card);
@@ -465,7 +464,7 @@ footer a { color: #2563eb; text-decoration: none; }
   <!-- Big combined 3D panel -->
   <section class="row">
     <div class="card panel-card big">
-      <div class="ttl"><span>③ 3D scene · combined view (history + GT + prediction + scene point cloud)</span><span class="lg-tag">drag to rotate · scroll to zoom · synced across all panels</span></div>
+      <div class="ttl"><span>③ 3D scene · combined view (GT + prediction + scene point cloud)</span><span class="lg-tag">drag to rotate · scroll to zoom · synced across all panels</span></div>
       <div class="body"><canvas id="canvas-all"></canvas></div>
     </div>
   </section>
@@ -499,19 +498,15 @@ footer a { color: #2563eb; text-decoration: none; }
 
   <section class="row small">
     <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-hist)">④a · history only</span></div>
-      <div class="body"><canvas id="canvas-hist"></canvas></div>
-    </div>
-    <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-gt)">④b · history + GT future</span></div>
+      <div class="ttl"><span style="color:var(--c-gt)">④a · GT</span></div>
       <div class="body"><canvas id="canvas-gt"></canvas></div>
     </div>
     <div class="card panel-card">
-      <div class="ttl"><span style="color:var(--c-pred)">④c · history + prediction</span></div>
+      <div class="ttl"><span style="color:var(--c-pred)">④b · prediction</span></div>
       <div class="body"><canvas id="canvas-pred"></canvas></div>
     </div>
     <div class="card panel-card">
-      <div class="ttl"><span>④d · history + GT + pred + error</span></div>
+      <div class="ttl"><span>④c · GT + pred + error</span></div>
       <div class="body"><canvas id="canvas-cmp"></canvas></div>
     </div>
   </section>
@@ -621,7 +616,7 @@ footer a { color: #2563eb; text-decoration: none; }
         <div class="color-row">
           <input type="color" id="col-gt" value="#f0529c" title="GT trail NEW-end color (newest frame end of the gradient).">
           <input type="color" id="col-gt-old" value="#ffffff" title="GT trail OLD-end color (oldest frame end of the gradient).">
-          <span class="cn">GT future <span class="h" id="col-gt-h">#f0529c</span></span>
+          <span class="cn">GT <span class="h" id="col-gt-h">#f0529c</span></span>
           <input type="range" class="alpha" id="alpha-gt" min="0" max="1" step="0.02" value="0.98" title="GT trail opacity (0 = invisible, 1 = opaque).">
           <span class="alpha-lbl" id="alpha-gt-lbl">0.98</span>
         </div>
@@ -650,7 +645,7 @@ footer a { color: #2563eb; text-decoration: none; }
           <input type="range" id="raw-boost" min="0.3" max="2.5" step="0.05" value="1.00">
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
-          <button class="btn full on" id="t-arc-len-grad" title="Parametrise the per-track gradient by cumulative arc length (default ON) instead of by frame index. Slow-motion frames get a tight band of colour, fast-motion frames stretch it. Applies to history / GT / pred / raw trails (and their balls layer).">gradient by arc length</button>
+          <button class="btn full on" id="t-arc-len-grad" title="Parametrise the per-track gradient by cumulative arc length (default ON) instead of by frame index. Slow-motion frames get a tight band of colour, fast-motion frames stretch it. Applies to GT / pred / raw trails (and their balls layer).">gradient by arc length</button>
         </div>
         <div class="color-row">
           <input type="color" id="col-endpoint" value="#fde047" title="Bright accent for the start/end markers.">
@@ -671,14 +666,6 @@ footer a { color: #2563eb; text-decoration: none; }
           <span class="cn">Page bg (bottom) <span class="h" id="col-page-bot-h">#f3f4f6</span></span>
         </div>
 
-        <div class="fld" style="margin-top:8px;">
-          <div class="lbl-row"><span>History color</span></div>
-          <select class="btn" id="hist-color-sel">
-            <option value="gt" selected>match GT</option>
-            <option value="pred">match prediction</option>
-            <option value="own">own (baby blue)</option>
-          </select>
-        </div>
       </div>
     </details>
 
@@ -953,8 +940,7 @@ footer a { color: #2563eb; text-decoration: none; }
       <div class="sb-body-inner">
         <div class="lbl-row" style="font-size:.7rem;color:var(--text-muted);margin:0 0 4px 0;">Trajectory layers</div>
         <div class="toggle-grid">
-          <button class="btn on" id="t-hist">history</button>
-          <button class="btn on" id="t-gt">GT future</button>
+          <button class="btn on" id="t-gt">GT</button>
           <button class="btn on" id="t-pred">prediction</button>
           <button class="btn full" id="t-raw">raw tracks (unfiltered)</button>
           <button class="btn full" id="t-err">GT↔Pred error vectors</button>
@@ -1108,18 +1094,22 @@ footer a { color: #2563eb; text-decoration: none; }
       </summary>
       <div class="sb-body-inner">
         <div class="fld">
-          <div class="lbl-row"><span title="Pick which GT trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the smoothest-N driven by the # trajectories slider; manual changes override.">GT picks (smoothest first)</span></div>
+          <div class="lbl-row"><span title="Pick which GT trajectory indices to render. Click an item to toggle it in/out of the selection (no Ctrl/⌘ required). Defaults to the smoothest-N driven by the # trajectories slider; manual changes override.">GT picks (smoothest first)</span></div>
           <div class="pick-row">
             <select id="gt-pick" multiple size="6"></select>
             <button class="btn" id="gt-pick-reset" title="Reset selection to the smoothest-N (auto)">↺</button>
           </div>
         </div>
         <div class="fld">
-          <div class="lbl-row"><span title="Pick which raw trajectory indices to render (ctrl/⌘ click to multi-select). Defaults to the jumpiest-N; manual changes override.">Raw picks (jumpiest first)</span></div>
+          <div class="lbl-row"><span title="Pick which raw trajectory indices to render. Click an item to toggle it in/out of the selection (no Ctrl/⌘ required). Defaults to the jumpiest-N; manual changes override.">Raw picks (jumpiest first)</span></div>
           <div class="pick-row">
             <select id="raw-pick" multiple size="6"></select>
             <button class="btn" id="raw-pick-reset" title="Reset selection to the jumpiest-N (auto)">↺</button>
           </div>
+        </div>
+        <div class="fld" style="margin-top:8px;">
+          <div class="lbl-row"><span title="Multiplier on trail line width for the selected GT and raw trajectories. Mirrors the Line width slider in Trajectory style.">Track line width</span><span class="v" id="line-scale-picks-lbl">1.0×</span></div>
+          <input type="range" id="line-scale-picks" min="0.1" max="3" step="0.05" value="1">
         </div>
       </div>
     </details>
@@ -1149,8 +1139,7 @@ footer a { color: #2563eb; text-decoration: none; }
     <!-- ⑨ Legend (compact) ───────────────────────────────────────── -->
     <div class="sb-legend">
       <div class="legend">
-        <span><span class="sw" style="background:var(--c-hist)"></span>history (context)</span>
-        <span><span class="sw" style="background:var(--c-gt)"></span>GT future</span>
+        <span><span class="sw" style="background:var(--c-gt)"></span>GT</span>
         <span><span class="sw" style="background:var(--c-pred)"></span>prediction</span>
         <span><span class="sw" style="background:#ef4444"></span>raw tracks (unfiltered)</span>
         <span><span class="sw" style="background:#fbbf24"></span>per-point dot = sampled object RGB (frame 0)</span>
@@ -1229,7 +1218,7 @@ const PAPER_T_EXP        = 0.30;
 const PAPER_GT_TAIL_WINDOW = 6;
 const PAPER_GT_POOL_MULT   = 1.7;
 const POINT_SPHERE_R     = 0.0060; // current-frame sphere radius (world units)
-const ANCHOR_SPHERE_R    = 0.0085; // anchor at history end
+const ANCHOR_SPHERE_R    = 0.0085; // anchor sphere radius
 const PC_POINT_PIX       = 12.0;   // PC base pixel size in DEVICE pixels (renderer uses ~2.5× pixelRatio, so divide by that for on-screen CSS px). Constant size regardless of depth — uniform footprint.
 const PC_DEPTH_SHADE     = 0.0;    // 0=no shading
 const TRAIL_LINE_PX_BIG  = 2.0;    // px linewidth in big panel (slightly thinner so balls dominate)
@@ -1255,7 +1244,6 @@ const KEY_PAN_RATE_PER_SEC = 0.9;  // fraction of camState.dist per second held
 const TIME_LEGEND_DOTS    = 9;
 
 const TRAIL_COLORS = {
-  hist: 0x8fd9f8,   // baby blue (default; can be re-mapped to gt/pred via UI)
   gt:   0xf0529c,   // pink — ground truth (swapped from prior)
   pred: 0x34d399,   // mint green — prediction (swapped from prior)
   raw:  0xef4444,   // red — unfiltered, unsmoothed contrast
@@ -1451,9 +1439,9 @@ const Settings = {
   staticObjFrameMode:     'playhead',
   // Trail gradient parameterised by per-track cumulative arc length
   // instead of by frame index. Slow-motion frames get a tight band of
-  // colour, fast-motion frames stretch it. Applies to hist / GT / pred
-  // / raw trails (Panel._buildTrailLayer + the inline raw builder) and
-  // their balls layer.
+  // colour, fast-motion frames stretch it. Applies to GT / pred / raw
+  // trails (Panel._buildTrailLayer + the inline raw builder) and their
+  // balls layer.
   trailGradientByArcLen:  true,
   // When true, skip rendering the static-object GT cloud entirely.
   // Used by the lastframe-MoGe bundle, where the scene PC ALREADY
@@ -1478,7 +1466,6 @@ const Settings = {
   // intent reads as one with the line.
   gtAlpha:        0.98,
   predAlpha:      0.98,
-  histAlpha:      0.95,
   endpointAlpha:  1.0,
   frustumOpacity: 0.85,
   frustumPathOpacity: 0.7,
@@ -1736,18 +1723,14 @@ function _hslToRgb01(h, s, l) {
   return [r + m, g + m, b + m];
 }
 
-// `t` in 0..1 (fraction of clip), `role` is 'gt'/'pred'/'hist'. History
-// inherits the matched role's profile (so a hist-matches-gt config still
-// reads as a single sweep flowing into the GT trail).
+// `t` in 0..1 (fraction of clip), `role` is 'gt'/'pred'.
 function _rainbowProfile(role) {
-  const effective = (role === 'hist' && (_histColorMode === 'gt' || _histColorMode === 'pred'))
-    ? _histColorMode : role;
   // Pred → deeper / richer; GT → lighter / paler. Both fully user-tunable
   // via the rainbow sat/lit sliders so the two roles can be made as bright
   // or as faded as needed (e.g. raise predSat to make pred pop more, lower
   // gtSat to fade GT into the background).
-  if (effective === 'pred') return { s: Settings.predSat, l: Settings.predLit };
-  return                            { s: Settings.gtSat,   l: Settings.gtLit   };
+  if (role === 'pred') return { s: Settings.predSat, l: Settings.predLit };
+  return                      { s: Settings.gtSat,   l: Settings.gtLit   };
 }
 function rainbowRgb01(t, role) {
   const { s, l } = _rainbowProfile(role);
@@ -1762,7 +1745,6 @@ function rainbowRgb255(t, role) {
 function _useRainbowFor(role) {
   if (!Settings.rainbow) return false;
   if (role === 'gt' || role === 'pred') return true;
-  if (role === 'hist' && (_histColorMode === 'gt' || _histColorMode === 'pred')) return true;
   return false;
 }
 
@@ -1813,7 +1795,7 @@ function polyToSegments(flat, into) {
 class Panel {
   constructor(canvasId, opts) {
     this.canvas = document.getElementById(canvasId);
-    this.opts = { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, showInitialDots:false, objectPCOnly:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
+    this.opts = { showPC:true, showGT:true, showPred:true, showErrors:false, showBalls:true, showEndpoints:true, showInitialDots:false, objectPCOnly:false, lineWidth:TRAIL_LINE_PX_BIG, ...opts };
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(RENDER_PIXEL_RATIO);
     this.renderer.setClearColor(BG_COLOR, 1);
@@ -1836,14 +1818,12 @@ class Panel {
     // trail. The `color` field is just a fallback; vertexColors overrides it.
     const lw = this.opts.lineWidth;
     this.lineMats = {
-      hist: new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.95, depthTest:false, depthWrite:false, dashed:false }),
       gt:   new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:false }),
       pred: new LineMaterial({ color: 0xffffff, vertexColors:true, linewidth: lw, transparent:true, opacity:0.98, depthTest:false, depthWrite:false, dashed:true, dashSize:0.04, gapSize:0.025 }),
       err:  new LineMaterial({ color: ERR_COLOR, linewidth: 1.4, transparent:true, opacity:0.7, depthTest:false, depthWrite:false, dashed:false }),
     };
     // THREE.Color cache for per-trail NEW-end (vivid / playhead-side) color.
     this.lineBaseCols = {
-      hist: new THREE.Color(TRAIL_COLORS.hist),
       gt:   new THREE.Color(TRAIL_COLORS.gt),
       pred: new THREE.Color(TRAIL_COLORS.pred),
     };
@@ -1851,7 +1831,6 @@ class Panel {
     // legacy 'fade to white' look is preserved exactly when no picker is
     // bound. Independent per role so the user can do orange→cyan, etc.
     this.lineBaseColsOld = {
-      hist: new THREE.Color(0xffffff),
       gt:   new THREE.Color(0xffffff),
       pred: new THREE.Color(0xffffff),
     };
@@ -1860,7 +1839,7 @@ class Panel {
     // (channels clip to 1, washed-out tones read more vivid against the
     // scene cloud); <1 dims toward black.
     this.lineBoost = {
-      hist: 1.0, gt: 1.0, pred: 1.0, raw: 1.0,
+      gt: 1.0, pred: 1.0, raw: 1.0,
     };
     // Raw-track material: same line weight + opacity as the filtered trails,
     // but bright red, *no smoothing*, and a temporal pale-→-vivid gradient
@@ -2315,8 +2294,8 @@ class Panel {
   // — so a ball or line vertex at frame fi has a fixed color regardless of
   // where playback currently is or where the trail window starts. This is
   // what gives the user-requested "once a ball is set, its color doesn't
-  // change" property and lets history → GT → pred read as one continuous
-  // gradient flowing from start to end.
+  // change" property and lets GT → pred read as one continuous gradient
+  // flowing from start to end.
   _buildTrailLayer(pts3d, fStart, fEndExclusive, ptIdx, mat, baseColor,
                    useGradient = true, mixLoOverride = null, T_total = null,
                    role = null) {
@@ -2585,11 +2564,12 @@ class Panel {
       records.push([pt[0], -pt[1], -pt[2]]);
     };
     for (const p of idx) {
-      // Global start = frame 0 of GT (= start of history). Tied to showHist
-      // since toggling history off reads as "no context, skip the start".
-      if (this.opts.showHist) push(cfg.gt_3d[0]?.[p]);
-      // Global ends.
-      if (this.opts.showGT)   push(cfg.gt_3d[T_clip - 1]?.[p]);
+      // Global start (frame 0) and end markers — tied to the GT layer since
+      // GT now spans the entire trajectory.
+      if (this.opts.showGT) {
+        push(cfg.gt_3d[0]?.[p]);
+        push(cfg.gt_3d[T_clip - 1]?.[p]);
+      }
       if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p]);
     }
     if (!records.length) return;
@@ -2671,8 +2651,8 @@ class Panel {
     // every panel each frame — way more work than the screen needs. This
     // restricts cloud rendering to the panels where the GT layer is
     // semantically active (canvas-all, canvas-gt, canvas-cmp,
-    // canvas-paper) and lets the small history / pred / object-PC
-    // panels skip the work entirely.
+    // canvas-paper) and lets the small pred / object-PC panels skip the
+    // work entirely.
     // Special "first-frame moving-object only" panel mode (canvas-pcrgb).
     // Render JUST the moving-object cloud at frame 0 — no trails, no
     // ghosts, no scene PC, no playhead following. Static cloud is also
@@ -2757,7 +2737,6 @@ class Panel {
     }
     if (!isPaper && fiFrac < 0) return;
 
-    const nHist = cfg.n_hist || 0;
     const ptColors = cfg.pt_colors_rgb || [];
     // Paper mode uses a tail-cleaner GT subset so we don't show points that
     // still have a kink near the end even after global smoothing.
@@ -2779,8 +2758,7 @@ class Panel {
     const rawIdxPaper = cfg._rawIdxPaper || clipData._rawIdxPaper || [];
     const rawIdxList = isPaper ? rawIdxPaper : rawIdxLive;
     if (this.opts.showRaw && rawSrc3d && rawIdxList.length) {
-      const rawStart = isPaper ? 0
-                       : ((lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - Settings.trailLen));
+      const rawStart = isPaper ? 0 : Math.max(0, lastFi - Settings.trailLen);
       const rawEnd   = isPaper ? T_clip : (lastFi + 1);  // exclusive
       const segs = [];
       const cols = [];
@@ -2851,31 +2829,11 @@ class Panel {
     }
 
     const [rMin, rMax] = this._ballRadii();
-    // Gradient parameters are unified across hist / GT / pred so the trail
-    // reads as one continuous time-encoded sweep from frame 0 → frame T-1.
-    // Each layer just contributes its hue; the gradient curve and global span
-    // are the same for all three.
+    // Gradient parameters are unified across GT / pred so the trail reads as
+    // one continuous time-encoded sweep from frame 0 → frame T-1.
     const paperMix   = isPaper ? Settings.paperMixLo : null;
     const T_TOTAL    = T_clip;
 
-    if (this.opts.showHist && nHist > 0) {
-      const histEnd = isPaper ? (nHist - 1) : Math.min(nHist - 1, lastFi);
-      // History uses the SAME gradient as GT/pred but with the history hue;
-      // since global t at frames [0..nHist-1] is small, history balls/lines
-      // sit at the pale end of the unified gradient and flow smoothly into
-      // GT/pred without a "restart" at the history boundary.
-      const layer = this._buildTrailLayer(
-        cfg.gt_3d, 0, histEnd + 1, idx,
-        this.lineMats.hist, this.lineBaseCols.hist,
-        true, paperMix, T_TOTAL, 'hist');
-      if (layer) this.dynGroup.add(layer);
-      if (this.opts.showBalls && histEnd >= 0) {
-        this._addTrailBallsLayer(
-          cfg.gt_3d, 0, histEnd + 1, idx,
-          this.lineBaseCols.hist, true, paperMix,
-          rMin, rMax, T_TOTAL, null, 'hist');
-      }
-    }
     // Paper-mode end cap: drop the last PAPER_GT_TAIL_DROP frames *only on
     // GT* so residual smoothed-track noise at the trajectory tail doesn't
     // pollute the figure. Pred and Raw still span the full clip. cfg may
@@ -2883,39 +2841,36 @@ class Panel {
     // 0 — its tracks are already filtered + smoothed across the full video,
     // so no tail-noise mask is needed).
     const tailDrop = cfg.paperGtTailDrop ?? Settings.paperGtTailDrop;
-    const paperGtEnd = Math.max(nHist, T_clip - tailDrop);
-    if (this.opts.showGT && (isPaper || lastFi >= nHist)) {
-      // No more TRAIL_LEN sliding window — show the *full* GT trail from the
-      // history boundary up to the current frame (live) or to paperGtEnd
-      // (paper). Earlier balls keep their fixed colors; only new balls
-      // accumulate at the leading edge.
-      const trailStart = Math.max(0, nHist - 1);
-      const trailEnd   = isPaper ? paperGtEnd : (lastFi + 1);
+    const paperGtEnd = T_clip - tailDrop;
+    if (this.opts.showGT) {
+      // Show the *full* GT trail from frame 0 up to the current frame (live)
+      // or to paperGtEnd (paper). Earlier balls keep their fixed colors; only
+      // new balls accumulate at the leading edge.
+      const trailEnd = isPaper ? paperGtEnd : (lastFi + 1);
       const layer = this._buildTrailLayer(
-        cfg.gt_3d, trailStart, trailEnd, idx,
+        cfg.gt_3d, 0, trailEnd, idx,
         this.lineMats.gt, this.lineBaseCols.gt,
         true, paperMix, T_TOTAL, 'gt');
       if (layer) this.dynGroup.add(layer);
       if (this.opts.showBalls) {
         this._addTrailBallsLayer(
-          cfg.gt_3d, trailStart, trailEnd, idx,
+          cfg.gt_3d, 0, trailEnd, idx,
           this.lineBaseCols.gt, true, paperMix,
           rMin, rMax, T_TOTAL, null, 'gt');
       }
     }
-    if (this.opts.showPred && (isPaper || lastFi >= nHist)) {
-      // Same accumulation rule as GT — full trail from history boundary to
-      // current frame, no sliding window.
-      const trailStart = Math.max(0, nHist - 1);
-      const trailEnd   = isPaper ? T_clip : (lastFi + 1);
+    if (this.opts.showPred) {
+      // Same accumulation rule as GT — full trail from frame 0 to current
+      // frame, no sliding window.
+      const trailEnd = isPaper ? T_clip : (lastFi + 1);
       const layer = this._buildTrailLayer(
-        cfg.pred_3d, trailStart, trailEnd, idx,
+        cfg.pred_3d, 0, trailEnd, idx,
         this.lineMats.pred, this.lineBaseCols.pred,
         true, paperMix, T_TOTAL, 'pred');
       if (layer) this.dynGroup.add(layer);
       if (this.opts.showBalls) {
         this._addTrailBallsLayer(
-          cfg.pred_3d, trailStart, trailEnd, idx,
+          cfg.pred_3d, 0, trailEnd, idx,
           this.lineBaseCols.pred, true, paperMix,
           rMin, rMax, T_TOTAL, null, 'pred');
       }
@@ -2933,7 +2888,7 @@ class Panel {
     if (isPaper) return;
 
     // Error vectors — interpolated to follow current motion
-    if (this.opts.showErrors && fiFrac >= nHist) {
+    if (this.opts.showErrors && fiFrac >= 0) {
       const segs = [];
       for (const p of idx) {
         const a = this._interpPt(cfg.gt_3d, fiFrac, p);
@@ -3911,9 +3866,9 @@ function precomputeSmoothCamera(clipData) {
 
 // Apply bundle-level `viewer_defaults` (HOT3D-style) to the live Settings
 // + per-panel toggles + DOM input controls. Each bundle declares which
-// rendering mode it wants (e.g. object cloud + no pred/hist for HOT3D)
-// without baking that decision into the viewer source. Fields not
-// recognized are silently ignored — keeps the format forward-compatible.
+// rendering mode it wants (e.g. object cloud + no pred for HOT3D) without
+// baking that decision into the viewer source. Fields not recognized are
+// silently ignored — keeps the format forward-compatible.
 function applyBundleViewerDefaults(clipData) {
   const vd = clipData?.viewer_defaults;
   if (!vd) return;
@@ -3925,7 +3880,6 @@ function applyBundleViewerDefaults(clipData) {
     btn.classList.toggle('on', !!on);
     for (const p of panels) p.opts[key] = !!on;
   };
-  if (vd.showHist !== undefined) togglePanelLayer('showHist', 't-hist', vd.showHist);
   if (vd.showPred !== undefined) togglePanelLayer('showPred', 't-pred', vd.showPred);
   if (vd.showGT   !== undefined) togglePanelLayer('showGT',   't-gt',   vd.showGT);
   if (vd.showPC   !== undefined) togglePanelLayer('showPC',   't-pc',   vd.showPC);
@@ -4077,8 +4031,8 @@ async function init() {
   // Apply bundle viewer-defaults BEFORE precomputing camera + smoothing
   // so any defaults that affect those caches (e.g. trackSmoothWindow) take
   // effect on the first computation. The HOT3D bundle uses this to declare
-  // "render as object cloud, hide pred + hist" without needing a separate
-  // viewer build.
+  // "render as object cloud, hide pred" without needing a separate viewer
+  // build.
   applyBundleViewerDefaults(clipData);
   // Cache smoothed camera positions/forwards for frustum + trail rendering.
   precomputeSmoothCamera(clipData);
@@ -4187,7 +4141,7 @@ async function init() {
   // smoothest-globally, then keep the N_GT_KEEP cleanest in the TAIL window.
   // This lets us be stricter on tail noise without dropping the track count.
   {
-    const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - Settings.paperGtTailDrop);
+    const paperGtEnd = cfg.gt_3d.length - Settings.paperGtTailDrop;
     const poolSize   = Math.min(cfg.gt_3d[0].length,
                                 Math.ceil(N_GT_KEEP * PAPER_GT_POOL_MULT));
     const pool       = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), poolSize);
@@ -4239,11 +4193,10 @@ async function init() {
   });
 
   panels = [
-    new Panel('canvas-all',  { showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:false, lineWidth:TRAIL_LINE_PX_BIG }),
-    new Panel('canvas-hist', { showPC:true, showHist:true, showGT:false, showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-gt',   { showPC:true, showHist:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-pred', { showPC:true, showHist:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
-    new Panel('canvas-cmp',  { showPC:false, showHist:true, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-all',  { showPC:true, showGT:true, showPred:true, showErrors:false, showRaw:false, lineWidth:TRAIL_LINE_PX_BIG }),
+    new Panel('canvas-gt',   { showPC:true, showGT:true,  showPred:false, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pred', { showPC:true, showGT:false, showPred:true,  showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-cmp',  { showPC:false, showGT:true, showPred:true, showErrors:true, showRaw:false, lineWidth:TRAIL_LINE_PX_SM }),
     // Initial-position panel (⑤): dense object-only PC at frame 0 (scene PC
     // filtered via the strict K-th-NN-within-R rule + object-RGB highlight
     // dots at every tracked point so the manipulated object pops even when
@@ -4252,11 +4205,11 @@ async function init() {
     // object's cloud at frame 0 — no scene PC, no trails, no ghosts,
     // no playhead following. firstFrameMovingCloud=true bypasses the
     // big-panel gate that the regular full-clip cloud path uses.
-    new Panel('canvas-pcrgb',{ showPC:false, objectPCOnly:false, showHist:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, firstFrameMovingCloud:true, lineWidth:TRAIL_LINE_PX_SM }),
+    new Panel('canvas-pcrgb',{ showPC:false, objectPCOnly:false, showGT:false, showPred:false, showErrors:false, showBalls:false, showEndpoints:false, showInitialDots:false, showRaw:false, firstFrameMovingCloud:true, lineWidth:TRAIL_LINE_PX_SM }),
     // Paper-figure panel: static composite of every frame at once (no
     // playback). Always shows raw + filtered, with the temporal gradient
     // standing in for time.
-    new Panel('canvas-paper',{ showPC:true, showHist:true, showGT:true, showPred:true, showErrors:false, showRaw:true, paperMode:true, lineWidth:TRAIL_LINE_PX_BIG }),
+    new Panel('canvas-paper',{ showPC:true, showGT:true, showPred:true, showErrors:false, showRaw:true, paperMode:true, lineWidth:TRAIL_LINE_PX_BIG }),
   ];
   // ③c · paper-figure panel for the FULL video. Static composite — every
   // tracked point's full-video trajectory drawn at once, scene PC sourced
@@ -4266,11 +4219,9 @@ async function init() {
   if (clipData._altPC) {
     document.getElementById('row-altpc').style.display = '';
     const altPanel = new Panel('canvas-altpc', {
-      // showHist=true → endpoint marker at frame 0 of the full video gets
-      // drawn (the trail itself isn't rendered because n_hist=0).
       // showRaw=true → render the pre-smoothing raw trails alongside GT
       // (uses cfgOverride.raw_3d / _rawIdxPaper).
-      showPC:true, showHist:true, showGT:true, showPred:false,
+      showPC:true, showGT:true, showPred:false,
       showErrors:false, showRaw:true, paperMode:true, useAltPC:true,
       showBalls:true, showEndpoints:true,
       lineWidth:TRAIL_LINE_PX_BIG,
@@ -4285,8 +4236,6 @@ async function init() {
   panels.forEach(p => p.buildStatic(clipData, cfg));
   panels[0].frameToTrajectory();
   panels.forEach(p => p.applyCamera());
-  // Default history color → match GT (history flows naturally into ground truth).
-  setHistoryColor('gt');
   buildTimeLegend();
   // Render paper panel's full-clip composite once; tick() will keep the rest in sync.
   panels.forEach(p => { if (p.opts.paperMode) p.updateDynamic(cfg, (clipData.num_frames || 1) - 1); });
@@ -4373,9 +4322,9 @@ function videoFrameToConfigFi(videoFrame) {
 }
 
 // Synthetic cfg for the full-video paper-figure panel (③c). It exposes the
-// full_video_3d tracks where the regular cfg exposes gt_3d, with no history
-// boundary, no separate pred layer, and `_goodIdx` covering EVERY point
-// (full-video pipeline is filtered + smoothed, so all tracks are usable).
+// full_video_3d tracks where the regular cfg exposes gt_3d, with no separate
+// pred layer, and `_goodIdx` covering EVERY point (full-video pipeline is
+// filtered + smoothed, so all tracks are usable).
 // Stashed on Panel.cfgOverride so the panel renders against this cfg
 // instead of the per-clip cfg the rest of the page uses.
 // For each clip GT point, find the nearest 3D neighbour in full_video_3d at
@@ -4450,8 +4399,6 @@ function buildFullCfg(clipData) {
     raw_3d:  rawTracks,
     _rawIdx:      rawIdx,
     _rawIdxPaper: rawIdxPaper,
-    n_hist: 0,
-    hist_frames: [],
     future_frames: all,
     all_frames: all,
     obj_name: 'full_video',
@@ -4822,8 +4769,27 @@ function bindFullVideoControls() {
 
 // ──────────── Manual trajectory pickers (clip GT / Raw) ────────────
 // Auto-curated lists are still the default (smoothest-first for GT,
-// jumpiest-first for Raw). The pickers let the user override those choices
-// — ctrl/⌘-click to multi-select. The "↺" button restores the auto top-N.
+// jumpiest-first for Raw). The pickers let the user override those choices.
+// A plain click toggles an item in/out of the selection (no Ctrl/⌘ needed)
+// — the native <select multiple> replace-on-click behaviour is overridden in
+// _enableMultiSelectClickToggle so non-consecutive picks work intuitively.
+// The "↺" button restores the auto top-N.
+function _enableMultiSelectClickToggle(sel) {
+  if (!sel || sel.dataset.toggleWired === '1') return;
+  sel.dataset.toggleWired = '1';
+  // Intercept native mousedown so plain-click no longer wipes the selection
+  // — toggle just the clicked option and re-fire the change event ourselves.
+  // Shift/Ctrl/Meta still toggle (no range-select needed since toggle covers
+  // the workflow). We focus the element so keyboard nav still works after.
+  sel.addEventListener('mousedown', (e) => {
+    const opt = e.target.closest('option');
+    if (!opt || opt.parentElement !== sel) return;
+    e.preventDefault();
+    sel.focus();
+    opt.selected = !opt.selected;
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
 function fillTrajectoryPicker(selectId, scores, selectedSet,
                               orderJumpiest = false) {
   const sel = document.getElementById(selectId);
@@ -4860,10 +4826,14 @@ function bindTrajectoryPickers() {
   // Prime the listboxes with the current auto-selected indices.
   fillTrajectoryPicker('gt-pick',  gtScores,  new Set(cfg._goodIdx || []),         /*jumpiest*/ false);
   fillTrajectoryPicker('raw-pick', rawScores, new Set(clipData._rawIdx || []),     /*jumpiest*/ true);
+  // Make plain click toggle an option (instead of replace-select). Non-
+  // consecutive multi-select now Just Works.
+  _enableMultiSelectClickToggle(document.getElementById('gt-pick'));
+  _enableMultiSelectClickToggle(document.getElementById('raw-pick'));
 
   document.getElementById('gt-pick')?.addEventListener('change', () => {
     const idx = readPickerSelection('gt-pick');
-    if (!idx || idx.length === 0) return;
+    if (!idx) return;                       // null only if the element is gone
     cfg._goodIdx = idx;
     cfg._goodIdxPaper = idx;
     syncAltPanelGtFromClip();
@@ -4871,7 +4841,7 @@ function bindTrajectoryPickers() {
   });
   document.getElementById('raw-pick')?.addEventListener('change', () => {
     const idx = readPickerSelection('raw-pick');
-    if (!idx || idx.length === 0) return;
+    if (!idx) return;
     clipData._rawIdx = idx;
     clipData._rawIdxPaper = idx;
     rerenderAll();
@@ -4924,23 +4894,6 @@ function rgbaFrom(rgb, alpha = 0.95) {
   return `rgba(${rgb[0]|0},${rgb[1]|0},${rgb[2]|0},${alpha})`;
 }
 
-// Solid stroke (no gradient) — used for history trails so they read as a
-// constant context line, not a fade.
-function strokeSolidPath(ctx, pts, color, lineWidth, dash=null) {
-  if (pts.length < 2) return;
-  const smooth = smoothPath2D(pts);
-  if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.beginPath();
-  ctx.moveTo(smooth[0][0], smooth[0][1]);
-  for (let i = 1; i < smooth.length; i++) ctx.lineTo(smooth[i][0], smooth[i][1]);
-  ctx.stroke();
-  ctx.setLineDash([]);
-}
-
 // Per-segment gradient stroke. When `role` triggers rainbow mode the segment
 // colour cycles through the rainbow profile for that role; otherwise the
 // classic pale-tint → vivid mix is applied. `tStart`/`tEnd` are the global
@@ -4983,10 +4936,9 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null,
   ctx.setLineDash([]);
 }
 
-// Base RGBs aligned with --c-hist / --c-gt / --c-pred CSS vars (gt/pred
-// swapped from a prior version: gt is now pink, pred is now mint).
+// Base RGBs aligned with --c-gt / --c-pred CSS vars (gt/pred swapped from a
+// prior version: gt is now pink, pred is now mint).
 const TRAIL_RGB = {
-  hist: [143, 217, 248],
   gt:   [240,  82, 156],
   pred: [ 52, 211, 153],
 };
@@ -5075,7 +5027,6 @@ function drawVideoOverlay(fiFrac) {
   ctx.clearRect(0, 0, W, H);
   if (fiFrac < 0) return;
 
-  const nHist = cfg.n_hist || 0;
   const idx = cfg._goodIdx || [];
   const ptColors = cfg.pt_colors_rgb || [];
   // Trails snap to integer (no sub-frame trail growth)
@@ -5083,36 +5034,27 @@ function drawVideoOverlay(fiFrac) {
 
   // Raw tracks first, with the same trailing-window logic as GT/Pred.
   if (App.showRaw && clipData.raw_2d && clipData._rawIdx) {
-    const rawStart = (lastFi < nHist) ? 0 : Math.max(nHist - 1, lastFi - Settings.trailLen);
+    const rawStart = Math.max(0, lastFi - Settings.trailLen);
     drawRaw2D(ctx, clipData.raw_2d, clipData._rawIdx, rawStart, lastFi, W, H);
   }
 
-  if (cfg.gt_2d && nHist > 0) {
-    const histEnd = Math.min(nHist - 1, lastFi);
-    for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, 0, histEnd, W, H);
-      strokeSolidPath(ctx, pts, rgbaFrom(TRAIL_RGB.hist, 0.95), 1.4);
-    }
-  }
-  // GT/Pred 2D trails: extend from history boundary to current frame (no
-  // sliding window — matches the 3D unified-gradient behaviour). Pass
-  // tStart/tEnd as global clip fractions so the rainbow lines up with the
-  // 3D one when rainbow mode is on.
+  // GT/Pred 2D trails: full trail from frame 0 to current frame (no sliding
+  // window — matches the 3D unified-gradient behaviour). Pass tStart/tEnd as
+  // global clip fractions so the rainbow lines up with the 3D one when
+  // rainbow mode is on.
   const T_clip = (cfg.gt_3d?.length || cfg.pred_3d?.length || 1);
   const Tdenom = Math.max(1, T_clip - 1);
-  if (cfg.gt_2d && lastFi >= nHist) {
-    const fStart = Math.max(0, nHist - 1);
-    const tS = fStart / Tdenom, tE = lastFi / Tdenom;
+  if (cfg.gt_2d && lastFi >= 0) {
+    const tS = 0, tE = lastFi / Tdenom;
     for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, fStart, lastFi, W, H);
+      const pts = collectPath(cfg.gt_2d, p, 0, lastFi, W, H);
       strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.5, null, 'gt', tS, tE);
     }
   }
-  if (cfg.pred_2d && lastFi >= nHist) {
-    const fStart = Math.max(0, nHist - 1);
-    const tS = fStart / Tdenom, tE = lastFi / Tdenom;
+  if (cfg.pred_2d && lastFi >= 0) {
+    const tS = 0, tE = lastFi / Tdenom;
     for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, fStart, lastFi, W, H);
+      const pts = collectPath(cfg.pred_2d, p, 0, lastFi, W, H);
       strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.5, [4, 3], 'pred', tS, tE);
     }
   }
@@ -5130,7 +5072,7 @@ function drawVideoOverlay(fiFrac) {
         softDot(ctx, pt[0]*W, pt[1]*H, ptColor, 4.2);
       }
     }
-    if (cfg.pred_2d && fiFrac >= nHist) {
+    if (cfg.pred_2d && fiFrac >= 0) {
       const pt = interp2d(cfg.pred_2d, fiFrac, p);
       if (pt && pt[0] >= 0 && pt[0] <= 1 && pt[1] >= 0 && pt[1] <= 1) {
         ringDot(ctx, pt[0]*W, pt[1]*H, rgbaFrom(predRgb, 0.95), 5.0);
@@ -5146,7 +5088,6 @@ function drawChronoOverlay() {
   const ctx = chronoOverCtx;
   ctx.clearRect(0, 0, W, H);
 
-  const nHist = cfg.n_hist || 0;
   const idx = cfg._goodIdx || [];
   const ptColors = cfg.pt_colors_rgb || [];
 
@@ -5157,31 +5098,23 @@ function drawChronoOverlay() {
               0, clipData.raw_2d.length - 1, W, H);
   }
 
-  // Trails: thin + temporal-gradient so motion direction reads at a glance
-  if (cfg.gt_2d && nHist > 0) {
-    for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, 0, nHist - 1, W, H);
-      strokeSolidPath(ctx, pts, rgbaFrom(TRAIL_RGB.hist, 0.95), 1.2);
-    }
-  }
   // Chrono GT/Pred trails span the whole clip; tStart/tEnd reflect that.
   const T_clip2 = Math.max(cfg.gt_2d?.length || 0, cfg.pred_2d?.length || 0, 1);
   const Tdenom2 = Math.max(1, T_clip2 - 1);
-  const tHistEdge = Math.max(0, nHist - 1) / Tdenom2;
   if (cfg.gt_2d) {
     const fE = cfg.gt_2d.length - 1;
     const tE = fE / Tdenom2;
     for (const p of idx) {
-      const pts = collectPath(cfg.gt_2d, p, Math.max(0, nHist - 1), fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3, null, 'gt', tHistEdge, tE);
+      const pts = collectPath(cfg.gt_2d, p, 0, fE, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.gt, 1.3, null, 'gt', 0, tE);
     }
   }
   if (cfg.pred_2d) {
     const fE = cfg.pred_2d.length - 1;
     const tE = fE / Tdenom2;
     for (const p of idx) {
-      const pts = collectPath(cfg.pred_2d, p, Math.max(0, nHist - 1), fE, W, H);
-      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3], 'pred', tHistEdge, tE);
+      const pts = collectPath(cfg.pred_2d, p, 0, fE, W, H);
+      strokeGradientPath(ctx, pts, TRAIL_RGB.pred, 1.3, [4, 3], 'pred', 0, tE);
     }
   }
   // Endpoint markers — drawn last so they sit on top of the trails. Under
@@ -5226,7 +5159,6 @@ function bindControls() {
   document.getElementById('step-back').onclick = () => stepFrame(-1);
   document.getElementById('step-fwd').onclick  = () => stepFrame(+1);
   document.getElementById('t-pc').onclick     = (e) => toggleLayer(e, 'showPC', true);
-  document.getElementById('t-hist').onclick   = (e) => toggleLayer(e, 'showHist');
   document.getElementById('t-gt').onclick     = (e) => toggleLayer(e, 'showGT');
   document.getElementById('t-pred').onclick   = (e) => toggleLayer(e, 'showPred');
   document.getElementById('t-err').onclick    = (e) => toggleLayer(e, 'showErrors');
@@ -5362,10 +5294,6 @@ function bindControls() {
       rerenderAll();
     };
   }
-  // History color selector — re-aim the history hue to follow GT or pred (or
-  // its own baby-blue default).
-  const histSel = document.getElementById('hist-color-sel');
-  if (histSel) histSel.onchange = (e) => setHistoryColor(e.target.value);
   // PC point-size slider — different clips have different scene scale, so a
   // single global constant doesn't fit all. Wire the slider to update the
   // uSize uniform on every panel's pcMaterial live.
@@ -5381,8 +5309,7 @@ function bindControls() {
       }
     };
   }
-  // Colour pickers for GT and Pred. History tracks one of these via the
-  // history-color dropdown.
+  // Colour pickers for GT and Pred.
   const colGt = document.getElementById('col-gt');
   if (colGt) colGt.oninput = (e) => setRoleColor('gt', e.target.value);
   const colGtOld = document.getElementById('col-gt-old');
@@ -5454,9 +5381,6 @@ function bindControls() {
       Settings.rainbow = !Settings.rainbow;
       tRainbow.classList.toggle('on', Settings.rainbow);
       buildTimeLegend();
-      // History inherits via setHistoryColor → re-trigger so the hist
-      // material updates if rainbow toggling changes its effective look.
-      setHistoryColor(_histColorMode);
       rerenderAll();
     };
   }
@@ -5663,8 +5587,28 @@ function bindControls() {
     ghostFrames.addEventListener('change', parseGhosts);
     ghostFrames.addEventListener('blur', parseGhosts);
   }
-  wireSlider('line-scale',  'line-scale-lbl',  v => `${v.toFixed(2)}×`,
-             v => applyLineScale(v));
+  // Trail line-width slider lives in two places (Trajectory style + Trajectory
+  // picks) so the user can adjust it from whichever section they're already
+  // working in. Both inputs and labels stay in sync — moving one drags the
+  // other, both labels update, and `applyLineScale` runs once per change.
+  const _lineScaleIds = [
+    ['line-scale',       'line-scale-lbl'],
+    ['line-scale-picks', 'line-scale-picks-lbl'],
+  ];
+  const _setLineScaleUI = (v) => {
+    v = Math.max(0.1, Math.min(3, +v || 1));
+    for (const [id, lblId] of _lineScaleIds) {
+      const el  = document.getElementById(id);
+      if (el && Math.abs(parseFloat(el.value) - v) > 1e-6) el.value = String(v);
+      const lbl = document.getElementById(lblId);
+      if (lbl) lbl.textContent = `${v.toFixed(2)}×`;
+    }
+    applyLineScale(v);
+  };
+  for (const [id] of _lineScaleIds) {
+    const el = document.getElementById(id);
+    if (el) el.oninput = (e) => _setLineScaleUI(parseFloat(e.target.value));
+  }
   wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
              v => { Settings.mixLo = v;        rerenderAll(); });
   wireSlider('t-exp',       't-exp-lbl',       v => v.toFixed(2),
@@ -5765,30 +5709,6 @@ function bindControls() {
   bindTrajectoryPickers();
 }
 
-// ──────────── History color routing ────────────
-// Update every panel's `lineBaseCols.hist`, the TRAIL_RGB lookup used by the
-// 2D overlays, and the CSS variable that backs the legend swatch — so the
-// chosen mode (match GT / match Pred / own baby blue) flows through every
-// surface that draws history.
-let _histColorMode = 'gt';
-function setHistoryColor(mode) {
-  _histColorMode = mode;
-  const baseHex = (mode === 'pred') ? TRAIL_COLORS.pred
-                : (mode === 'own')  ? TRAIL_COLORS.hist
-                : TRAIL_COLORS.gt;
-  const col = new THREE.Color(baseHex);
-  // 3D side: every panel's history line/balls reads from lineBaseCols.hist
-  for (const p of panels) p.lineBaseCols.hist = col.clone();
-  // 2D side: drawVideoOverlay / drawChronoOverlay read TRAIL_RGB.hist
-  TRAIL_RGB.hist = [Math.round(col.r * 255),
-                    Math.round(col.g * 255),
-                    Math.round(col.b * 255)];
-  // CSS legend swatch
-  document.documentElement.style.setProperty('--c-hist',
-    '#' + col.getHexString());
-  rerenderAll();
-}
-
 // ──────────── Time-horizon legend ────────────
 // ──────────── Live re-render + colour/index helpers ────────────
 // Centralised "everything dirty" refresh — used by every settings handler so
@@ -5832,7 +5752,7 @@ function recomputeGtIdx(n) {
   n = Math.max(1, Math.min(P, n | 0));
   const scores = pointMaxJumpScores(cfg.gt_3d);
   cfg._goodIdx = selectIdxByStrategy(Settings.gtStrategy, scores, n);
-  const paperGtEnd = Math.max(cfg.n_hist || 0, cfg.gt_3d.length - Settings.paperGtTailDrop);
+  const paperGtEnd = cfg.gt_3d.length - Settings.paperGtTailDrop;
   // Paper-mode GT pool: only meaningful for the smoothest strategy. For other
   // strategies just mirror the live picks so the paper still shows the same
   // tracks the user dialled in.
@@ -5887,34 +5807,22 @@ function syncAltPanelGtFromClip() {
 }
 
 // Helpers for the colour pickers. Each updates the canonical TRAIL_COLORS /
-// TRAIL_RGB dictionaries, the CSS variable backing the legend swatch, every
-// panel's lineBaseCols, and (if history is mirroring this role) the history
-// colour too. The lineMats use vertexColors so they pick up new tints on the
-// next updateDynamic without explicit material reseating.
+// TRAIL_RGB dictionaries, the CSS variable backing the legend swatch, and
+// every panel's lineBaseCols. The lineMats use vertexColors so they pick up
+// new tints on the next updateDynamic without explicit material reseating.
 function _hexToRgb(hex) {
   const v = parseInt(hex.replace('#',''), 16);
   return [(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff];
 }
 // Live trail-alpha setter. Walks every panel's LineMaterial for the role
-// (and the matching paper-mode material when present) and writes the new
-// opacity in place. LineMaterial supports per-material opacity natively
-// when transparent:true is set (which it already is). History inherits
-// from gt/pred via setHistoryColor — for alpha we just touch all three
-// when the GT slider moves.
+// and writes the new opacity in place. LineMaterial supports per-material
+// opacity natively when transparent:true is set (which it already is).
 function setRoleAlpha(role, alpha) {
   const a = Math.max(0, Math.min(1, alpha));
   if (role === 'gt')   Settings.gtAlpha   = a;
   if (role === 'pred') Settings.predAlpha = a;
-  if (role === 'hist') Settings.histAlpha = a;
   for (const p of panels) {
     if (p.lineMats[role]) p.lineMats[role].opacity = a;
-    // Mirror to history if it currently inherits from this role — keeps the
-    // history trail visually consistent with GT/Pred without a separate
-    // hist-alpha slider.
-    if ((role === 'gt' || role === 'pred') && _histColorMode === role) {
-      if (p.lineMats.hist) p.lineMats.hist.opacity = a;
-      Settings.histAlpha = a;
-    }
   }
   rerenderAll();
 }
@@ -5928,8 +5836,6 @@ function setRoleColor(role, hex) {
   for (const p of panels) {
     if (p.lineBaseCols[role]) p.lineBaseCols[role].copy(col);
   }
-  // History inherits from this role → propagate.
-  if (_histColorMode === role) setHistoryColor(role);
   // Time legend uses GT's hue
   if (role === 'gt') buildTimeLegend();
   rerenderAll();
@@ -5997,7 +5903,7 @@ function applyLineScale(scale) {
   Settings.lineScale = scale;
   for (const p of panels) {
     const baseLW = p.opts.lineWidth || TRAIL_LINE_PX_BIG;
-    for (const k of ['hist','gt','pred','err']) {
+    for (const k of ['gt','pred','err']) {
       if (p.lineMats[k]) p.lineMats[k].linewidth = baseLW * scale;
     }
     if (p.rawLineMat) p.rawLineMat.linewidth = baseLW * scale;
@@ -6149,9 +6055,9 @@ const PRESET_KEY = 'mt_presets_v1';
 const PRESET_INPUTS = [
   // ranges + selects
   'rate-sel','scrub','col-gt','col-pred','col-endpoint','col-bg',
-  'col-page-top','col-page-bot','hist-color-sel','pc-size','pc-shade',
+  'col-page-top','col-page-bot','pc-size','pc-shade',
   'gt-sat','gt-lit','pred-sat','pred-lit',
-  'n-keep','ball-stride','ball-scale','endpoint-scale','line-scale',
+  'n-keep','ball-stride','ball-scale','endpoint-scale','line-scale','line-scale-picks',
   'mix-lo','t-exp','obj-R','obj-K','obj-dot',
   'trail-len','smooth-samples','n-raw','n-raw-jumpy',
   'gt-strategy','raw-strategy',
@@ -6160,7 +6066,7 @@ const PRESET_INPUTS = [
   'full-gt-col','full-raw-col',
 ];
 const PRESET_TOGGLES = [
-  't-pc','t-hist','t-gt','t-pred','t-err','t-raw','t-balls','t-endpoints',
+  't-pc','t-gt','t-pred','t-err','t-raw','t-balls','t-endpoints',
   't-rainbow','t-full-gt','t-full-raw',
 ];
 function _readPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}'); } catch { return {}; } }
