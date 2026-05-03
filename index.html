@@ -5462,7 +5462,10 @@ function bindControls() {
   }
 
   // Helper to wire a numeric slider with a live label and a settings effect.
-  const wireSlider = (id, lblId, format, onChange) => {
+  // Declared with `function` so it's hoisted to the top of the enclosing
+  // setup function — earlier wiring blocks (gt-boost, raw-boost, etc.)
+  // call wireSlider before this point in source order.
+  function wireSlider(id, lblId, format, onChange) {
     const el  = document.getElementById(id);
     const lbl = document.getElementById(lblId);
     if (!el) return;
@@ -5471,7 +5474,7 @@ function bindControls() {
       if (lbl) lbl.textContent = format(v);
       onChange(v);
     };
-  };
+  }
   wireSlider('n-keep',      'n-keep-lbl',      v => `${v|0}`,
              v => {
                Settings.nKeep = v|0;

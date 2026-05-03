@@ -73,8 +73,15 @@ def main():
                     help="DROID camera serial, e.g. 24400334. If omitted we parse from --clip-id.")
     ap.add_argument("--subsample", type=int, default=1,
                     help="Pixel stride when back-projecting (1 = every pixel).")
-    ap.add_argument("--max-points", type=int, default=70000,
-                    help="Random-cap output to at most this many points (0 = no cap).")
+    ap.add_argument("--max-points", type=int, default=0,
+                    help="Random subsample cap. 0 (default) keeps the full strided grid intact "
+                         "so the result is a STRUCTURED uniform sample.")
+    ap.add_argument("--track-densify-radius", type=int, default=0,
+                    help="Pixel radius around every GT 2D-track (across ALL frames) inside which a "
+                         "stride-1 pass adds EXTRA points to emphasise the robotic arm / "
+                         "manipulated-object region. 0 disables.")
+    ap.add_argument("--track-densify-stride", type=int, default=1,
+                    help="Stride used INSIDE the track-densify radius (default 1 = every pixel).")
     args = ap.parse_args()
 
     if args.uuid is None or args.cam is None:
@@ -141,7 +148,55 @@ def main():
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     colors = rgb[vv, uu].astype(np.uint8)
 
-    # Optional uniform random cap
+    # ── Optional track-proximity densification (arm / manipulated-object emphasis) ──
+    # When --track-densify-radius > 0, sweep every GT 2D-track in the source
+    # clip JSON (across ALL frames + ALL configs), upscale to depth-resolution
+    # pixels, and add a SECOND, finer-stride pass over depth pixels within
+    # `radius` of any track pixel. Produces a denser PC blob exactly where
+    # the manipulated object + arm tip live, without needing a segmentation
+    # network.
+    if args.track_densify_radius > 0:
+        # Source JSON tracks are normalised to [0, 1] in (u, v); depth is
+        # at (W, H). Collect every visible track pixel (any frame, any config).
+        track_uv_norm = []
+        for cfg in src.get("configs", []):
+            for fr in cfg.get("gt_2d", []) or []:
+                for pt in fr or []:
+                    if pt is None: continue
+                    u, v = pt[0], pt[1]
+                    if u is None or v is None: continue
+                    if not (0 <= u <= 1 and 0 <= v <= 1): continue
+                    track_uv_norm.append((u, v))
+        if track_uv_norm:
+            tu = np.array([p[0] for p in track_uv_norm], dtype=np.float32) * (W - 1)
+            tv = np.array([p[1] for p in track_uv_norm], dtype=np.float32) * (H - 1)
+            # Track-proximity mask via 2D euclidean distance (broadcast).
+            from scipy.spatial import cKDTree
+            tree = cKDTree(np.stack([tu, tv], axis=-1))
+            uu_full, vv_full = np.meshgrid(np.arange(0, W, max(1, args.track_densify_stride),
+                                                     dtype=np.int32),
+                                           np.arange(0, H, max(1, args.track_densify_stride),
+                                                     dtype=np.int32))
+            uu_full, vv_full = uu_full.ravel(), vv_full.ravel()
+            d, _ = tree.query(np.stack([uu_full, vv_full], axis=-1).astype(np.float32), k=1)
+            near = d < args.track_densify_radius
+            uu2, vv2 = uu_full[near], vv_full[near]
+            z2 = depth_m[vv2, uu2]
+            valid2 = (z2 > 0.05) & np.isfinite(z2) & (z2 < 20.0)
+            uu2, vv2, z2 = uu2[valid2], vv2[valid2], z2[valid2]
+            if len(uu2) > 0:
+                xc2 = (uu2.astype(np.float32) - cx) / fx * z2
+                yc2 = (vv2.astype(np.float32) - cy) / fy * z2
+                xyz_arm = np.stack([xc2, yc2, z2], axis=1).astype(np.float32)
+                col_arm = rgb[vv2, uu2].astype(np.uint8)
+                # Concatenate; downstream cap (if requested) trims the union.
+                xyz    = np.concatenate([xyz, xyz_arm], axis=0)
+                colors = np.concatenate([colors, col_arm], axis=0)
+                print(f"  track-densify: +{len(xyz_arm)} pts within "
+                      f"{args.track_densify_radius}px of {len(track_uv_norm)} GT tracks "
+                      f"(stride={args.track_densify_stride})")
+
+    # Optional uniform random cap (default 0 = keep full structured grid)
     if args.max_points > 0 and len(xyz) > args.max_points:
         rng = np.random.RandomState(42)
         idx = rng.choice(len(xyz), args.max_points, replace=False)
