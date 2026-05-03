@@ -4035,8 +4035,15 @@ async function init() {
     `obj=${cfg.obj_name} · t=${cfg.t} · MSE=${(clipData.mse??NaN).toFixed(4)} · L2=${(clipData.l2??NaN).toFixed(4)} · ${cfg.gt_3d[0].length} pts × ${cfg.gt_3d.length} frames`;
 
   video = document.getElementById('rgb-video');
-  const base = CLIP_URL.split('/').pop().replace(/\.json$/,'');
-  video.src = `static/videos/${base}.mp4`;
+  // Prefer the bundle's declared video_stem (set by prepare_hot3d.py /
+  // prepare_clip.py) so two bundles can share one mp4 — e.g. the
+  // first-frame and last-frame HOT3D scene-PC bundles point at the
+  // SAME stitched 106-frame mp4 but live in different JSON files.
+  // Fall back to deriving the stem from the JSON path for older
+  // bundles that don't ship camera.video_stem.
+  const stem = clipData?.camera?.video_stem
+            || CLIP_URL.split('/').pop().replace(/\.json$/, '');
+  video.src = `static/videos/${stem}.mp4`;
   vidOver = document.getElementById('vid-overlay');
   vidOverCtx = vidOver.getContext('2d');
 
@@ -4336,9 +4343,10 @@ async function buildRawThumbs(N = 6) {
   for (let i = 0; i < N; i++) {
     indices.push(Math.round(i * (T - 1) / Math.max(1, N - 1)));
   }
-  const base = CLIP_URL.split('/').pop().replace(/\.json$/, '');
+  const stem = clipData?.camera?.video_stem
+            || CLIP_URL.split('/').pop().replace(/\.json$/, '');
   const v = document.createElement('video');
-  v.src = `static/videos/${base}.mp4`;
+  v.src = `static/videos/${stem}.mp4`;
   v.muted = true; v.preload = 'auto';
   v.style.display = 'none';
   document.body.appendChild(v);
