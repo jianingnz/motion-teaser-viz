@@ -347,6 +347,29 @@ footer a { color: #2563eb; text-decoration: none; }
 /* Mini "row" inside the sidebar header for preset save/load */
 .preset-row { display: flex; gap: 6px; padding: 8px 16px 4px 16px; align-items: center; }
 .preset-row .btn { padding: 5px 8px; font-size: .68rem; flex: 1; }
+
+/* Colormap-preset chip row (Time-gradient palette section). One chip per
+   shipped colormap; the chip's coloured bar is a 4-stop sample of the LUT
+   so the visual identity matches what the trails will render. */
+.cmap-chips {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+}
+.cmap-chip {
+  cursor: pointer; border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  background: var(--bg-card);
+  padding: 0; font-family: inherit;
+}
+.cmap-chip:hover { border-color: var(--text-muted); }
+.cmap-chip.active { outline: 2px solid var(--text-heading); outline-offset: -2px; }
+.cmap-chip .cc-bar {
+  height: 18px; width: 100%;
+}
+.cmap-chip .cc-name {
+  font-size: .62rem; padding: 3px 4px; color: var(--text-secondary);
+  text-align: center; background: var(--bg-card); font-family: monospace;
+}
 .preset-row select { flex: 1; font-size: .7rem; padding: 4px 6px; min-width: 0;
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 5px; color: var(--text); }
 
@@ -367,7 +390,8 @@ footer a { color: #2563eb; text-decoration: none; }
 {
   "imports": {
     "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/",
+    "jspdf": "https://unpkg.com/jspdf@2.5.1/dist/jspdf.es.min.js"
   }
 }
 </script>
@@ -669,93 +693,22 @@ footer a { color: #2563eb; text-decoration: none; }
       </div>
     </details>
 
-    <!-- ③ Time gradient & per-role colormap palette ──────────────────── -->
-    <details class="sb-section">
+    <!-- ③ Time gradient — global colormap preset ─────────────────── -->
+    <!-- Single chip-based selector: click a chip and ALL gradient sites
+         (GT / Pred / Raw / HOT3D moving-object cloud trails + 2D overlays)
+         use that colormap. 'Default' is the legacy two-colour lerp using
+         the colour pickers in the Layers section. mixLo / tExp are NOT
+         exposed — they're held at sensible defaults internally. -->
+    <details class="sb-section" open>
       <summary>
-        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Time gradient
-        <span class="summary-tag">per-role colormap · floor / curve</span>
+        <svg class="chev" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3l6 5-6 5V3z"/></svg> Time-gradient palette
+        <span class="summary-tag">applies to GT · Pred · Raw · HOT3D obj-cloud</span>
       </summary>
       <div class="sb-body-inner">
-        <!-- Per-role colormap palette. 'twoColor' keeps the legacy oldEnd →
-             newEnd lerp using the colour pickers in the Layers section.
-             Anything else replaces it with a perceptual LUT-based gradient. -->
-        <div class="fld-grid">
-          <div class="fld">
-            <div class="lbl-row"><span>GT palette</span></div>
-            <div style="display:flex;gap:6px;">
-              <select id="cmap-gt" style="flex:1 1 0;min-width:0;">
-                <option value="twoColor">Two-colour (legacy)</option>
-                <option value="magma">magma</option>
-                <option value="inferno">inferno</option>
-                <option value="plasma">plasma</option>
-                <option value="viridis">viridis</option>
-                <option value="cividis">cividis</option>
-                <option value="turbo">turbo</option>
-                <option value="rocket">rocket</option>
-                <option value="mako">mako</option>
-              </select>
-              <button class="btn" id="cmap-gt-rev" title="Reverse colormap direction (newest ↔ oldest)">⇄</button>
-            </div>
-          </div>
-          <div class="fld">
-            <div class="lbl-row"><span>Pred palette</span></div>
-            <div style="display:flex;gap:6px;">
-              <select id="cmap-pred" style="flex:1 1 0;min-width:0;">
-                <option value="twoColor">Two-colour (legacy)</option>
-                <option value="magma">magma</option>
-                <option value="inferno">inferno</option>
-                <option value="plasma">plasma</option>
-                <option value="viridis">viridis</option>
-                <option value="cividis">cividis</option>
-                <option value="turbo">turbo</option>
-                <option value="rocket">rocket</option>
-                <option value="mako">mako</option>
-              </select>
-              <button class="btn" id="cmap-pred-rev" title="Reverse colormap direction">⇄</button>
-            </div>
-          </div>
-          <div class="fld">
-            <div class="lbl-row"><span>Raw palette</span></div>
-            <div style="display:flex;gap:6px;">
-              <select id="cmap-raw" style="flex:1 1 0;min-width:0;">
-                <option value="twoColor">Two-colour (legacy)</option>
-                <option value="magma">magma</option>
-                <option value="inferno">inferno</option>
-                <option value="plasma">plasma</option>
-                <option value="viridis">viridis</option>
-                <option value="cividis">cividis</option>
-                <option value="turbo">turbo</option>
-                <option value="rocket">rocket</option>
-                <option value="mako">mako</option>
-              </select>
-              <button class="btn" id="cmap-raw-rev" title="Reverse colormap direction">⇄</button>
-            </div>
-          </div>
-          <div class="fld">
-            <div class="lbl-row"><span>Object-cloud palette</span></div>
-            <div style="display:flex;gap:6px;">
-              <select id="cmap-obj" style="flex:1 1 0;min-width:0;">
-                <option value="twoColor">Two-colour (legacy)</option>
-                <option value="magma">magma</option>
-                <option value="inferno">inferno</option>
-                <option value="plasma">plasma</option>
-                <option value="viridis">viridis</option>
-                <option value="cividis">cividis</option>
-                <option value="turbo">turbo</option>
-                <option value="rocket">rocket</option>
-                <option value="mako">mako</option>
-              </select>
-              <button class="btn" id="cmap-obj-rev" title="Reverse colormap direction">⇄</button>
-            </div>
-          </div>
-        </div>
-        <div class="fld" style="margin-top:10px;">
-          <div class="lbl-row"><span>Gradient floor</span><span class="v" id="mix-lo-lbl">0.18</span></div>
-          <input type="range" id="mix-lo" min="0" max="0.95" step="0.02" value="0.18" title="0 = oldest is white / colormap-t=0; 1 = no gradient">
-        </div>
-        <div class="fld">
-          <div class="lbl-row"><span>Gradient curve</span><span class="v" id="t-exp-lbl">1.0</span></div>
-          <input type="range" id="t-exp" min="0.2" max="2" step="0.05" value="1" title="<1 packs colour change into early frames; >1 into late frames">
+        <div id="cmap-chip-row" class="cmap-chips"></div>
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+          <button class="btn" id="cmap-rev" title="Reverse the colormap direction (newest ↔ oldest)">⇄ Reverse</button>
+          <span id="cmap-current-lbl" style="font-family:monospace;font-size:.75rem;color:var(--text-muted);"></span>
         </div>
       </div>
     </details>
@@ -1221,11 +1174,11 @@ footer a { color: #2563eb; text-decoration: none; }
           </select>
         </div>
         <div class="toggle-grid" style="margin-top:10px;">
-          <button class="btn full" id="cap-go" title="Render the selected panel at the chosen scale and download a PNG.">📷 Capture PNG</button>
+          <button class="btn full" id="cap-go" title="Render the selected panel at the chosen scale and download a PDF (loss-less PNG embedded inside).">📄 Capture PDF</button>
         </div>
         <div style="margin-top:6px;font-size:.7rem;color:var(--text-muted);font-family:monospace;">
-          Output size = panel CSS box × scale.
-          Camera + lighting + colormap state are captured exactly as drawn.
+          Output: single-page PDF, page size = panel CSS box × scale (in pixels).
+          Camera + lighting + colormap state captured exactly as drawn.
         </div>
       </div>
     </details>
@@ -1249,6 +1202,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { jsPDF } from 'jspdf';
 
 // ──────────── Config ────────────
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
@@ -1375,22 +1329,13 @@ const Settings = {
   initialDotScale: 2.5,       // multiplier on rMax for the panel-⑤ tracked-point highlight spheres
   lineScale:  1.0,            // multiplier on trail line widths
   nKeep:      8,              // # of GT/Pred trajectories rendered
-  // Per-role colormap palette mode. Each role independently picks from the
-  // COLORMAP_NAMES list ('twoColor' = legacy oldEnd → newEnd lerp; otherwise
-  // a perceptual colormap LUT). 'reverse' flips the colormap direction so the
-  // same palette can read as oldest→newest or newest→oldest. The values here
-  // are the boot defaults; they get overwritten by viewer_defaults / presets /
-  // sidebar UI. Roles: 'gt' (ground-truth trails), 'pred' (prediction trails),
-  // 'raw' (raw 2D/3D point trails), 'obj' (HOT3D dense object-cloud trails).
-  colorPreset: {
-    gt:   'magma',
-    pred: 'viridis',
-    raw:  'twoColor',
-    obj:  'twoColor',
-  },
-  colorPresetReverse: {
-    gt: false, pred: false, raw: false, obj: false,
-  },
+  // Global colormap palette mode. ONE name applies to every gradient site
+  // (GT / Pred / Raw / HOT3D object-cloud trails + the matching 2D overlays).
+  // 'twoColor' = legacy oldEnd → newEnd lerp using the colour pickers in the
+  // Layers section; anything else is a perceptual LUT sampled at the same t.
+  // `cmapReverse` flips the lookup direction.
+  cmapPreset:  'magma',
+  cmapReverse: false,
 
   // ── Sampling & strategy (live-tunable) ──────────────────────────
   trailLen:       12,    // frames of trail behind the playhead in the live big panel
@@ -2104,15 +2049,15 @@ function colormapRgb255(t, name, reverse) {
   if (!c) return null;
   return [Math.round(c[0]*255), Math.round(c[1]*255), Math.round(c[2]*255)];
 }
-// Per-role lookup: reads Settings.colorPreset[role] / colorPresetReverse[role].
-// Returns { name, reverse } when a real colormap is selected, or null when
-// the role is in legacy 'twoColor' mode. Roles: 'gt', 'pred', 'raw', 'obj'.
+// Global lookup: reads Settings.cmapPreset / cmapReverse and applies the SAME
+// colormap to every role (GT / Pred / Raw / HOT3D object-cloud / endpoints /
+// time legend). The `role` argument is kept in the signature for backwards
+// compatibility with existing call sites; future per-role behaviour can be
+// re-added here without touching the gradient sites.
 function _useColormapFor(role) {
-  const cp = Settings.colorPreset || {};
-  const cr = Settings.colorPresetReverse || {};
-  const name = cp[role];
+  const name = Settings.cmapPreset;
   if (!name || name === 'twoColor' || !COLORMAP_LUTS[name]) return null;
-  return { name, reverse: !!cr[role] };
+  return { name, reverse: !!Settings.cmapReverse };
 }
 
 // ──────────── Catmull-Rom smoothing ────────────
@@ -2456,14 +2401,16 @@ class Panel {
     this._refreshGroundGrid();
     this.renderer.render(this.scene, this.camera);
 
-    const blob = await new Promise((res) => this.canvas.toBlob(res, 'image/png'));
+    // PNG data URL — wrapped into a PDF by the caller. We capture as PNG so
+    // the screenshot stays lossless; jsPDF embeds it as an image stream.
+    const dataUrl = this.canvas.toDataURL('image/png');
 
     // Restore — _resizeRenderer reads parent.clientWidth/Height so it puts
     // us back on the live on-screen size with the right line-mat / uViewport.
     this.renderer.setPixelRatio(prevPR);
     this._resizeRenderer();
     this.render();
-    return blob;
+    return { dataUrl, width: W, height: H };
   }
 
   // (Re)build the panel's ground-grid helper into a top-level scene
@@ -4594,15 +4541,31 @@ async function init() {
     `obj=${cfg.obj_name} · t=${cfg.t} · MSE=${(clipData.mse??NaN).toFixed(4)} · L2=${(clipData.l2??NaN).toFixed(4)} · ${cfg.gt_3d[0].length} pts × ${cfg.gt_3d.length} frames`;
 
   video = document.getElementById('rgb-video');
-  // Prefer the bundle's declared video_stem (set by prepare_hot3d.py /
-  // prepare_clip.py) so two bundles can share one mp4 — e.g. the
-  // first-frame and last-frame HOT3D scene-PC bundles point at the
-  // SAME stitched 106-frame mp4 but live in different JSON files.
-  // Fall back to deriving the stem from the JSON path for older
-  // bundles that don't ship camera.video_stem.
-  const stem = clipData?.camera?.video_stem
-            || CLIP_URL.split('/').pop().replace(/\.json$/, '');
-  video.src = `static/videos/${stem}.mp4`;
+  // Resolve the cut-clip mp4 URL. The cut mp4 is always written as
+  // `static/videos/<clip_id>.mp4` by prepare_clip.py / prepare_hot3d.py, so
+  // the JSON path stem is the canonical source. video_stem (the SOURCE
+  // EgoDex / HOT3D mp4 stem) is kept around for build-time provenance and
+  // for HOT3D bundles where two JSONs share one stitched mp4 — but for
+  // the cut-clip lookup it's only used as a fallback when no file matches
+  // the clip-id stem (so HOT3D `_lastframe.json` still resolves to the
+  // shared `hot3d_clip1995_clip1996.mp4`).
+  const clipStem = CLIP_URL.split('/').pop().replace(/\.json$/, '');
+  const altStem  = clipData?.camera?.video_stem;
+  // Probe via fetch HEAD so we pick the URL that actually exists. If both
+  // exist (e.g. HOT3D where stem == clip_id) it doesn't matter which we
+  // use; if only one exists we pick that one. Fail-soft: stick with the
+  // clip-id path — the <video> error handler logs but doesn't crash.
+  const tryUrl = async (stem) => {
+    try {
+      const r = await fetch(`static/videos/${stem}.mp4`, { method: 'HEAD' });
+      return r.ok;
+    } catch { return false; }
+  };
+  let resolvedStem = clipStem;
+  if (!(await tryUrl(clipStem)) && altStem && (await tryUrl(altStem))) {
+    resolvedStem = altStem;
+  }
+  video.src = `static/videos/${resolvedStem}.mp4`;
   vidOver = document.getElementById('vid-overlay');
   vidOverCtx = vidOver.getContext('2d');
 
@@ -6109,62 +6072,98 @@ function bindControls() {
     const el = document.getElementById(id);
     if (el) el.oninput = (e) => _setLineScaleUI(parseFloat(e.target.value));
   }
-  wireSlider('mix-lo',      'mix-lo-lbl',      v => v.toFixed(2),
-             v => { Settings.mixLo = v;        rerenderAll(); });
-  wireSlider('t-exp',       't-exp-lbl',       v => v.toFixed(2),
-             v => { Settings.tExp = v;         rerenderAll(); });
-  // Per-role colormap palette dropdowns + reverse toggles. Each role has
-  // its own palette so e.g. GT can use viridis while Pred uses magma; the
-  // reverse button flips the colormap's natural low→high mapping. Selecting
-  // 'twoColor' falls back to the legacy oldEnd → newEnd lerp using the
-  // colour pickers in the Layers section.
-  const wirePalette = (selId, btnId, role) => {
-    const sel = document.getElementById(selId);
-    const btn = document.getElementById(btnId);
-    if (sel) {
-      sel.value = (Settings.colorPreset && Settings.colorPreset[role]) || 'twoColor';
-      sel.onchange = (e) => {
-        Settings.colorPreset = Settings.colorPreset || {};
-        Settings.colorPreset[role] = e.target.value;
-        buildTimeLegend();
-        rerenderAll();
-      };
-    }
-    if (btn) {
-      const refresh = () => {
-        const on = !!(Settings.colorPresetReverse && Settings.colorPresetReverse[role]);
-        btn.classList.toggle('on', on);
-      };
-      refresh();
-      btn.onclick = () => {
-        Settings.colorPresetReverse = Settings.colorPresetReverse || {};
-        Settings.colorPresetReverse[role] = !Settings.colorPresetReverse[role];
-        refresh();
-        buildTimeLegend();
-        rerenderAll();
-      };
+  // Global colormap-preset chip row. One chip per available colormap (plus
+  // 'Default' = legacy two-colour lerp). Click → Settings.cmapPreset = name,
+  // and EVERY gradient site picks it up via _useColormapFor(). The chip's
+  // coloured bar is a 4-stop sample of the LUT so the chip's identity matches
+  // what the trails will render. Active chip gets an outline.
+  const cmapChipHost = document.getElementById('cmap-chip-row');
+  const cmapNameLbl  = document.getElementById('cmap-current-lbl');
+  const refreshCmapChips = () => {
+    if (!cmapChipHost) return;
+    cmapChipHost.querySelectorAll('.cmap-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.name === (Settings.cmapPreset || 'twoColor'));
+    });
+    if (cmapNameLbl) {
+      const name = Settings.cmapPreset || 'twoColor';
+      cmapNameLbl.textContent = (name === 'twoColor' ? 'two-colour' : name)
+        + (Settings.cmapReverse ? ' (reversed)' : '');
     }
   };
-  wirePalette('cmap-gt',   'cmap-gt-rev',   'gt');
-  wirePalette('cmap-pred', 'cmap-pred-rev', 'pred');
-  wirePalette('cmap-raw',  'cmap-raw-rev',  'raw');
-  wirePalette('cmap-obj',  'cmap-obj-rev',  'obj');
+  if (cmapChipHost) {
+    cmapChipHost.innerHTML = '';
+    // 'twoColor' first so the legacy look is one click away. Then every
+    // colormap from COLORMAP_NAMES (in COLORMAP_LUTS), in declared order.
+    const items = [['twoColor', 'Default']]
+      .concat(Object.keys(COLORMAP_LUTS).map(n => [n, n]));
+    for (const [name, label] of items) {
+      const btn = document.createElement('button');
+      btn.className = 'cmap-chip';
+      btn.dataset.name = name;
+      btn.title = label === 'Default'
+        ? 'Two-colour lerp using the per-role colour pickers (legacy mode)'
+        : `Apply ${label} colormap to every gradient site`;
+      const bar = document.createElement('div');
+      bar.className = 'cc-bar';
+      if (name === 'twoColor') {
+        bar.style.background = 'linear-gradient(to right, #ffffff, #f0529c)';
+      } else {
+        // Sample the LUT at 5 stops so the chip's bar previews the actual
+        // perceptual progression the trails will draw.
+        const stops = [0, 0.25, 0.5, 0.75, 1].map(t => {
+          const c = colormapRgb255(t, name, false);
+          return `rgb(${c[0]},${c[1]},${c[2]}) ${(t*100).toFixed(0)}%`;
+        });
+        bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
+      }
+      const lbl = document.createElement('div');
+      lbl.className = 'cc-name';
+      lbl.textContent = label;
+      btn.appendChild(bar);
+      btn.appendChild(lbl);
+      btn.addEventListener('click', () => {
+        Settings.cmapPreset = name;
+        refreshCmapChips();
+        buildTimeLegend();
+        rerenderAll();
+      });
+      cmapChipHost.appendChild(btn);
+    }
+  }
+  const cmapRevBtn = document.getElementById('cmap-rev');
+  if (cmapRevBtn) {
+    cmapRevBtn.classList.toggle('on', !!Settings.cmapReverse);
+    cmapRevBtn.onclick = () => {
+      Settings.cmapReverse = !Settings.cmapReverse;
+      cmapRevBtn.classList.toggle('on', Settings.cmapReverse);
+      refreshCmapChips();
+      buildTimeLegend();
+      rerenderAll();
+    };
+  }
+  refreshCmapChips();
 
   // Hi-res capture wiring. Resolves the chosen panel by canvas id, calls
-  // panel.capture(scale) (renders to a scale-up backing buffer + reads PNG),
-  // and triggers a browser download. 'All panels' walks every visible 3D
-  // panel and downloads one PNG per panel sequentially.
+  // Hi-res capture wiring. Each panel renders into a scaled WebGL buffer,
+  // returns a PNG data URL, and we wrap it in a single-page PDF (page sized
+  // to the captured pixel dimensions) via jsPDF. PDF preserves the embedded
+  // PNG losslessly — same image quality as a direct PNG export, with the
+  // benefit that paper figures can drop the PDF straight into LaTeX
+  // \includegraphics. 'All panels' iterates every visible 3D canvas and
+  // downloads one PDF per panel.
   const findPanelByCanvas = (canvasId) => panels.find(p => p?.canvas?.id === canvasId);
-  const downloadBlob = (blob, name) => {
-    if (!blob) { console.warn('capture: no blob produced'); return; }
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const captureToPdf = async (panel, scale, fileName) => {
+    const { dataUrl, width, height } = await panel.capture(scale);
+    // jsPDF page units default to mm; we use 'px' so the page exactly matches
+    // the captured raster (no resampling, no aspect-ratio drift).
+    const pdf = new jsPDF({
+      orientation: width >= height ? 'l' : 'p',
+      unit: 'px',
+      format: [width, height],
+      compress: true,
+    });
+    pdf.addImage(dataUrl, 'PNG', 0, 0, width, height, undefined, 'FAST');
+    pdf.save(fileName);
   };
   const capGo = document.getElementById('cap-go');
   if (capGo) {
@@ -6173,7 +6172,7 @@ function bindControls() {
       const scale = +(document.getElementById('cap-scale')?.value || 4);
       const stem = (CLIP_URL.split('/').pop() || 'clip').replace(/\.json$/, '');
       const orig = capGo.textContent;
-      capGo.textContent = '📷 Capturing…';
+      capGo.textContent = '📄 Capturing…';
       capGo.disabled = true;
       try {
         if (which === 'all') {
@@ -6183,14 +6182,12 @@ function bindControls() {
             // there's no full-video bundle).
             const card = p.canvas.closest('.panel-card');
             if (card && card.offsetParent === null) continue;
-            const blob = await p.capture(scale);
-            downloadBlob(blob, `${stem}_${p.canvas.id}_${scale}x.png`);
+            await captureToPdf(p, scale, `${stem}_${p.canvas.id}_${scale}x.pdf`);
           }
         } else {
           const p = findPanelByCanvas(which);
           if (!p) throw new Error(`no panel with id ${which}`);
-          const blob = await p.capture(scale);
-          downloadBlob(blob, `${stem}_${which}_${scale}x.png`);
+          await captureToPdf(p, scale, `${stem}_${which}_${scale}x.pdf`);
         }
       } catch (err) {
         console.error('capture failed:', err);
@@ -6583,18 +6580,19 @@ function bindSidebar() {
 // Preset name → maps onto the live colour pickers + applies them. Designed
 // to be one-click "look starting points" for paper figures vs. demo videos
 // vs. dark mode.
-// Per-palette `cmap` is a partial { gt, pred, raw, obj } map. Roles not
-// listed default to 'twoColor' (legacy oldEnd → newEnd lerp using the colour
-// pickers above). 'rev' is the matching reverse-direction map.
+// Each preset's `cmap` is a single colormap name applied globally (or
+// 'twoColor' to use the per-role colour pickers). The user can still pick
+// a different colormap from the chip row in the Time-gradient section after
+// applying a palette preset.
 const PALETTES = {
-  'Studio':  { gt:'#f0529c', pred:'#34d399', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', cmap:{ gt:'magma',   pred:'viridis' } },
-  'Paper':   { gt:'#ec4899', pred:'#10b981', endpoint:'#facc15', bg:'#1f2937', pageTop:'#ffffff', pageBot:'#e5e7eb', cmap:{} },
-  'Vivid':   { gt:'#ef4444', pred:'#22c55e', endpoint:'#f59e0b', bg:'#0f172a', pageTop:'#fafafa', pageBot:'#e5e7eb', cmap:{ gt:'turbo',   pred:'viridis' } },
-  'Dark':    { gt:'#f472b6', pred:'#34d399', endpoint:'#fcd34d', bg:'#0a0a0a', pageTop:'#111827', pageBot:'#1f2937', cmap:{ gt:'inferno', pred:'mako'    } },
-  'Mono':    { gt:'#475569', pred:'#94a3b8', endpoint:'#fbbf24', bg:'#f8fafc', pageTop:'#ffffff', pageBot:'#f1f5f9', cmap:{} },
-  'Sunset':  { gt:'#fb7185', pred:'#a78bfa', endpoint:'#fde68a', bg:'#1e1b4b', pageTop:'#fdf2f8', pageBot:'#fce7f3', cmap:{ gt:'rocket',  pred:'plasma'  } },
-  'Ocean':   { gt:'#22d3ee', pred:'#a3e635', endpoint:'#facc15', bg:'#0c4a6e', pageTop:'#ecfeff', pageBot:'#cffafe', cmap:{} },
-  'Original':{ gt:'#22e36b', pred:'#ff7e3c', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', cmap:{} },
+  'Studio':  { gt:'#f0529c', pred:'#34d399', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', cmap:'magma'    },
+  'Paper':   { gt:'#ec4899', pred:'#10b981', endpoint:'#facc15', bg:'#1f2937', pageTop:'#ffffff', pageBot:'#e5e7eb', cmap:'twoColor' },
+  'Vivid':   { gt:'#ef4444', pred:'#22c55e', endpoint:'#f59e0b', bg:'#0f172a', pageTop:'#fafafa', pageBot:'#e5e7eb', cmap:'turbo'    },
+  'Dark':    { gt:'#f472b6', pred:'#34d399', endpoint:'#fcd34d', bg:'#0a0a0a', pageTop:'#111827', pageBot:'#1f2937', cmap:'inferno'  },
+  'Mono':    { gt:'#475569', pred:'#94a3b8', endpoint:'#fbbf24', bg:'#f8fafc', pageTop:'#ffffff', pageBot:'#f1f5f9', cmap:'twoColor' },
+  'Sunset':  { gt:'#fb7185', pred:'#a78bfa', endpoint:'#fde68a', bg:'#1e1b4b', pageTop:'#fdf2f8', pageBot:'#fce7f3', cmap:'plasma'   },
+  'Ocean':   { gt:'#22d3ee', pred:'#a3e635', endpoint:'#facc15', bg:'#0c4a6e', pageTop:'#ecfeff', pageBot:'#cffafe', cmap:'mako'     },
+  'Original':{ gt:'#22e36b', pred:'#ff7e3c', endpoint:'#fde047', bg:'#555555', pageTop:'#ffffff', pageBot:'#f3f4f6', cmap:'twoColor' },
 };
 function bindPalettes() {
   const host = document.getElementById('palette-row');
@@ -6635,17 +6633,22 @@ function applyPalette(name) {
   set('col-bg',       p.bg);
   set('col-page-top', p.pageTop);
   set('col-page-bot', p.pageBot);
-  // Per-role colormap palette mode. Each preset specifies the colormap names
-  // for whichever roles it cares about; missing roles fall back to 'twoColor'.
-  const cmapMap = p.cmap || {};
-  for (const role of ['gt','pred','raw','obj']) {
-    const sel = document.getElementById(`cmap-${role}`);
-    if (sel) {
-      sel.value = cmapMap[role] || 'twoColor';
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+  // Each PALETTES entry carries an optional `cmap` field — a single name like
+  // 'magma' or 'twoColor' that applies globally (no per-role decomposition).
+  // Click a colormap chip in the Time-gradient section to override afterwards.
+  if (p.cmap) {
+    Settings.cmapPreset = p.cmap;
+    Settings.cmapReverse = false;
+    // Refresh the chip-row outline + legend so the UI reflects the change.
+    const chips = document.querySelectorAll('.cmap-chip');
+    chips.forEach(c => c.classList.toggle('active', c.dataset.name === Settings.cmapPreset));
+    document.getElementById('cmap-rev')?.classList.remove('on');
+    const lbl = document.getElementById('cmap-current-lbl');
+    if (lbl) lbl.textContent = (Settings.cmapPreset === 'twoColor' ? 'two-colour' : Settings.cmapPreset);
+    buildTimeLegend();
+    rerenderAll();
   }
-  // Mark active chip
+  // Mark active chip in the page-palette row
   document.querySelectorAll('.palette-chip').forEach(c => c.classList.remove('active'));
   const idx = Object.keys(PALETTES).indexOf(name);
   if (idx >= 0) document.querySelectorAll('.palette-chip')[idx]?.classList.add('active');
@@ -6660,9 +6663,8 @@ const PRESET_INPUTS = [
   // ranges + selects
   'rate-sel','scrub','col-gt','col-pred','col-endpoint','col-bg',
   'col-page-top','col-page-bot','pc-size','pc-shade',
-  'cmap-gt','cmap-pred','cmap-raw','cmap-obj',
   'n-keep','ball-stride','ball-scale','endpoint-scale','line-scale','line-scale-picks',
-  'mix-lo','t-exp','obj-R','obj-K','obj-dot',
+  'obj-R','obj-K','obj-dot',
   'trail-len','smooth-samples','n-raw','n-raw-jumpy',
   'gt-strategy','raw-strategy',
   'paper-tail','paper-mix-lo','paper-t-exp','paper-n-raw','paper-n-raw-jumpy',
@@ -6671,7 +6673,6 @@ const PRESET_INPUTS = [
 ];
 const PRESET_TOGGLES = [
   't-pc','t-gt','t-pred','t-err','t-raw','t-balls','t-endpoints',
-  'cmap-gt-rev','cmap-pred-rev','cmap-raw-rev','cmap-obj-rev',
   't-full-gt','t-full-raw',
 ];
 function _readPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}'); } catch { return {}; } }
@@ -6686,6 +6687,8 @@ function _capturePreset() {
     const el = document.getElementById(id);
     if (el) out.toggles[id] = el.classList.contains('on');
   }
+  // Global colormap preset isn't a DOM input — store the live Settings keys.
+  out.cmap = { name: Settings.cmapPreset, reverse: !!Settings.cmapReverse };
   return out;
 }
 function _applyPreset(p) {
@@ -6701,6 +6704,18 @@ function _applyPreset(p) {
     const el = document.getElementById(id);
     if (!el) continue;
     if (el.classList.contains('on') !== want) el.click();
+  }
+  // Restore the global colormap preset (skipped silently for older saved
+  // presets that pre-date the chip row).
+  if (p.cmap && typeof p.cmap.name === 'string') {
+    Settings.cmapPreset = p.cmap.name;
+    Settings.cmapReverse = !!p.cmap.reverse;
+    document.querySelectorAll('.cmap-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.name === Settings.cmapPreset);
+    });
+    document.getElementById('cmap-rev')?.classList.toggle('on', Settings.cmapReverse);
+    buildTimeLegend();
+    rerenderAll();
   }
 }
 function bindPresets() {
