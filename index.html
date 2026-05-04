@@ -1711,39 +1711,36 @@ function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
   }
 }
 
-// ──────────── Spatial-coverage selection (Poisson-disk in 3D, HOT3D-only) ────────────
-// Density-following algorithms (K-means, Lloyd-relaxed FPS) bunch picks
-// where the cohort is denser. Plain FPS avoids that bias but lands on
-// the bbox extrema, reading as a polygonal "structure". Voxel-grid
-// stratified sampling helps but the cell-centre snap is still pulled
-// by intra-cell density variation.
+// ──────────── Spatial-coverage selection (3D K-means, HOT3D-only) ────────────
+// Mirrors the upstream EgoDex Stage-1 sampling step (kmeans_sample_from_mask
+// in egodex/hand_pipeline_cluster.py): K-means over the candidate
+// coordinates with K = number-of-tracks, then return the track closest to
+// each cluster centroid. The upstream uses a 2D mask of pixel coordinates;
+// we use the 3D world positions of the moving-object cohort at frame 0,
+// keeping the algorithm identical otherwise.
 //
-// Poisson-disk sampling is the textbook "blue-noise" algorithm: pick K
-// tracks where every pair is at least r apart, with r auto-tuned to
-// make exactly K picks fit. The minimum-spacing constraint is
-// orientation-independent so picks fill the available surface area
-// uniformly, regardless of where the cohort happens to be denser.
+// Reference (sklearn): KMeans(n_clusters=K, random_state=42, n_init=1,
+// max_iter=50, init='k-means++'). Replicated here:
+//   1. K-means++ initialisation seeded by 42 — first centre uniform-
+//      random, each subsequent centre sampled with prob ∝ squared-distance
+//      to the nearest existing centre.
+//   2. Up to 50 Lloyd iterations (Voronoi-assign all cohort points to
+//      their nearest centroid → recompute each centroid as the mean of
+//      its cluster). Early-stop when assignments stabilise.
+//   3. For each final centroid, return the cohort track whose 3D position
+//      is closest to that centroid (continuous centroid → real track id).
 //
-// Algorithm:
-//   1. Cohort = moving-object frame-0 3D positions (existing helper).
-//   2. Compute bbox diagonal; r0 = bbox_diag / sqrt(K · 4) as an
-//      initial guess (treats the cohort as a quasi-2D surface in 3D).
-//   3. Iterate the cohort in deterministic random order. Accept a
-//      track if its distance to every already-accepted pick is ≥ r.
-//   4. If we end up with < K accepts, halve r and continue from where
-//      we stopped. If we get more than K, stop early. A few binary-
-//      search-style passes converge on a radius that yields exactly K
-//      picks evenly spaced.
+// K-monotonicity: not preserved by K-means (sklearn's behaviour) — when
+// the user changes K, the entire clustering re-runs and picks shift, but
+// each K still produces an even spread.
 //
-// Determinism: the iteration order is seeded by (M, K) — same K and
-// same cohort gives the same picks every render. Different K gives
-// different layouts, but both are uniform-density.
+// Scope: HOT3D + moving object only. Anchor frame = 0. Cohort = full
+// moving-object pool (no subsample) — the upstream EgoDex code clusters
+// every mask pixel without thinning, so we match that behaviour.
 //
-// Scope: HOT3D + moving object only. Anchor frame = 0. Pool memoised
-// on motionMinMag.
-//
-// Cost: O(K · M) per radius-fit pass; a few passes converge quickly.
-// Sub-millisecond at K ≤ 30 over the 4000-track sub-sampled cohort.
+// Cost: K · M · iters distance computations over Float32 typed arrays.
+// On the test bundle (M ≈ 16000, K ≤ 30, iters ≤ 50) this is ~24M flops,
+// well under one frame at 30 fps. Result cached on cfg._goodIdx.
 function _mulberry32(seed) {
   let s = seed | 0;
   return function() {
@@ -1837,11 +1834,19 @@ function _buildHot3dSpatialPool3D(clipData) {
   console.log(`spatial pool: ${poolIdx.length} tracks; cohort octants: [${[...oct].join(',')}]`);
   return built;
 }
-// Poisson-disk sampling — see header comment above for why this beats
-// K-means / FPS / voxel-grid for the user's "evenly distributed on the
-// object cloud" goal.
+// sklearn-faithful K-means in 3D. Mirrors KMeans(n_clusters=K,
+// random_state=42, n_init=1, max_iter=50, init='k-means++') from the
+// upstream egodex Stage-1 sampler.
+const KMEANS_RANDOM_STATE = 42;     // matches the upstream seed
+const KMEANS_MAX_ITER     = 50;
+// Stride-sub-sample huge cohorts before clustering. The upstream uses
+// every mask pixel without thinning, but our HOT3D cohorts are ~16k
+// tracks and unthinned K=30·M·iters costs ~30M flops which gets
+// noticeable in a slider drag. A stride sample preserves spatial
+// distribution (tracks aren't ordered by position) so the K-means
+// clusters are essentially identical to the full-cohort run.
 const SPATIAL_MAX_POOL = 4000;
-function poissonDiskSelectIdx(positions, poolIdx, K, dim) {
+function kmeansSelectIdx(positions, poolIdx, K, dim) {
   const D = dim === 2 ? 2 : 3;
   let M = poolIdx.length;
   if (M === 0) return [];
@@ -1857,158 +1862,96 @@ function poissonDiskSelectIdx(positions, poolIdx, K, dim) {
     positions = new Float32Array(subFlat);
     M = poolIdx.length;
   }
-  // bbox diagonal — sets the scale for the initial radius guess.
-  const mn = new Float64Array(D); for (let j = 0; j < D; j++) mn[j] =  Infinity;
-  const mx = new Float64Array(D); for (let j = 0; j < D; j++) mx[j] = -Infinity;
-  for (let i = 0; i < M; i++) {
+  // K-means++ init with the upstream's deterministic seed. First centre
+  // is a uniform-random cohort point; each subsequent centre is sampled
+  // with probability proportional to its squared-distance to the nearest
+  // already-chosen centre (= the standard k-means++ rule).
+  const rand = _mulberry32(KMEANS_RANDOM_STATE * 1009 + K * 31 + D);
+  const cents = new Float32Array(K * D);
+  const dists = new Float32Array(M).fill(Infinity);
+  const seedIdx0 = Math.floor(rand() * M);
+  for (let j = 0; j < D; j++) cents[j] = positions[seedIdx0 * D + j];
+  const sqDistP2C = (i, k) => {
+    let d = 0;
     for (let j = 0; j < D; j++) {
-      const v = positions[i*D + j];
-      if (v < mn[j]) mn[j] = v;
-      if (v > mx[j]) mx[j] = v;
+      const e = positions[i*D + j] - cents[k*D + j];
+      d += e * e;
     }
-  }
-  let bboxDiag2 = 0;
-  for (let j = 0; j < D; j++) {
-    const e = mx[j] - mn[j];
-    bboxDiag2 += e * e;
-  }
-  const bboxDiag = Math.sqrt(Math.max(bboxDiag2, 1e-18));
-  // Deterministic shuffle — ordering of the cohort drives Poisson-disk
-  // accept/reject; the seed is keyed by (M, K) so both stay stable.
-  const rand = _mulberry32(M * 1009 + K * 31 + D);
-  const order = new Int32Array(M);
-  for (let i = 0; i < M; i++) order[i] = i;
-  for (let i = M - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    const t = order[i]; order[i] = order[j]; order[j] = t;
-  }
-  // Single-pass acceptance helper — scans the shuffled cohort and keeps
-  // tracks whose distance to every already-kept pick is ≥ r. Returns
-  // the kept indices (into the local positions buffer).
-  const tryRadius = (r) => {
-    const r2 = r * r;
-    const kept = [];
-    for (let oi = 0; oi < M; oi++) {
-      const i = order[oi];
-      let okay = true;
-      for (let kk = 0; kk < kept.length; kk++) {
-        const p = kept[kk];
-        let d2 = 0;
-        for (let j = 0; j < D; j++) {
-          const e = positions[i*D + j] - positions[p*D + j];
-          d2 += e * e;
-          if (d2 >= r2) break;
-        }
-        if (d2 < r2) { okay = false; break; }
-      }
-      if (okay) {
-        kept.push(i);
-        if (kept.length > K * 4) break;   // plenty for binary-search bracket
-      }
-    }
-    return kept;
+    return d;
   };
-  // Binary-search the radius that yields exactly K picks. Initial guess
-  // r0 = bboxDiag / sqrt(K·4) — treats the cohort as a quasi-2D surface
-  // in 3D and starts close to the right scale.
-  let lo = 0;
-  let hi = bboxDiag * 2;
-  let best = null;
-  for (let iter = 0; iter < 14; iter++) {
-    const r = (lo + hi) * 0.5;
-    const kept = tryRadius(r);
-    if (kept.length >= K) {
-      // r might be too small; remember this as a feasible upper-bound.
-      best = kept;
-      lo = r;        // search higher r → fewer, more-spread picks
-    } else {
-      hi = r;        // r too big — fewer picks accepted
-    }
-    if (kept.length === K) { best = kept; break; }
-  }
-  if (!best) {
-    // Pathological: even r=0 didn't give K. Fall back to FPS, which
-    // always returns K picks.
-    return fpsSelectIdx(positions, poolIdx, K, D);
-  }
-  // Trim to K. `best` may be slightly above K because the radius search
-  // brackets from above; take the first K (which are the *earliest
-  // accepted* in the deterministic order, so they're a stable subset).
-  const final = best.slice(0, K).map(i => poolIdx[i]);
-  final.sort((a, b) => a - b);
-  return final;
-}
-// Farthest-point sampling. Used both as the spatial-coverage thinning
-// step on the voxel-grid cell reps (when the grid produced ≥ K) and as
-// a fallback for the very short pool / odd-extent edge cases.
-function fpsSelectIdx(positions, poolIdx, K, dim) {
-  const D = dim === 2 ? 2 : 3;
-  let M = poolIdx.length;
-  if (M === 0) return [];
-  if (K >= M) return poolIdx.slice().sort((a, b) => a - b);
-  if (M > SPATIAL_MAX_POOL) {
-    const stride = Math.ceil(M / SPATIAL_MAX_POOL);
-    const sub = []; const subFlat = [];
-    for (let i = 0; i < M; i += stride) {
-      sub.push(poolIdx[i]);
-      for (let j = 0; j < D; j++) subFlat.push(positions[i*D + j]);
-    }
-    poolIdx = sub;
-    positions = new Float32Array(subFlat);
-    M = poolIdx.length;
-  }
-  // FPS init. First seed = closest cohort point to the cohort centroid,
-  // for a deterministic, visually centered first pick. Then iteratively
-  // append the candidate with max-min distance to the current seed set,
-  // maintained via a running minDist array (each step O(M)).
-  let cx = 0, cy = 0, cz = 0;
-  for (let i = 0; i < M; i++) {
-    cx += positions[i*D];
-    cy += positions[i*D + 1];
-    if (D === 3) cz += positions[i*D + 2];
-  }
-  cx /= M; cy /= M; cz /= M;
-  let firstI = 0, firstD = Infinity;
-  for (let i = 0; i < M; i++) {
-    const dx = positions[i*D]     - cx;
-    const dy = positions[i*D + 1] - cy;
-    const dz = D === 3 ? (positions[i*D + 2] - cz) : 0;
-    const d  = dx*dx + dy*dy + dz*dz;
-    if (d < firstD) { firstD = d; firstI = i; }
-  }
-  const picked  = new Int32Array(K);
-  const minDist = new Float32Array(M).fill(Infinity);
-  picked[0] = firstI;
   for (let k = 1; k < K; k++) {
-    const last = picked[k - 1];
-    const lx = positions[last*D];
-    const ly = positions[last*D + 1];
-    const lz = D === 3 ? positions[last*D + 2] : 0;
-    let bestI = -1, bestD = -1;
+    let total = 0;
     for (let i = 0; i < M; i++) {
-      const dx = positions[i*D]     - lx;
-      const dy = positions[i*D + 1] - ly;
-      const dz = D === 3 ? (positions[i*D + 2] - lz) : 0;
-      const d  = dx*dx + dy*dy + dz*dz;
-      if (d < minDist[i]) minDist[i] = d;
-      if (minDist[i] > bestD) { bestD = minDist[i]; bestI = i; }
+      const d = sqDistP2C(i, k - 1);
+      if (d < dists[i]) dists[i] = d;
+      total += dists[i];
     }
-    if (bestI < 0) break;
-    picked[k] = bestI;
+    if (!(total > 0)) {
+      // All points coincide with existing centres — pad with a fresh
+      // unused point so the loop still produces K centres.
+      for (let j = 0; j < D; j++) cents[k*D + j] = positions[Math.min(k, M-1)*D + j];
+      continue;
+    }
+    let r = rand() * total, pick = 0;
+    for (let i = 0; i < M; i++) {
+      r -= dists[i];
+      if (r <= 0) { pick = i; break; }
+      pick = i;
+    }
+    for (let j = 0; j < D; j++) cents[k*D + j] = positions[pick * D + j];
+  }
+  // Lloyd iterations (≤ KMEANS_MAX_ITER). Voronoi-assign every cohort
+  // point to its nearest centroid, then move each centroid to the mean
+  // of its cluster. Early-stop when no assignment changed.
+  const assign   = new Int32Array(M).fill(-1);
+  const newCents = new Float32Array(K * D);
+  const cnt      = new Uint32Array(K);
+  for (let iter = 0; iter < KMEANS_MAX_ITER; iter++) {
+    let changed = 0;
+    for (let i = 0; i < M; i++) {
+      let best = 0, bestD = Infinity;
+      for (let k = 0; k < K; k++) {
+        const d = sqDistP2C(i, k);
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      if (assign[i] !== best) { assign[i] = best; changed++; }
+    }
+    if (changed === 0) break;
+    newCents.fill(0); cnt.fill(0);
+    for (let i = 0; i < M; i++) {
+      const k = assign[i];
+      for (let j = 0; j < D; j++) newCents[k*D + j] += positions[i*D + j];
+      cnt[k]++;
+    }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k] > 0) {
+        for (let j = 0; j < D; j++) cents[k*D + j] = newCents[k*D + j] / cnt[k];
+      }
+    }
+  }
+  // Each centroid → return the cohort track whose 3D position is
+  // closest to it (mirrors the upstream's "round to nearest pixel" step
+  // on the 2D mask, but in 3D world space).
+  const repsI = new Int32Array(K).fill(-1);
+  const repsD = new Float64Array(K).fill(Infinity);
+  for (let i = 0; i < M; i++) {
+    const k = assign[i];
+    const d = sqDistP2C(i, k);
+    if (d < repsD[k]) { repsD[k] = d; repsI[k] = i; }
   }
   const out = [];
-  for (let k = 0; k < K; k++) out.push(poolIdx[picked[k]]);
+  for (let k = 0; k < K; k++) if (repsI[k] >= 0) out.push(poolIdx[repsI[k]]);
   out.sort((a, b) => a - b);
   return out;
 }
-// Top-level entry: Poisson-disk sampling. Returns K spatially-uniform
+// Top-level entry: 3D K-means over the moving-object cohort. Returns K
 // track indices, or null if no usable pool (caller falls back to a
 // score-based strategy).
 function selectSpatialIdx(clipData, cfg, K) {
   const built = _buildSpatialPool(clipData, cfg);
   if (!built) return null;
-  return poissonDiskSelectIdx(built.positions, built.poolIdx,
-                              Math.max(1, K | 0), built.dim || 3);
+  return kmeansSelectIdx(built.positions, built.poolIdx,
+                         Math.max(1, K | 0), built.dim || 3);
 }
 
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
@@ -3392,33 +3335,17 @@ class Panel {
   // from clipData._gt3d at frame 0 — no extra storage.
   _addTrackedPointMarkers(cfg) {
     if (!clipData?._gt3d) return;
-    const { N, F, quant, center, half, motionMag, obj_ids, visBytes } = clipData._gt3d;
+    const { N, F, quant, center, half, visBytes } = clipData._gt3d;
     if (F === 0 || N === 0) return;
     const cx = center[0], cy = center[1], cz = center[2];
     const hx = half[0],   hy = half[1],   hz = half[2];
     const SENT = -32768, K = 1 / 32767;
-    const M = Math.min(Settings.objectCloudTrailCount | 0, N);
-    if (M <= 0) return;
-
-    // Mirror the trail builder's selection logic so markers align 1:1
-    // with the polyline subset.
-    const movObj = this._resolveMovingObj();
-    if (movObj < 0) return;
-    const motionMin = Math.max(0, Settings.motionMinMag || 0);
-    const pool = [];
-    for (let p = 0; p < N; p++) {
-      if (obj_ids && obj_ids[p] !== movObj) continue;
-      if (motionMag && motionMag[p] < motionMin) continue;
-      pool.push(p);
-    }
-    let trackIds;
-    if (pool.length <= M) {
-      trackIds = pool;
-    } else {
-      trackIds = new Array(M);
-      const step = pool.length / M;
-      for (let i = 0; i < M; i++) trackIds[i] = pool[Math.floor(i * step)];
-    }
+    // Markers come from cfg._goodIdx — the same K spatial-K-means /
+    // picker-selected tracks the rest of the viewer uses. Toggling a
+    // track in the picker shows / hides its red dot on panel ⑤
+    // immediately, and the # trajectories slider drives both the
+    // K-means picks and the dot count in lock-step.
+    const trackIds = (cfg._goodIdx || []);
     if (!trackIds.length) return;
 
     // Decode frame-0 positions for every selected track. Skip tracks
@@ -3699,51 +3626,15 @@ class Panel {
       // actual mesh-pose positions encoded in v2 gt3d.bin, so the line
       // follows the real motion instead of cutting a corner.
       const honorVis = !!Settings.objectCloudTrailHonorVis;
-      const M = Math.min(Settings.objectCloudTrailCount | 0, N);
-      if (M <= 0) return;
-      // STEP 1 — find the "moving object" (the object whose tracks have
-      // the largest mean motion magnitude). HOT3D scenes are typically
-      // 5 stationary objects + 1 manipulated object; this auto-picks
-      // the manipulated one without per-clip metadata. Cached once on
-      // clipData._gt3d so repeated trail builds reuse the same answer.
-      let movObj = clipData._gt3d._movingObjId;
-      if (movObj === undefined && motionMag && obj_ids && nObj > 0) {
-        const sumMag = new Float32Array(nObj);
-        const cnt    = new Uint32Array(nObj);
-        for (let p = 0; p < N; p++) {
-          const o = obj_ids[p];
-          sumMag[o] += motionMag[p];
-          cnt[o]++;
-        }
-        let bestObj = 0, bestMean = -1;
-        for (let o = 0; o < nObj; o++) {
-          const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
-          if (mean > bestMean) { bestMean = mean; bestObj = o; }
-        }
-        movObj = bestObj;
-        clipData._gt3d._movingObjId = movObj;
-        console.log(`gt3d: moving object id = ${movObj} (mean motion ${bestMean.toFixed(3)} m)`);
-      }
-      // STEP 2 — build the candidate pool = every track on the moving
-      // object that also clears the user-set motion threshold.
-      const motionMin = Math.max(0, Settings.motionMinMag || 0);
-      const pool = [];
-      for (let p = 0; p < N; p++) {
-        if (obj_ids && obj_ids[p] !== movObj) continue;
-        if (motionMag && motionMag[p] < motionMin) continue;
-        pool.push(p);
-      }
-      // STEP 3 — sub-sample the pool evenly to M so a track-count slider
-      // change spreads the chosen surface points uniformly across the
-      // moving object instead of clustering at one end of the index range.
-      let trackIds;
-      if (pool.length <= M) {
-        trackIds = pool;
-      } else {
-        trackIds = new Array(M);
-        const step = pool.length / M;
-        for (let i = 0; i < M; i++) trackIds[i] = pool[Math.floor(i * step)];
-      }
+      // Track set comes from cfg._goodIdx — the same K spatial-K-means
+      // / picker-selected tracks the rest of the viewer uses. Tying the
+      // dense object-cloud trail layer to _goodIdx instead of an
+      // independent stride sub-sample means the # trajectories slider
+      // and the manual GT-pick listbox actually drive what's drawn:
+      // toggling a track in the picker shows / hides its trail here,
+      // and dragging # trajectories changes both the K-means picks and
+      // the rendered trails in lock-step.
+      const trackIds = (cfg._goodIdx || []).slice();
       if (!trackIds.length) return;
       // Pre-allocate. Worst case = M tracks × trailLen segments per track.
       const maxSegs = trackIds.length * trailLen;
@@ -4477,7 +4368,7 @@ async function init() {
     if (sel && !sel.querySelector('option[value="spatial"]')) {
       const opt = document.createElement('option');
       opt.value = 'spatial';
-      opt.textContent = 'Spatial coverage (3D Poisson-disk — HOT3D)';
+      opt.textContent = 'Spatial coverage (3D K-means — HOT3D)';
       sel.appendChild(opt);
     }
     if (Settings.gtStrategy === 'smoothest') {
