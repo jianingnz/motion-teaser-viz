@@ -390,11 +390,15 @@ footer a { color: #2563eb; text-decoration: none; }
 {
   "imports": {
     "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/",
-    "jspdf": "https://unpkg.com/jspdf@2.5.1/dist/jspdf.es.min.js"
+    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
   }
 }
 </script>
+<!-- jsPDF as UMD (loaded eagerly, not via the import map). The ESM build of
+     jsPDF bare-imports @babel/runtime which the browser can't resolve from the
+     import map, so we ship the self-contained UMD instead. Exposes
+     window.jspdf.jsPDF, used by Panel.capture(scale)'s sidebar wiring. -->
+<script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 </head>
 <body>
 <div class="page">
@@ -1202,7 +1206,8 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
-import { jsPDF } from 'jspdf';
+// jsPDF is loaded as UMD via <script> earlier in <head>, exposing
+// window.jspdf.jsPDF. Imported lazily where needed (Panel.capture wiring).
 
 // ──────────── Config ────────────
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
@@ -6154,9 +6159,21 @@ function bindControls() {
   const findPanelByCanvas = (canvasId) => panels.find(p => p?.canvas?.id === canvasId);
   const captureToPdf = async (panel, scale, fileName) => {
     const { dataUrl, width, height } = await panel.capture(scale);
-    // jsPDF page units default to mm; we use 'px' so the page exactly matches
-    // the captured raster (no resampling, no aspect-ratio drift).
-    const pdf = new jsPDF({
+    // jsPDF arrives as the UMD global window.jspdf.jsPDF (loaded by a
+    // <script> in <head>). Page units default to mm; we use 'px' so the
+    // page exactly matches the captured raster (no resampling, no aspect-
+    // ratio drift). If the UMD failed to load we fall back to a PNG
+    // download so the user still gets a usable export.
+    const JsPDFCtor = window.jspdf?.jsPDF;
+    if (!JsPDFCtor) {
+      console.warn('jsPDF not loaded; falling back to PNG download');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = fileName.replace(/\.pdf$/, '.png');
+      document.body.appendChild(a); a.click(); a.remove();
+      return;
+    }
+    const pdf = new JsPDFCtor({
       orientation: width >= height ? 'l' : 'p',
       unit: 'px',
       format: [width, height],
