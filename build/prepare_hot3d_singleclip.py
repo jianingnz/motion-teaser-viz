@@ -142,64 +142,62 @@ def write_pc_binary(path: Path, xyz, rgb_u8):
 
 
 def write_gt3d_binary(path, positions, vis, annot, obj_ids, rgb_u8, n_obj):
-    """Same layout as prepare_hot3d.write_gt3d_binary (kept identical so the
-    viewer's loadGT3DBinary parses both single- and cross-clip bundles).
-    Layout:
-        magic 'GT3D' (4) | version u32 | N u32 | F u32 | nObj u32
-        | min[3] f32 | max[3] f32  (per-axis dequant bounds)
-        | quant int16 [N, F, 3]    (sentinel −32768 = un-annotated)
-        | visBytes uint8 [N * F]   (1 = visible, 0 = occluded)
-        | rgb uint8 [N, 3]
-        | obj_id uint8 [N]
+    """GT3D v2 layout — must match prepare_hot3d.write_gt3d_binary EXACTLY,
+    since both are parsed by the same viewer-side `loadGT3DBinary`. Field
+    order matters; the loader reads sequentially via offset arithmetic.
+
+    Layout (little-endian):
+      MAGIC 'GT3D' (4) | version u32 = 2 | N u32 | F u32 | nObj u32
+      | f32 axisMin[3] | f32 axisMax[3]
+      | u8  obj_ids[N]
+      | u8  rgb[N, 3]
+      | i16 quant[F, N, 3]      (FRAME-major; sentinel -32768 = un-annotated)
+      | u8  visBytes[F * N]     (1 = visible/cloud-eligible, 0 = occluded)
     """
     N, F, _ = positions.shape
-    # Per-axis dequant bounds derived from annotated positions only.
-    pts = positions[annot]
-    if len(pts) == 0:
-        # Degenerate but keep the file valid.
-        mn = np.array([-1.0, -1.0, -1.0], dtype=np.float32)
-        mx = np.array([ 1.0,  1.0,  1.0], dtype=np.float32)
-    else:
-        mn = pts.min(axis=0).astype(np.float32)
-        mx = pts.max(axis=0).astype(np.float32)
-        # Pad slightly so the int16 range covers the bounds without wrap.
-        span = mx - mn
-        mn = mn - 0.01 * span
-        mx = mx + 0.01 * span
-    half = (mx - mn) * 0.5
-    cen  = (mx + mn) * 0.5
-    half = np.where(half < 1e-6, 1e-6, half)
+    assert vis.shape == (N, F)
+    assert annot.shape == (N, F)
+    assert obj_ids.shape == (N,)
+    assert rgb_u8.shape == (N, 3)
 
-    quant = np.full((N, F, 3), -32768, dtype=np.int16)
-    if len(pts) > 0:
-        # Vectorised quant: only annotated positions.
-        flat_idx = np.where(annot.ravel())[0]
-        if len(flat_idx) > 0:
-            P = positions.reshape(-1, 3)[flat_idx]
-            q = np.round((P - cen) / half * 32767).astype(np.int32)
-            q = np.clip(q, -32767, 32767).astype(np.int16)
-            quant.reshape(-1, 3)[flat_idx] = q
-    vis_bytes = vis.astype(np.uint8)
+    valid_mask = annot & np.isfinite(positions).all(axis=-1)     # (N, F)
+    if not valid_mask.any():
+        raise RuntimeError("no annotated positions to encode")
+    valid_pts = positions[valid_mask]
+    axis_min = valid_pts.min(axis=0).astype(np.float32)
+    axis_max = valid_pts.max(axis=0).astype(np.float32)
+    center = (axis_max + axis_min) / 2.0
+    half = (axis_max - axis_min) / 2.0
+    half = np.where(half < 1e-9, 1e-9, half)
 
-    with open(path, "wb") as f:
+    quant_nft = np.full((N, F, 3), -32768, dtype=np.int16)
+    normed = (positions[valid_mask] - center) / half
+    normed = np.clip(np.round(normed * 32767.0), -32767, 32767).astype(np.int16)
+    quant_nft[valid_mask] = normed
+    # Frame-major for the on-disk layout (the loader reads it as F*N*3).
+    quant_fnt = np.ascontiguousarray(quant_nft.transpose(1, 0, 2))   # (F, N, 3)
+    # Visibility is stored frame-major too: byte index = f * N + p.
+    vis_fn = np.ascontiguousarray(vis.T.astype(np.uint8))            # (F, N)
+
+    with open(path, 'wb') as f:
         f.write(b"GT3D")
-        f.write(np.uint32(1).tobytes())
-        f.write(np.uint32(N).tobytes())
-        f.write(np.uint32(F).tobytes())
-        f.write(np.uint32(n_obj).tobytes())
-        f.write(mn.astype(np.float32).tobytes())
-        f.write(mx.astype(np.float32).tobytes())
-        f.write(quant.tobytes())
-        f.write(vis_bytes.tobytes())
-        f.write(rgb_u8.astype(np.uint8).tobytes())
+        f.write(struct.pack("<I", 2))      # version = 2
+        f.write(struct.pack("<I", N))
+        f.write(struct.pack("<I", F))
+        f.write(struct.pack("<I", n_obj))
+        for v in axis_min: f.write(struct.pack("<f", float(v)))
+        for v in axis_max: f.write(struct.pack("<f", float(v)))
         f.write(obj_ids.astype(np.uint8).tobytes())
+        f.write(rgb_u8.astype(np.uint8).tobytes())
+        f.write(quant_fnt.tobytes())
+        f.write(vis_fn.tobytes())
     return {
+        "format":   "GT3D v2",
         "n_tracks": int(N),
         "n_frames": int(F),
         "n_objects": int(n_obj),
-        "format": ("GT3D v1: magic | u32 v | u32 N | u32 F | u32 nObj | "
-                   "f32 min[3] | f32 max[3] | i16 quant[N,F,3] | "
-                   "u8 vis[N*F] | u8 rgb[N,3] | u8 obj_id[N]"),
+        "axis_min":  [float(v) for v in axis_min],
+        "axis_max":  [float(v) for v in axis_max],
     }
 
 

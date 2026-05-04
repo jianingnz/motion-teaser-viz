@@ -49,6 +49,9 @@ import numpy as np
 
 EGODEX_ROOT = Path("/weka/prior-default/jianingz/home/dataset/egodex")
 HOT3D_RGB_TPL = "/weka/prior-default/jianingz/home/dataset/hot3d_repo/tmp/rgbs/{clip}_rgb.mp4"
+DROID_ROOT = Path("/weka/oe-training-default/jianingz/dataset/droid/1.0.1")
+HDEPIC_RGB_TPL = "/weka/prior-default/jianingz/home/project/_GenTraj/vipe/vipe_results/rgb/{vid}.mp4"
+MOTION5_VIZ = Path("/weka/prior-default/jianingz/home/visual/motion5-viz")
 
 # The HOT3D bundle is a stitch — viewer frames map back to two source clips.
 # Mirrors the constants in build/prepare_hot3d.py (CLIP_A/B + T_*_START/END).
@@ -66,6 +69,73 @@ HOT3D_STITCH = {
         ("clip-003020", 23, 56),
     ],
 }
+
+# DROID bundle id → identifying parts of the raw-DROID mp4 path. The full
+# 1280×720 @ 60 fps mp4 lives at
+#   /weka/oe-training-default/jianingz/dataset/droid/1.0.1/<lab>/<status>/<date>/<run-dir>/recordings/MP4/<cam>.mp4
+# where <run-dir> is the dir whose `metadata_<lab>+<uuid_short>+<timestamp>.json`
+# matches our entry. We also keep the motion5-viz src JSON path because the
+# bundle's served JSON drops `video_fps_mult` / track-frame metadata after
+# remapping to [0..N-1] — the mapping back to source frames lives in the
+# original src JSON's `configs[0].all_frames` + `video_fps_mult`.
+DROID_SOURCE = {
+    "AUTOLab_5d05c5aa_object_t27": {
+        "lab": "AUTOLab", "uuid_short": "5d05c5aa",
+        "timestamp": "2023-07-13-10h-59m-53s", "cam": "24400334",
+        "src_json": ("static/data/modeling_json/droid/test/"
+                     "AUTOLab_5d05c5aa_2023-07-13-10h-59m-53s_24400334_object_t27.json"),
+    },
+    "GuptaLab_553d1bd5_object_t33": {
+        "lab": "GuptaLab", "uuid_short": "553d1bd5",
+        "timestamp": "2023-04-20-12h-41m-59s", "cam": "22246076",
+        "src_json": ("static/data/modeling_json/droid/test/"
+                     "GuptaLab_553d1bd5_2023-04-20-12h-41m-59s_22246076_object_t33.json"),
+    },
+    "PennPAL_c5f808b7_object_t14": {
+        "lab": "PennPAL", "uuid_short": "c5f808b7",
+        "timestamp": "2023-10-09-21h-10m-27s", "cam": "27085680",
+        "src_json": ("static/data/modeling_json/droid/test/"
+                     "PennPAL_c5f808b7_2023-10-09-21h-10m-27s_27085680_object_t14.json"),
+    },
+}
+
+# HD-EPIC bundle id → vipe RGB stem. The vipe pipeline's RGB mp4 (480×480 @
+# 15 fps) is the highest-resolution RGB we have for HD-EPIC in this env;
+# using it gives a 4× pixel improvement over the served 480×480 strip frames
+# (no, same dim — but the strip render avoids re-encoding artefacts and
+# preserves frame timing exactly). The bundle's served JSON keeps original
+# track-fps frame indices, so the strip mapping is straight identity.
+HDEPIC_SOURCE = {
+    "P05-20240425-171455-251": "P05-20240425-171455-251",
+    "P05-20240427-145526-105": "P05-20240427-145526-105",
+    "P06-20240510-100047-225": "P06-20240510-100047-225",
+}
+
+
+# ────────────────────── DROID raw-mp4 resolver ──────────────────────
+
+def droid_resolve_raw_mp4(meta):
+    """Find the 1280×720 @ 60 fps DROID mp4 by matching `metadata_*.json` in
+    the date-folder. Returns Path. Raises if no match."""
+    lab = meta["lab"]; uuid_short = meta["uuid_short"]; ts = meta["timestamp"]
+    cam = meta["cam"]
+    date = ts[:10]                                  # 'YYYY-MM-DD'
+    metadata_match = f"metadata_{lab}+{uuid_short}+{ts}.json"
+    for status in ("success", "failure"):
+        date_dir = DROID_ROOT / lab / status / date
+        if not date_dir.exists():
+            continue
+        for run_dir in sorted(date_dir.iterdir()):
+            if not run_dir.is_dir():
+                continue
+            if (run_dir / metadata_match).exists():
+                mp4 = run_dir / "recordings" / "MP4" / f"{cam}.mp4"
+                if not mp4.exists():
+                    raise RuntimeError(f"DROID metadata matched but mp4 missing: {mp4}")
+                return mp4
+    raise RuntimeError(
+        f"DROID raw mp4 not found for {meta} (looked for {metadata_match} in "
+        f"{DROID_ROOT}/{lab}/[success|failure]/{date}/*/)")
 
 
 def is_egodex(video_stem: str) -> bool:
@@ -237,6 +307,51 @@ def build_hot3d_clip_strip(clip: dict, clip_id: str, n_clip: int):
 
 # ────────────────────── pipeline ──────────────────────
 
+def build_droid_clip_strip(clip_id: str, n_clip: int):
+    """For DROID: pull frames from the 1280×720 @ 60 fps raw mp4.
+
+    The served bundle's `cfg.all_frames` was re-indexed to [0..N-1] by
+    prepare_clip_simple.py (which also reset video_fps_mult to 1). To map
+    a viewer-frame index back to the raw mp4 we need the ORIGINAL track
+    indices + the original fps multiplier — both live in the motion5-viz
+    src JSON only. Returns (raw_mp4, viewer_picks, raw_indices)."""
+    meta = DROID_SOURCE.get(clip_id)
+    if meta is None:
+        raise RuntimeError(f"DROID clip_id={clip_id} not in DROID_SOURCE table")
+    src_json_path = MOTION5_VIZ / meta["src_json"]
+    if not src_json_path.exists():
+        raise FileNotFoundError(f"motion5-viz src JSON missing: {src_json_path}")
+    src = json.loads(src_json_path.read_text())
+    src_cfg = src["configs"][0]
+    af = src_cfg["all_frames"]                       # original track-fps idxs
+    mult = int(src.get("video_fps_mult", 1))
+    n_track = len(af)
+    viewer_picks = even_indices(n_track, n_clip)     # indices into all_frames
+    raw_indices = [int(af[k] * mult) for k in viewer_picks]   # 60-fps idxs
+    raw_mp4 = droid_resolve_raw_mp4(meta)
+    print(f"  DROID clip strip: {len(raw_indices)} frames @ {mult}× from "
+          f"{raw_mp4.parent.parent.parent.name}/.../{raw_mp4.name}  "
+          f"viewer_picks={viewer_picks}  raw_idx={raw_indices}")
+    return raw_mp4, viewer_picks, raw_indices
+
+
+def build_hdepic_clip_strip(clip_id: str, n_clip: int):
+    """HD-EPIC: served bundle is the same 480×480 @ 15 fps vipe RGB; the
+    bundle keeps original track indices in cfg.all_frames (no re-index).
+    Returns (mp4, viewer_picks, src_indices) where src_indices = picks
+    (1:1 mapping at 15 fps)."""
+    vid = HDEPIC_SOURCE.get(clip_id)
+    if vid is None:
+        raise RuntimeError(f"HD-EPIC clip_id={clip_id} not in HDEPIC_SOURCE table")
+    mp4 = Path(HDEPIC_RGB_TPL.format(vid=vid))
+    if not mp4.exists():
+        raise FileNotFoundError(f"HD-EPIC source mp4 missing: {mp4}")
+    json_path = (Path("static/data") / f"{clip_id}.json")  # relative to out_dir caller
+    # Bundle JSON is read by the caller; we just decide the strip count vs
+    # the bundle's num_frames here (caller passes n_clip).
+    return mp4
+
+
 def extract_for_clip(out_dir: Path, clip_id: str, n_clip: int, n_full: int,
                      allow_skip: bool):
     json_path = out_dir / "static" / "data" / f"{clip_id}.json"
@@ -246,10 +361,12 @@ def extract_for_clip(out_dir: Path, clip_id: str, n_clip: int, n_full: int,
     cam = clip.get("camera") or {}
     video_stem = cam.get("video_stem", "")
 
-    is_hot3d = clip_id in HOT3D_STITCH
-    if not is_hot3d and not is_egodex(video_stem):
+    is_hot3d  = clip_id in HOT3D_STITCH
+    is_droid  = clip_id in DROID_SOURCE
+    is_hdepic = clip_id in HDEPIC_SOURCE
+    if not (is_hot3d or is_droid or is_hdepic) and not is_egodex(video_stem):
         msg = (f"clip {clip_id}: not EgoDex (stem={video_stem!r}) and not in "
-               f"HOT3D stitch table — only EgoDex+HOT3D are supported.")
+               f"HOT3D / DROID / HD-EPIC tables — supported datasets only.")
         if allow_skip:
             print(f"SKIP: {msg}"); return
         raise RuntimeError(msg)
@@ -266,7 +383,6 @@ def extract_for_clip(out_dir: Path, clip_id: str, n_clip: int, n_full: int,
         per_src = {}
         for clp, src_fi, vf in pairs:
             per_src.setdefault(clp, []).append((src_fi, vf))
-        # Read frames preserving the original (vf-ordered) sequence.
         idx_to_frame = {}
         for clp, items in per_src.items():
             mp4 = Path(HOT3D_RGB_TPL.format(clip=clp))
@@ -287,6 +403,38 @@ def extract_for_clip(out_dir: Path, clip_id: str, n_clip: int, n_full: int,
              "frame_idx_src": int(src_fi)}
             for rel, (clp, src_fi, vf) in zip(rels, pairs)
         ]
+    elif is_droid:
+        raw_mp4, viewer_picks, raw_indices = build_droid_clip_strip(clip_id, n_clip)
+        frames_out = grab_frames_from_mp4(raw_mp4, raw_indices)
+        rels = write_jpgs(frames_out, clip_dir, out_dir)
+        H, W = frames_out[0].shape[:2]
+        clip["clip_frames_hires"] = [
+            {"url": rel,
+             "frame_idx_clip": int(vf),
+             "frame_idx_src_60fps": int(raw_fi)}
+            for rel, vf, raw_fi in zip(rels, viewer_picks, raw_indices)
+        ]
+    elif is_hdepic:
+        # HD-EPIC: no remap between viewer and source — same frame indices
+        # at 15 fps. Pick N evenly across the bundle's track frames and pull
+        # them from the 480×480 vipe RGB mp4.
+        n_total = clip.get("num_frames")
+        if not n_total:
+            raise RuntimeError("HD-EPIC clip JSON missing num_frames.")
+        viewer_picks = even_indices(int(n_total), n_clip)
+        src_indices = list(viewer_picks)             # 1:1 mapping
+        mp4 = build_hdepic_clip_strip(clip_id, n_clip)
+        print(f"  HD-EPIC clip strip: {len(src_indices)} frames from {mp4.name}  "
+              f"src_indices={src_indices}")
+        frames_out = grab_frames_from_mp4(mp4, src_indices)
+        rels = write_jpgs(frames_out, clip_dir, out_dir)
+        H, W = frames_out[0].shape[:2]
+        clip["clip_frames_hires"] = [
+            {"url": rel,
+             "frame_idx_clip": int(vf),
+             "frame_idx_src": int(src_fi)}
+            for rel, vf, src_fi in zip(rels, viewer_picks, src_indices)
+        ]
     else:
         src_mp4, viewer_picks, src_picks_30fps = build_egodex_clip_strip(
             clip, video_stem, n_clip)
@@ -302,10 +450,9 @@ def extract_for_clip(out_dir: Path, clip_id: str, n_clip: int, n_full: int,
     print(f"  wrote {len(rels)} clip-strip jpgs ({W}x{H}) → {clip_dir}")
 
     # ── Full-source strip (panel ⓪b) ──
-    # HOT3D: there's no separate "full source" panel today — the viewer mp4
-    # already IS the source for every frame, so the clip strip alone is
-    # sufficient. Skip full strip for HOT3D.
-    if not is_hot3d:
+    # Only EgoDex bundles ship a separate full-video panel today; HOT3D /
+    # DROID / HD-EPIC have no full strip to populate.
+    if not (is_hot3d or is_droid or is_hdepic):
         result = build_egodex_full_strip(clip, video_stem, n_full)
         if result is not None:
             src_mp4, src_picks, src_fps = result
