@@ -776,6 +776,7 @@ footer a { color: #2563eb; text-decoration: none; }
             <option value="jumpiest">Jumpiest first</option>
             <option value="random">Random</option>
             <option value="uniform">Uniform spread (every Nth)</option>
+            <option value="spatial">Spatial coverage (K-means, 3D)</option>
           </select>
         </div>
         <div class="fld">
@@ -1699,8 +1700,222 @@ function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
     case 'random':    return selectRandomIdx(scores, n_keep, scores.length);
     case 'uniform':   return selectUniformIdx(scores, n_keep);
     case 'mixed':     return selectMixedRawIdx(scores, n_keep, n_jumpy);
+    // 'spatial' is dispatched separately at the call site (it needs 3D
+    // anchor positions and a candidate pool, not just scores). If we get
+    // here with 'spatial' the caller didn't have data to do K-means and
+    // we fall through to smoothest as a safe behaviour.
+    case 'spatial':   return selectSmoothestIdx(scores, n_keep);
     default:          return selectSmoothestIdx(scores, n_keep);
   }
+}
+
+// ──────────── Spatial-coverage selection (K-means in 3D) ────────────
+// Pick K trajectories whose anchor-frame 3D positions span the object —
+// instead of clustering in one corner. Mirrors the upstream "2D mask →
+// K-means → query points" step at the *track-selection* level. Use case is
+// HOT3D, where the default 'smoothest' degenerates (cfg.gt_3d is sparse so
+// every score is 0 and the picker just returns track indices [0..N-1]); we
+// keep the helper general so any bundle with a frame-0 3D anchor benefits.
+//
+// For HOT3D specifically the candidate pool is restricted to the moving
+// object's tracks (auto-detected by mean motion magnitude per obj_id) so
+// K-means doesn't hand out clusters to static furniture/walls.
+//
+// Cost: K-means is K·M·iters distance calcs over Float32 arrays; typical
+// HOT3D moving-object pool is ~3–8k tracks, K ≤ 30, iters ≤ 15 — well under
+// a millisecond. The result is cached on cfg._goodIdx, so the K-means runs
+// once per slider drag, not per render frame.
+function _mulberry32(seed) {
+  let s = seed | 0;
+  return function() {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// Build (poolIdx, positions) for the spatial K-means call. HOT3D path
+// restricts the pool to the moving object; non-HOT3D path uses every track
+// with a finite cfg.gt_3d[0] anchor. Returns null if no usable pool.
+function _buildSpatialPool(clipData, cfg) {
+  if (clipData?._gt3d) return _buildHot3dSpatialPool(clipData);
+  const f0 = cfg?.gt_3d?.[0];
+  if (!f0?.length) return null;
+  const poolIdx = []; const flat = [];
+  for (let p = 0; p < f0.length; p++) {
+    const pt = f0[p];
+    if (!pt || !Number.isFinite(pt[0])) continue;
+    poolIdx.push(p);
+    flat.push(pt[0], pt[1], pt[2]);
+  }
+  if (poolIdx.length < 2) return null;
+  return { poolIdx, positions: new Float32Array(flat) };
+}
+function _buildHot3dSpatialPool(clipData) {
+  const g = clipData._gt3d;
+  if (!g) return null;
+  // Memoise the (poolIdx, positions) tuple on the gt3d header. The pool
+  // only depends on motionMinMag (and the cached movingObjId), so a single
+  // entry keyed on the threshold is enough. K-means itself is K-dependent
+  // and runs on top of this — so dragging the # trajectories slider only
+  // pays the K-means cost (sub-ms), not the full N=80k pool scan.
+  const motionMin = Math.max(0, +(Settings.motionMinMag) || 0);
+  if (g._spatialPoolCache && g._spatialPoolCache.motionMin === motionMin) {
+    return g._spatialPoolCache.built;
+  }
+  const { N, F, quant, obj_ids, motionMag, nObj, center, half } = g;
+  const SENT = -32768;
+  // Identify the moving object (cached on the gt3d header). Same heuristic
+  // as Panel._resolveMovingObj / _addObjectCloudTrails: highest mean motion
+  // magnitude across that object's tracks.
+  let movObj = g._movingObjId;
+  if (movObj === undefined) {
+    if (!motionMag || !obj_ids || !nObj) {
+      g._movingObjId = -1;
+    } else {
+      const sumMag = new Float32Array(nObj);
+      const cnt    = new Uint32Array(nObj);
+      for (let p = 0; p < N; p++) {
+        sumMag[obj_ids[p]] += motionMag[p];
+        cnt[obj_ids[p]]++;
+      }
+      let bestObj = 0, bestMean = -1;
+      for (let o = 0; o < nObj; o++) {
+        const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
+        if (mean > bestMean) { bestMean = mean; bestObj = o; }
+      }
+      g._movingObjId = bestObj;
+      console.log(`spatial K-means: moving object id = ${bestObj} (mean motion ${bestMean.toFixed(3)} m)`);
+    }
+    movObj = g._movingObjId;
+  }
+  if (movObj < 0) return null;
+  // Drop tracks whose motion magnitude is below the live filter slider —
+  // keeps spatial picks in sync with what's actually rendered when the
+  // user has dialled motion-min up to surface only the most-moving points.
+  const poolIdx = []; const flat = [];
+  for (let p = 0; p < N; p++) {
+    if (obj_ids && obj_ids[p] !== movObj) continue;
+    if (motionMag && motionMag[p] < motionMin) continue;
+    // Anchor = first frame the track has a valid annotation. Usually 0;
+    // fall back per-track if frame 0 happens to be SENT.
+    let f = 0;
+    while (f < F && quant[(f * N + p) * 3] === SENT) f++;
+    if (f >= F) continue;
+    const base = (f * N + p) * 3;
+    const x = (quant[base    ] / 32767) * half[0] + center[0];
+    const y = (quant[base + 1] / 32767) * half[1] + center[1];
+    const z = (quant[base + 2] / 32767) * half[2] + center[2];
+    poolIdx.push(p);
+    flat.push(x, y, z);
+  }
+  if (poolIdx.length < 2) return null;
+  const built = { poolIdx, positions: new Float32Array(flat) };
+  g._spatialPoolCache = { motionMin, built };
+  return built;
+}
+// K-means++ seed → 15 Lloyd iterations → pick the candidate closest to each
+// final cluster centroid. Returns K track indices (mapped through poolIdx)
+// sorted ascending. Deterministic for given (M, K) so picks don't twitch
+// across re-renders.
+function kmeansSelectIdx(positions, poolIdx, K) {
+  const M = poolIdx.length;
+  if (M === 0) return [];
+  if (K >= M) return poolIdx.slice().sort((a, b) => a - b);
+  const rand = _mulberry32(M * 1009 + K * 31);
+  // K-means++ initialisation: first centre uniform-random, each subsequent
+  // centre sampled with prob ∝ squared-distance to its nearest existing
+  // centre. Empty / coincident-points buffers guarded with linear fallback.
+  const centIdx = [Math.floor(rand() * M)];
+  const dists = new Float32Array(M).fill(Infinity);
+  for (let k = 1; k < K; k++) {
+    const cI = centIdx[k - 1];
+    const cx = positions[cI*3], cy = positions[cI*3+1], cz = positions[cI*3+2];
+    let total = 0;
+    for (let i = 0; i < M; i++) {
+      const dx = positions[i*3] - cx, dy = positions[i*3+1] - cy, dz = positions[i*3+2] - cz;
+      const d = dx*dx + dy*dy + dz*dz;
+      if (d < dists[i]) dists[i] = d;
+      total += dists[i];
+    }
+    if (!(total > 0)) {
+      // All remaining points coincide with existing centres — pad linearly.
+      let next = 0;
+      while (next < M && centIdx.includes(next)) next++;
+      centIdx.push(Math.min(next, M - 1));
+      continue;
+    }
+    let r = rand() * total, pick = 0;
+    for (let i = 0; i < M; i++) {
+      r -= dists[i];
+      if (r <= 0) { pick = i; break; }
+      pick = i;
+    }
+    centIdx.push(pick);
+  }
+  const cents    = new Float32Array(K * 3);
+  const newCents = new Float32Array(K * 3);
+  const cnt      = new Uint32Array(K);
+  const assign   = new Int32Array(M).fill(-1);
+  for (let k = 0; k < K; k++) {
+    cents[k*3]   = positions[centIdx[k]*3];
+    cents[k*3+1] = positions[centIdx[k]*3+1];
+    cents[k*3+2] = positions[centIdx[k]*3+2];
+  }
+  const ITERS = 15;
+  for (let iter = 0; iter < ITERS; iter++) {
+    let changed = 0;
+    for (let i = 0; i < M; i++) {
+      const px = positions[i*3], py = positions[i*3+1], pz = positions[i*3+2];
+      let best = 0, bestD = Infinity;
+      for (let k = 0; k < K; k++) {
+        const dx = px - cents[k*3], dy = py - cents[k*3+1], dz = pz - cents[k*3+2];
+        const d  = dx*dx + dy*dy + dz*dz;
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      if (assign[i] !== best) { assign[i] = best; changed++; }
+    }
+    if (changed === 0) break;
+    newCents.fill(0); cnt.fill(0);
+    for (let i = 0; i < M; i++) {
+      const k = assign[i];
+      newCents[k*3]   += positions[i*3];
+      newCents[k*3+1] += positions[i*3+1];
+      newCents[k*3+2] += positions[i*3+2];
+      cnt[k]++;
+    }
+    for (let k = 0; k < K; k++) {
+      if (cnt[k] > 0) {
+        cents[k*3]   = newCents[k*3]   / cnt[k];
+        cents[k*3+1] = newCents[k*3+1] / cnt[k];
+        cents[k*3+2] = newCents[k*3+2] / cnt[k];
+      }
+    }
+  }
+  // Pick the candidate closest to each cluster's centroid as that
+  // cluster's representative — gives a stable, near-centre track per
+  // cluster and avoids "off-axis outlier" picks that K-medoids can land on.
+  const bestI = new Int32Array(K).fill(-1);
+  const bestD = new Float64Array(K).fill(Infinity);
+  for (let i = 0; i < M; i++) {
+    const k = assign[i];
+    const dx = positions[i*3] - cents[k*3];
+    const dy = positions[i*3+1] - cents[k*3+1];
+    const dz = positions[i*3+2] - cents[k*3+2];
+    const d  = dx*dx + dy*dy + dz*dz;
+    if (d < bestD[k]) { bestD[k] = d; bestI[k] = i; }
+  }
+  const out = [];
+  for (let k = 0; k < K; k++) if (bestI[k] >= 0) out.push(poolIdx[bestI[k]]);
+  out.sort((a, b) => a - b);
+  return out;
+}
+// Top-level entry: returns K spatially-spread track indices, or null if no
+// usable pool (caller should fall back to scoring strategies).
+function selectSpatialIdx(clipData, cfg, K) {
+  const built = _buildSpatialPool(clipData, cfg);
+  if (!built) return null;
+  return kmeansSelectIdx(built.positions, built.poolIdx, Math.max(1, K | 0));
 }
 
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
@@ -2887,8 +3102,10 @@ class Panel {
     // only make sense during playback).
     if (isPaper) return;
 
-    // Error vectors — interpolated to follow current motion
-    if (this.opts.showErrors && fiFrac >= 0) {
+    // Error vectors — interpolated to follow current motion. Bundles
+    // without a predictive layer (HOT3D etc.) leave cfg.pred_3d null;
+    // skip in that case so _interpPt doesn't dereference null.
+    if (this.opts.showErrors && fiFrac >= 0 && cfg.pred_3d && cfg.gt_3d) {
       const segs = [];
       for (const p of idx) {
         const a = this._interpPt(cfg.gt_3d, fiFrac, p);
@@ -3614,6 +3831,23 @@ let panels = [];
 let clipData = null, cfg = null;
 let video, vidOver, vidOverCtx, chronoOver, chronoOverCtx;
 
+// Tiny debug hook: expose the module-scope state on `window.__MTV` so
+// browser devtools / smoke tests / preset-introspection can read the live
+// cfg, clipData, Settings, and the few re-curation entry points without
+// having to reach inside the module. Read-only getters keep callers from
+// stomping on the actual `let` bindings.
+if (typeof window !== 'undefined') {
+  window.__MTV = {
+    get cfg() { return cfg; },
+    get clipData() { return clipData; },
+    get panels() { return panels; },
+    get Settings() { return Settings; },
+    get TRAIL_RGB() { return TRAIL_RGB; },
+    recomputeGtIdx: (n) => recomputeGtIdx(n),
+    selectSpatialIdx: (...args) => selectSpatialIdx(...args),
+  };
+}
+
 // Object-only PC filter (k-NN strict). For each scene-PC point we find its
 // K-th nearest tracked point (at frame 0); the point is kept only if that
 // K-th distance is ≤ R metres. This means a scene PC point must sit inside
@@ -4135,12 +4369,30 @@ async function init() {
   // Curated index lists (computed once per clip): GT/Pred = smoothest first,
   // raw = uniform stride + handful of jumpiest. Used everywhere in place of
   // the old `p += POINT_SUBSAMPLE` stride.
-  cfg._goodIdx = selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), N_GT_KEEP);
-
-  // Paper-figure GT idx: widen the candidate pool to N_GT_KEEP × POOL_MULT
-  // smoothest-globally, then keep the N_GT_KEEP cleanest in the TAIL window.
-  // This lets us be stricter on tail noise without dropping the track count.
-  {
+  //
+  // HOT3D-style bundles (presence of clipData._gt3d) auto-elevate to the
+  // 'spatial' strategy because (a) cfg.gt_3d is sparse there so the
+  // jump-score-based strategies degenerate to picking the first N indices,
+  // and (b) the scene contains 5–6 objects but only one moves — spatial
+  // K-means restricted to the moving object's tracks gives the user
+  // surface-spanning picks that actually communicate the motion.
+  if (clipData?._gt3d && Settings.gtStrategy === 'smoothest') {
+    Settings.gtStrategy = 'spatial';
+    const sel = document.getElementById('gt-strategy');
+    if (sel) sel.value = 'spatial';
+  }
+  if (Settings.gtStrategy === 'spatial') {
+    const idx = selectSpatialIdx(clipData, cfg, N_GT_KEEP);
+    cfg._goodIdx = idx && idx.length
+      ? idx
+      : selectSmoothestIdx(pointMaxJumpScores(cfg.gt_3d), N_GT_KEEP);
+    cfg._goodIdxPaper = cfg._goodIdx.slice();
+  } else {
+    cfg._goodIdx = selectIdxByStrategy(Settings.gtStrategy,
+      pointMaxJumpScores(cfg.gt_3d), N_GT_KEEP);
+    // Paper-figure GT idx: widen the candidate pool to N_GT_KEEP × POOL_MULT
+    // smoothest-globally, then keep the N_GT_KEEP cleanest in the TAIL window.
+    // This lets us be stricter on tail noise without dropping the track count.
     const paperGtEnd = cfg.gt_3d.length - Settings.paperGtTailDrop;
     const poolSize   = Math.min(cfg.gt_3d[0].length,
                                 Math.ceil(N_GT_KEEP * PAPER_GT_POOL_MULT));
@@ -5750,6 +6002,21 @@ function recomputeGtIdx(n) {
   const P = cfg.gt_3d[0]?.length || 0;
   if (!P) return;
   n = Math.max(1, Math.min(P, n | 0));
+  // 'spatial' branches off score-based dispatch — it K-means over anchor-
+  // frame 3D positions (HOT3D moving-object pool by default; see
+  // selectSpatialIdx). Paper-figure idx mirrors the live pick: tail-clean
+  // re-ranking is a smoothness story and doesn't apply to spatial coverage.
+  if (Settings.gtStrategy === 'spatial') {
+    const idx = selectSpatialIdx(clipData, cfg, n);
+    if (idx && idx.length) {
+      cfg._goodIdx      = idx;
+      cfg._goodIdxPaper = idx.slice();
+      syncAltPanelGtFromClip();
+      return;
+    }
+    // No usable pool (no _gt3d, no finite cfg.gt_3d[0]) — fall through to
+    // the score-based path so the slider still produces some selection.
+  }
   const scores = pointMaxJumpScores(cfg.gt_3d);
   cfg._goodIdx = selectIdxByStrategy(Settings.gtStrategy, scores, n);
   const paperGtEnd = cfg.gt_3d.length - Settings.paperGtTailDrop;
