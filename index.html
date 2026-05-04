@@ -5175,9 +5175,30 @@ function readPickerSelection(selectId) {
   return out;
 }
 
+// HOT3D-flavoured GT picker scores: motionMag for moving-object tracks,
+// 0 for static-object tracks. fillTrajectoryPicker filters to scores > 0
+// so the listbox shows only the moving-object cohort — same UX as egodex
+// (where pointMaxJumpScores naturally excludes invalid tracks via the
+// scores>0 filter), just sourced from the HOT3D motion magnitudes since
+// HOT3D's cfg.gt_3d is a sparse stub and pointMaxJumpScores would return
+// all zeros there.
+function _gtScoresForPicker(clipData, cfg) {
+  if (clipData?._gt3d) {
+    const g = clipData._gt3d;
+    const movObj = _resolveMovingObjId(g);
+    const N = g.N;
+    const out = new Float32Array(N);
+    if (movObj < 0 || !g.obj_ids || !g.motionMag) return out;
+    for (let p = 0; p < N; p++) {
+      if (g.obj_ids[p] === movObj && g.motionMag[p] > 0) out[p] = g.motionMag[p];
+    }
+    return out;
+  }
+  return cfg?.gt_3d?.length ? pointMaxJumpScores(cfg.gt_3d) : new Float32Array(0);
+}
 function bindTrajectoryPickers() {
   // Build auto-derived score arrays once; reused on slider/reset/picker change.
-  const gtScores  = cfg?.gt_3d?.length ? pointMaxJumpScores(cfg.gt_3d) : new Float32Array(0);
+  const gtScores  = _gtScoresForPicker(clipData, cfg);
   const rawScores = clipData?.raw_3d?.length ? pointMaxJumpScores(clipData.raw_3d) : new Float32Array(0);
   // Prime the listboxes with the current auto-selected indices.
   fillTrajectoryPicker('gt-pick',  gtScores,  new Set(cfg._goodIdx || []),         /*jumpiest*/ false);
