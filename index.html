@@ -776,7 +776,9 @@ footer a { color: #2563eb; text-decoration: none; }
             <option value="jumpiest">Jumpiest first</option>
             <option value="random">Random</option>
             <option value="uniform">Uniform spread (every Nth)</option>
-            <option value="spatial">Spatial coverage (K-means, 3D)</option>
+            <!-- 'spatial' (K-means in 2D image space, restricted to HOT3D's
+                 moving object) is injected at clip-load time when the
+                 bundle ships a gt3d binary; not shown for other bundles. -->
           </select>
         </div>
         <div class="fld">
@@ -1709,22 +1711,35 @@ function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
   }
 }
 
-// ──────────── Spatial-coverage selection (K-means in 3D) ────────────
-// Pick K trajectories whose anchor-frame 3D positions span the object —
-// instead of clustering in one corner. Mirrors the upstream "2D mask →
-// K-means → query points" step at the *track-selection* level. Use case is
-// HOT3D, where the default 'smoothest' degenerates (cfg.gt_3d is sparse so
-// every score is 0 and the picker just returns track indices [0..N-1]); we
-// keep the helper general so any bundle with a frame-0 3D anchor benefits.
+// ──────────── Spatial-coverage selection (K-means in 2D image space) ────────────
+// Pick K trajectories whose anchor-frame *image-space* (u, v) positions
+// span the object — instead of clustering in one corner. Mirrors the
+// upstream "2D mask → K-means → query points" step at the *track-
+// selection* level: the upstream pipeline placed query points by K-means
+// over a 2D mask of the object, so doing K-means in the same screen-space
+// coordinate system at track-selection time gives a result whose visual
+// coverage on the rendered view matches what the user expects.
+//
+// The 2D image-space anchor is the more visually faithful feature than 3D
+// world XYZ — a curved object (e.g. a bottle) can have two surface points
+// land at the *same* image-space pixel (one front, one back) and 3D
+// K-means would treat them as far apart, picking one cluster centroid for
+// each, even though both sit at the same on-screen spot. 2D collapses
+// that depth axis and gives picks that read as evenly spread on the
+// silhouette.
 //
 // For HOT3D specifically the candidate pool is restricted to the moving
 // object's tracks (auto-detected by mean motion magnitude per obj_id) so
-// K-means doesn't hand out clusters to static furniture/walls.
+// K-means doesn't hand out clusters to static furniture/walls. Anchor-
+// frame 3D world positions are projected through the per-frame camera
+// matrix (loaded from clipData.camera.c2w_per_frame[f] + intrinsics) into
+// image space; tracks behind the camera or invisible at the anchor frame
+// are skipped.
 //
 // Cost: K-means is K·M·iters distance calcs over Float32 arrays; typical
-// HOT3D moving-object pool is ~3–8k tracks, K ≤ 30, iters ≤ 15 — well under
-// a millisecond. The result is cached on cfg._goodIdx, so the K-means runs
-// once per slider drag, not per render frame.
+// HOT3D moving-object pool is ~3–14k tracks, K ≤ 30, iters ≤ 15 — well
+// under one frame at 30 fps. The result is cached on cfg._goodIdx, so the
+// K-means runs once per slider drag, not per render frame.
 function _mulberry32(seed) {
   let s = seed | 0;
   return function() {
@@ -1734,115 +1749,160 @@ function _mulberry32(seed) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-// Build (poolIdx, positions) for the spatial K-means call. HOT3D path
-// restricts the pool to the moving object; non-HOT3D path uses every track
-// with a finite cfg.gt_3d[0] anchor. Returns null if no usable pool.
+// Build (poolIdx, positions, dim) for the spatial K-means call. Scoped to
+// HOT3D: the pool is the moving object's tracks visible at frame 0,
+// projected through that frame's camera into image (u, v) space (dim=2).
+// Returns null for non-HOT3D bundles so the dispatch falls through to a
+// score-based strategy.
 function _buildSpatialPool(clipData, cfg) {
-  if (clipData?._gt3d) return _buildHot3dSpatialPool(clipData);
-  const f0 = cfg?.gt_3d?.[0];
-  if (!f0?.length) return null;
-  const poolIdx = []; const flat = [];
-  for (let p = 0; p < f0.length; p++) {
-    const pt = f0[p];
-    if (!pt || !Number.isFinite(pt[0])) continue;
-    poolIdx.push(p);
-    flat.push(pt[0], pt[1], pt[2]);
-  }
-  if (poolIdx.length < 2) return null;
-  return { poolIdx, positions: new Float32Array(flat) };
+  if (clipData?._gt3d) return _buildHot3dSpatialPool2D(clipData);
+  return null;
 }
-function _buildHot3dSpatialPool(clipData) {
+function _resolveMovingObjId(g) {
+  if (g._movingObjId !== undefined) return g._movingObjId;
+  const { N, motionMag, obj_ids, nObj } = g;
+  if (!motionMag || !obj_ids || !nObj) { g._movingObjId = -1; return -1; }
+  const sumMag = new Float32Array(nObj);
+  const cnt    = new Uint32Array(nObj);
+  for (let p = 0; p < N; p++) {
+    sumMag[obj_ids[p]] += motionMag[p];
+    cnt[obj_ids[p]]++;
+  }
+  let bestObj = 0, bestMean = -1;
+  for (let o = 0; o < nObj; o++) {
+    const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
+    if (mean > bestMean) { bestMean = mean; bestObj = o; }
+  }
+  g._movingObjId = bestObj;
+  console.log(`spatial K-means: moving object id = ${bestObj} (mean motion ${bestMean.toFixed(3)} m)`);
+  return bestObj;
+}
+function _buildHot3dSpatialPool2D(clipData) {
   const g = clipData._gt3d;
   if (!g) return null;
-  // Memoise the (poolIdx, positions) tuple on the gt3d header. The pool
-  // only depends on motionMinMag (and the cached movingObjId), so a single
-  // entry keyed on the threshold is enough. K-means itself is K-dependent
-  // and runs on top of this — so dragging the # trajectories slider only
-  // pays the K-means cost (sub-ms), not the full N=80k pool scan.
+  const cam = clipData?.camera;
+  // Anchor frame = 0 (start of clip; manipulated object visible by HOT3D
+  // construction). c2w + intrinsics fall back to the single-frame variant
+  // for older bundles that didn't ship per-frame cameras.
+  const ANCHOR_F = 0;
+  const c2wAnchor = cam?.c2w_per_frame?.[ANCHOR_F] || cam?.c2w_frame0;
+  const intr      = cam?.intrinsics_per_frame?.[ANCHOR_F]
+                 || cam?.intrinsics_frame0;
+  if (!c2wAnchor || !intr) return null;
+  // Memoise on the gt3d header. The pool only depends on motionMinMag (the
+  // moving-obj id, anchor frame, and intrinsics are all clip-static), so a
+  // single entry keyed on the threshold is enough. K-means itself is
+  // K-dependent and runs on top of this — slider drags pay only the K-
+  // means cost, not the full N=80k re-scan + reprojection.
   const motionMin = Math.max(0, +(Settings.motionMinMag) || 0);
-  if (g._spatialPoolCache && g._spatialPoolCache.motionMin === motionMin) {
-    return g._spatialPoolCache.built;
+  if (g._spatialPool2DCache && g._spatialPool2DCache.motionMin === motionMin) {
+    return g._spatialPool2DCache.built;
   }
-  const { N, F, quant, obj_ids, motionMag, nObj, center, half } = g;
+  const { N, F, quant, obj_ids, motionMag, center, half } = g;
   const SENT = -32768;
-  // Identify the moving object (cached on the gt3d header). Same heuristic
-  // as Panel._resolveMovingObj / _addObjectCloudTrails: highest mean motion
-  // magnitude across that object's tracks.
-  let movObj = g._movingObjId;
-  if (movObj === undefined) {
-    if (!motionMag || !obj_ids || !nObj) {
-      g._movingObjId = -1;
-    } else {
-      const sumMag = new Float32Array(nObj);
-      const cnt    = new Uint32Array(nObj);
-      for (let p = 0; p < N; p++) {
-        sumMag[obj_ids[p]] += motionMag[p];
-        cnt[obj_ids[p]]++;
-      }
-      let bestObj = 0, bestMean = -1;
-      for (let o = 0; o < nObj; o++) {
-        const mean = cnt[o] > 0 ? sumMag[o] / cnt[o] : 0;
-        if (mean > bestMean) { bestMean = mean; bestObj = o; }
-      }
-      g._movingObjId = bestObj;
-      console.log(`spatial K-means: moving object id = ${bestObj} (mean motion ${bestMean.toFixed(3)} m)`);
-    }
-    movObj = g._movingObjId;
-  }
+  const movObj = _resolveMovingObjId(g);
   if (movObj < 0) return null;
-  // Drop tracks whose motion magnitude is below the live filter slider —
-  // keeps spatial picks in sync with what's actually rendered when the
-  // user has dialled motion-min up to surface only the most-moving points.
+  // OpenCV / vipe camera convention (matches the rest of the viewer): rows
+  // of c2w are the world axes expressed in camera frame; +Z forward. To
+  // project P_world we compute P_cam = R_c2w^T @ (P_world − t):
+  //   P_cam[i] = sum_j c2w[j][i] · (P[j] − t[j])
+  // then (u, v) = (fx · P_cam.x/P_cam.z + cx, fy · P_cam.y/P_cam.z + cy).
+  const tx = c2wAnchor[0][3], ty = c2wAnchor[1][3], tz = c2wAnchor[2][3];
+  const r00 = c2wAnchor[0][0], r10 = c2wAnchor[1][0], r20 = c2wAnchor[2][0];
+  const r01 = c2wAnchor[0][1], r11 = c2wAnchor[1][1], r21 = c2wAnchor[2][1];
+  const r02 = c2wAnchor[0][2], r12 = c2wAnchor[1][2], r22 = c2wAnchor[2][2];
+  const fx = intr[0], fy = intr[1], cxi = intr[2], cyi = intr[3];
   const poolIdx = []; const flat = [];
   for (let p = 0; p < N; p++) {
     if (obj_ids && obj_ids[p] !== movObj) continue;
     if (motionMag && motionMag[p] < motionMin) continue;
-    // Anchor = first frame the track has a valid annotation. Usually 0;
-    // fall back per-track if frame 0 happens to be SENT.
-    let f = 0;
-    while (f < F && quant[(f * N + p) * 3] === SENT) f++;
-    if (f >= F) continue;
-    const base = (f * N + p) * 3;
-    const x = (quant[base    ] / 32767) * half[0] + center[0];
-    const y = (quant[base + 1] / 32767) * half[1] + center[1];
-    const z = (quant[base + 2] / 32767) * half[2] + center[2];
+    // Skip tracks that aren't visible at the anchor frame — projecting a
+    // SENT slot would give meaningless coordinates.
+    if (quant[(ANCHOR_F * N + p) * 3] === SENT) continue;
+    const base = (ANCHOR_F * N + p) * 3;
+    const wx = (quant[base    ] / 32767) * half[0] + center[0];
+    const wy = (quant[base + 1] / 32767) * half[1] + center[1];
+    const wz = (quant[base + 2] / 32767) * half[2] + center[2];
+    const dx = wx - tx, dy = wy - ty, dz = wz - tz;
+    const cxc = r00*dx + r10*dy + r20*dz;
+    const cyc = r01*dx + r11*dy + r21*dz;
+    const czc = r02*dx + r12*dy + r22*dz;
+    if (!(czc > 1e-6)) continue;     // behind the camera
+    const u = fx * (cxc / czc) + cxi;
+    const v = fy * (cyc / czc) + cyi;
     poolIdx.push(p);
-    flat.push(x, y, z);
+    flat.push(u, v);
   }
   if (poolIdx.length < 2) return null;
-  const built = { poolIdx, positions: new Float32Array(flat) };
-  g._spatialPoolCache = { motionMin, built };
+  const built = { poolIdx, positions: new Float32Array(flat), dim: 2 };
+  g._spatialPool2DCache = { motionMin, built };
   return built;
 }
-// K-means++ seed → 15 Lloyd iterations → pick the candidate closest to each
-// final cluster centroid. Returns K track indices (mapped through poolIdx)
-// sorted ascending. Deterministic for given (M, K) so picks don't twitch
-// across re-renders.
-function kmeansSelectIdx(positions, poolIdx, K) {
-  const M = poolIdx.length;
+// K-means++ seed → ≤10 Lloyd iterations → pick the candidate closest to
+// each final cluster centroid. Returns K track indices (mapped through
+// poolIdx) sorted ascending. Deterministic for given (M, K, dim) so picks
+// don't twitch across re-renders. dim ∈ {2, 3}: 2 for image-space (HOT3D
+// projection) and 3 reserved for the legacy world-space path.
+//
+// For pools larger than KMEANS_MAX_POOL we randomly subsample down to
+// that size first. K-means on the silhouette is a coverage exercise — we
+// don't need every individual track in the cost function, just a
+// representative spread of the surface — and capping the input size keeps
+// K=30 well under one frame at 30 fps even on HOT3D's ~14k moving-object
+// tracks. The picked tracks are still real trajectory indices: the
+// subsample carries through via poolIdx, and the final closest-to-
+// centroid step picks from the subsample.
+const KMEANS_MAX_POOL = 4000;
+function kmeansSelectIdx(positions, poolIdx, K, dim) {
+  const D = dim === 2 ? 2 : 3;
+  let M = poolIdx.length;
   if (M === 0) return [];
   if (K >= M) return poolIdx.slice().sort((a, b) => a - b);
-  const rand = _mulberry32(M * 1009 + K * 31);
+  // Subsample if the pool is huge. Stride sampling is deterministic across
+  // re-renders and preserves spatial spread (tracks aren't ordered by
+  // position, so a stride is effectively a uniform random subsample).
+  if (M > KMEANS_MAX_POOL) {
+    const stride = Math.ceil(M / KMEANS_MAX_POOL);
+    const sub = []; const subFlat = [];
+    for (let i = 0; i < M; i += stride) {
+      sub.push(poolIdx[i]);
+      for (let j = 0; j < D; j++) subFlat.push(positions[i*D + j]);
+    }
+    poolIdx = sub;
+    positions = new Float32Array(subFlat);
+    M = poolIdx.length;
+  }
+  const rand = _mulberry32(M * 1009 + K * 31 + D);
+  // squared-distance from a flat-positions point i to a flat-centroids
+  // entry k. Inlined as a tiny lambda; V8 reliably inlines this and the
+  // hot loops (M*K per Lloyd iter) stay tight.
+  const cents    = new Float32Array(K * D);
+  const sqDistP2C = (i, k) => {
+    let d = 0;
+    for (let j = 0; j < D; j++) {
+      const e = positions[i*D + j] - cents[k*D + j];
+      d += e * e;
+    }
+    return d;
+  };
   // K-means++ initialisation: first centre uniform-random, each subsequent
   // centre sampled with prob ∝ squared-distance to its nearest existing
-  // centre. Empty / coincident-points buffers guarded with linear fallback.
+  // centre. Coincident-point edge cases guarded with linear fallback.
   const centIdx = [Math.floor(rand() * M)];
+  for (let j = 0; j < D; j++) cents[j] = positions[centIdx[0]*D + j];
   const dists = new Float32Array(M).fill(Infinity);
   for (let k = 1; k < K; k++) {
-    const cI = centIdx[k - 1];
-    const cx = positions[cI*3], cy = positions[cI*3+1], cz = positions[cI*3+2];
     let total = 0;
     for (let i = 0; i < M; i++) {
-      const dx = positions[i*3] - cx, dy = positions[i*3+1] - cy, dz = positions[i*3+2] - cz;
-      const d = dx*dx + dy*dy + dz*dz;
+      const d = sqDistP2C(i, k - 1);
       if (d < dists[i]) dists[i] = d;
       total += dists[i];
     }
     if (!(total > 0)) {
-      // All remaining points coincide with existing centres — pad linearly.
       let next = 0;
       while (next < M && centIdx.includes(next)) next++;
       centIdx.push(Math.min(next, M - 1));
+      for (let j = 0; j < D; j++) cents[k*D + j] = positions[centIdx[k]*D + j];
       continue;
     }
     let r = rand() * total, pick = 0;
@@ -1852,25 +1912,21 @@ function kmeansSelectIdx(positions, poolIdx, K) {
       pick = i;
     }
     centIdx.push(pick);
+    for (let j = 0; j < D; j++) cents[k*D + j] = positions[pick*D + j];
   }
-  const cents    = new Float32Array(K * 3);
-  const newCents = new Float32Array(K * 3);
+  const newCents = new Float32Array(K * D);
   const cnt      = new Uint32Array(K);
   const assign   = new Int32Array(M).fill(-1);
-  for (let k = 0; k < K; k++) {
-    cents[k*3]   = positions[centIdx[k]*3];
-    cents[k*3+1] = positions[centIdx[k]*3+1];
-    cents[k*3+2] = positions[centIdx[k]*3+2];
-  }
-  const ITERS = 15;
+  // 10 Lloyd iterations is enough for visual coverage on a tight 2D
+  // silhouette; convergence usually happens in 4–6 (early-stop on no
+  // assignment change handles the common case).
+  const ITERS = 10;
   for (let iter = 0; iter < ITERS; iter++) {
     let changed = 0;
     for (let i = 0; i < M; i++) {
-      const px = positions[i*3], py = positions[i*3+1], pz = positions[i*3+2];
       let best = 0, bestD = Infinity;
       for (let k = 0; k < K; k++) {
-        const dx = px - cents[k*3], dy = py - cents[k*3+1], dz = pz - cents[k*3+2];
-        const d  = dx*dx + dy*dy + dz*dz;
+        const d = sqDistP2C(i, k);
         if (d < bestD) { bestD = d; best = k; }
       }
       if (assign[i] !== best) { assign[i] = best; changed++; }
@@ -1879,16 +1935,12 @@ function kmeansSelectIdx(positions, poolIdx, K) {
     newCents.fill(0); cnt.fill(0);
     for (let i = 0; i < M; i++) {
       const k = assign[i];
-      newCents[k*3]   += positions[i*3];
-      newCents[k*3+1] += positions[i*3+1];
-      newCents[k*3+2] += positions[i*3+2];
+      for (let j = 0; j < D; j++) newCents[k*D + j] += positions[i*D + j];
       cnt[k]++;
     }
     for (let k = 0; k < K; k++) {
       if (cnt[k] > 0) {
-        cents[k*3]   = newCents[k*3]   / cnt[k];
-        cents[k*3+1] = newCents[k*3+1] / cnt[k];
-        cents[k*3+2] = newCents[k*3+2] / cnt[k];
+        for (let j = 0; j < D; j++) cents[k*D + j] = newCents[k*D + j] / cnt[k];
       }
     }
   }
@@ -1899,10 +1951,7 @@ function kmeansSelectIdx(positions, poolIdx, K) {
   const bestD = new Float64Array(K).fill(Infinity);
   for (let i = 0; i < M; i++) {
     const k = assign[i];
-    const dx = positions[i*3] - cents[k*3];
-    const dy = positions[i*3+1] - cents[k*3+1];
-    const dz = positions[i*3+2] - cents[k*3+2];
-    const d  = dx*dx + dy*dy + dz*dz;
+    const d = sqDistP2C(i, k);
     if (d < bestD[k]) { bestD[k] = d; bestI[k] = i; }
   }
   const out = [];
@@ -1915,7 +1964,8 @@ function kmeansSelectIdx(positions, poolIdx, K) {
 function selectSpatialIdx(clipData, cfg, K) {
   const built = _buildSpatialPool(clipData, cfg);
   if (!built) return null;
-  return kmeansSelectIdx(built.positions, built.poolIdx, Math.max(1, K | 0));
+  return kmeansSelectIdx(built.positions, built.poolIdx,
+                         Math.max(1, K | 0), built.dim || 3);
 }
 
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
@@ -4374,12 +4424,23 @@ async function init() {
   // 'spatial' strategy because (a) cfg.gt_3d is sparse there so the
   // jump-score-based strategies degenerate to picking the first N indices,
   // and (b) the scene contains 5–6 objects but only one moves — spatial
-  // K-means restricted to the moving object's tracks gives the user
-  // surface-spanning picks that actually communicate the motion.
-  if (clipData?._gt3d && Settings.gtStrategy === 'smoothest') {
-    Settings.gtStrategy = 'spatial';
+  // K-means restricted to the moving object's tracks at frame 0, in 2D
+  // image space, gives surface-spanning picks that read as evenly spread
+  // on the rendered view. The strategy is HOT3D-only by design, so the
+  // dropdown option is injected dynamically here rather than hard-coded
+  // in the HTML.
+  if (clipData?._gt3d) {
     const sel = document.getElementById('gt-strategy');
-    if (sel) sel.value = 'spatial';
+    if (sel && !sel.querySelector('option[value="spatial"]')) {
+      const opt = document.createElement('option');
+      opt.value = 'spatial';
+      opt.textContent = 'Spatial coverage (K-means, 2D image — HOT3D)';
+      sel.appendChild(opt);
+    }
+    if (Settings.gtStrategy === 'smoothest') {
+      Settings.gtStrategy = 'spatial';
+      if (sel) sel.value = 'spatial';
+    }
   }
   if (Settings.gtStrategy === 'spatial') {
     const idx = selectSpatialIdx(clipData, cfg, N_GT_KEEP);
