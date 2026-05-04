@@ -1711,37 +1711,37 @@ function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
   }
 }
 
-// ──────────── Spatial-coverage selection (FPS + Lloyd relaxation, HOT3D-only) ────────────
-// Pick K trajectories whose anchor-frame positions are visually evenly
-// spread on the moving object — both at low K (e.g., 5 picks span the
-// whole silhouette without bunching at corners) and high K (the picks
-// stay uniformly distributed as the # slider grows). Implemented as:
+// ──────────── Spatial-coverage selection (FPS + Lloyd in 3D, HOT3D-only) ────────────
+// Pick K trajectories whose anchor-frame 3D positions are visually evenly
+// distributed on the moving object's point cloud (panel ⑤). All work
+// happens in 3D world space — no camera projection — so the picks read
+// the same from any orbit angle.
 //
-//   1. Project the moving object's frame-0 3D positions through the
-//      anchor-frame camera into image (u, v) space. Operating on the
-//      projected silhouette — what the user actually sees — collapses
-//      any 3D bbox-corner structure into a 2D area where uniform-area
-//      coverage is what we want.
-//   2. FPS init: closest-to-centroid first seed, then iteratively pick
+//   1. FPS init: closest-to-centroid first seed, then iteratively pick
 //      the candidate with max-min-distance to the existing seed set.
-//      Avoids density bias (K-means seeds near dense regions and gives
-//      picks that bunch there).
-//   3. Lloyd relaxation: 2–3 passes of "assign each cohort point to its
-//      nearest pick, snap the pick to its cluster's centroid". Pure FPS
-//      lands on bbox extrema (corners) which reads as "structured";
-//      relaxation pulls each pick toward the centre of its Voronoi cell,
-//      so the final layout reads as cell-centres of equal-area cells —
-//      visually uniform spread, not extremal corners. The snap is to the
-//      nearest *cohort track* in that cell, so every pick stays a real
-//      trajectory index.
+//      FPS as a stand-alone is "max distance" but lands on the cloud's
+//      extrema (bbox corners), which reads as a regular polygon.
+//   2. Lloyd relaxation: a few passes of "Voronoi-assign each cohort
+//      point to its nearest pick, then snap each pick to the cohort
+//      track closest to its cell's centroid". This pulls picks off the
+//      extrema and into the centre of their Voronoi cells — the final
+//      layout is K cells of roughly equal volume, with one real
+//      trajectory per cell. Result: picks visually fill the cloud
+//      uniformly instead of outlining its boundary.
 //
-// Scope is HOT3D + moving object only. The pool is `obj_ids[p] ===
-// movingObjId && motionMag[p] >= motionMinMag`, with the moving object
-// auto-detected by mean motion magnitude per obj_id.
+// FPS init keeps the relaxation from collapsing into dense regions
+// (random init does that, since Lloyd minimises within-cluster
+// variance). The combination keeps the "max distance" property of FPS
+// while removing its extremal-polygon look.
 //
-// Cost: FPS + relaxation is O(K·M·passes); sub-millisecond even at K=30
-// over the 4000-point sub-sampled pool. Result cached on cfg._goodIdx
-// so per-render reads are zero cost.
+// Scope: HOT3D + moving object only (auto-detected by mean motion
+// magnitude per obj_id). Anchor frame = 0; positions decoded directly
+// from gt3d.bin. Pool memoised on motionMinMag so slider drags hit
+// cache.
+//
+// Cost: O(K·M·passes); sub-millisecond on a 4000-track sub-sampled
+// pool at K ≤ 30. Result cached on cfg._goodIdx so per-render reads
+// are zero cost.
 function _mulberry32(seed) {
   let s = seed | 0;
   return function() {
@@ -1757,7 +1757,7 @@ function _mulberry32(seed) {
 // Returns null for non-HOT3D bundles so the dispatch falls through to a
 // score-based strategy.
 function _buildSpatialPool(clipData, cfg) {
-  if (clipData?._gt3d) return _buildHot3dSpatialPool2D(clipData);
+  if (clipData?._gt3d) return _buildHot3dSpatialPool3D(clipData);
   return null;
 }
 function _resolveMovingObjId(g) {
@@ -1779,56 +1779,39 @@ function _resolveMovingObjId(g) {
   console.log(`spatial K-means: moving object id = ${bestObj} (mean motion ${bestMean.toFixed(3)} m)`);
   return bestObj;
 }
-function _buildHot3dSpatialPool2D(clipData) {
+function _buildHot3dSpatialPool3D(clipData) {
   const g = clipData._gt3d;
   if (!g) return null;
-  // FPS in 3D world space picks the bbox extrema (corners + far points)
-  // because that's where max-min-distance maximises — visually that reads
-  // as a polygonal "structure", not a uniform spread. Operating in 2D
-  // image space (the projected silhouette of the moving object at the
-  // anchor frame) collapses that 3D structure into the area the user
-  // actually sees on screen, so FPS picks fill the silhouette uniformly.
-  const cam = clipData?.camera;
+  // The visualisation shows panel ⑤ Initial object PC (RGB) — a 3D point
+  // cloud of the moving object at frame 0, that the user can orbit
+  // freely. We want the K picked tracks to look evenly distributed on
+  // that cloud regardless of camera angle, so we operate directly on
+  // 3D world positions and let FPS+Lloyd handle even spread in the
+  // shape of the actual cloud (no camera projection / 2D detour).
   const ANCHOR_F = 0;
-  const c2wAnchor = cam?.c2w_per_frame?.[ANCHOR_F] || cam?.c2w_frame0;
-  const intr      = cam?.intrinsics_per_frame?.[ANCHOR_F]
-                 || cam?.intrinsics_frame0;
-  if (!c2wAnchor || !intr) return null;
   const motionMin = Math.max(0, +(Settings.motionMinMag) || 0);
-  if (g._spatialPool2DCache && g._spatialPool2DCache.motionMin === motionMin) {
-    return g._spatialPool2DCache.built;
+  if (g._spatialPool3DCache && g._spatialPool3DCache.motionMin === motionMin) {
+    return g._spatialPool3DCache.built;
   }
   const { N, quant, obj_ids, motionMag, center, half } = g;
   const SENT = -32768;
   const movObj = _resolveMovingObjId(g);
   if (movObj < 0) return null;
-  // OpenCV / vipe convention: P_cam = R_c2w^T · (P_world − t), then
-  // (u, v) = (fx · P_cam.x/P_cam.z + cx, fy · P_cam.y/P_cam.z + cy).
-  const tx = c2wAnchor[0][3], ty = c2wAnchor[1][3], tz = c2wAnchor[2][3];
-  const r00 = c2wAnchor[0][0], r10 = c2wAnchor[1][0], r20 = c2wAnchor[2][0];
-  const r01 = c2wAnchor[0][1], r11 = c2wAnchor[1][1], r21 = c2wAnchor[2][1];
-  const r02 = c2wAnchor[0][2], r12 = c2wAnchor[1][2], r22 = c2wAnchor[2][2];
-  const fx = intr[0], fy = intr[1], cxi = intr[2], cyi = intr[3];
   const poolIdx = []; const flat = [];
   for (let p = 0; p < N; p++) {
     if (obj_ids && obj_ids[p] !== movObj) continue;
     if (motionMag && motionMag[p] < motionMin) continue;
     if (quant[(ANCHOR_F * N + p) * 3] === SENT) continue;
     const base = (ANCHOR_F * N + p) * 3;
-    const wx = (quant[base    ] / 32767) * half[0] + center[0];
-    const wy = (quant[base + 1] / 32767) * half[1] + center[1];
-    const wz = (quant[base + 2] / 32767) * half[2] + center[2];
-    const dx = wx - tx, dy = wy - ty, dz = wz - tz;
-    const cxc = r00*dx + r10*dy + r20*dz;
-    const cyc = r01*dx + r11*dy + r21*dz;
-    const czc = r02*dx + r12*dy + r22*dz;
-    if (!(czc > 1e-6)) continue;     // behind camera
+    const x = (quant[base    ] / 32767) * half[0] + center[0];
+    const y = (quant[base + 1] / 32767) * half[1] + center[1];
+    const z = (quant[base + 2] / 32767) * half[2] + center[2];
     poolIdx.push(p);
-    flat.push(fx * (cxc / czc) + cxi, fy * (cyc / czc) + cyi);
+    flat.push(x, y, z);
   }
   if (poolIdx.length < 2) return null;
-  const built = { poolIdx, positions: new Float32Array(flat), dim: 2 };
-  g._spatialPool2DCache = { motionMin, built };
+  const built = { poolIdx, positions: new Float32Array(flat), dim: 3 };
+  g._spatialPool3DCache = { motionMin, built };
   return built;
 }
 // Farthest-point sampling (FPS) followed by Lloyd-style relaxation.
@@ -1909,14 +1892,14 @@ function fpsSelectIdx(positions, poolIdx, K, dim) {
     if (bestI < 0) break;
     picked[k] = bestI;
   }
-  // Lloyd-style relaxation. For 2–3 passes:
-  //   1. Assign every cohort point to its nearest pick (Voronoi cell).
+  // Lloyd-style relaxation. Each pass:
+  //   1. Voronoi-assign every cohort point to its nearest pick.
   //   2. Compute the cell's centroid.
-  //   3. Snap the pick to the cohort point closest to that centroid.
-  // Two passes are usually enough to relax FPS's bbox-corner pattern
-  // into a uniform "cell centres" layout; the snap-to-cohort-point step
-  // ensures every pick remains a real trajectory index.
-  const RELAX_PASSES = 3;
+  //   3. Snap the pick to the cohort track closest to that centroid.
+  // 3D needs more passes than 2D to fully relax away from the bbox-
+  // corner FPS init (more extremal axes to drift off of). Early-stops
+  // on no movement, so the cap is a budget, not a fixed cost.
+  const RELAX_PASSES = 6;
   const cents = new Float64Array(K * D);
   const cnt   = new Uint32Array(K);
   const assign = new Int32Array(M);
@@ -4444,7 +4427,7 @@ async function init() {
     if (sel && !sel.querySelector('option[value="spatial"]')) {
       const opt = document.createElement('option');
       opt.value = 'spatial';
-      opt.textContent = 'Spatial coverage (FPS+relax — HOT3D)';
+      opt.textContent = 'Spatial coverage (3D FPS + Lloyd — HOT3D)';
       sel.appendChild(opt);
     }
     if (Settings.gtStrategy === 'smoothest') {
