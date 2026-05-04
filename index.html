@@ -551,6 +551,16 @@ footer a { color: #2563eb; text-decoration: none; }
       <div class="ttl"><span>⑥ Raw RGB frames</span><span class="lg-tag" id="raw-strip-tag">sampled across the clip</span></div>
       <div class="body raw-strip-body" id="raw-strip"></div>
     </div>
+    <!-- ⑥b Prediction-video frames strip. Hidden unless the bundle JSON
+         provides `pred_video_frames_hires` (currently the HOT3D
+         clip-003020 bundle, populated from the DAS pipeline output). -->
+    <div class="card raw-strip-card" id="card-pred-frames" style="display:none;">
+      <div class="ttl">
+        <span>⑥b Prediction frames</span>
+        <span class="lg-tag" id="pred-strip-tag">DAS prediction · all frames</span>
+      </div>
+      <div class="body raw-strip-body" id="pred-strip"></div>
+    </div>
   </section>
 
 
@@ -2958,8 +2968,6 @@ class Panel {
   // PC, regardless of the object's local appearance. Drawn larger than the
   // largest trail ball so they read as the trajectory's anchors.
   _addEndpointSpheres(cfg) {
-    const T_clip = cfg.gt_3d?.length || 0;
-    if (T_clip === 0) return;
     const idx = (this.opts.paperMode && cfg._goodIdxPaper) ? cfg._goodIdxPaper
                                                            : (cfg._goodIdx || []);
     if (!idx.length) return;
@@ -2972,14 +2980,52 @@ class Panel {
       if (!pt || !Number.isFinite(pt[0])) return;
       records.push([pt[0], -pt[1], -pt[2]]);
     };
-    for (const p of idx) {
-      // Global start (frame 0) and end markers — tied to the GT layer since
-      // GT now spans the entire trajectory.
-      if (this.opts.showGT) {
-        push(cfg.gt_3d[0]?.[p]);
-        push(cfg.gt_3d[T_clip - 1]?.[p]);
+
+    // HOT3D dense object-cloud path: cfg.gt_3d is a sparse stub (null), real
+    // positions live in clipData._gt3d (Int16-quantized typed arrays). Place
+    // an endpoint sphere at the FIRST visible frame (annotated) and the LAST
+    // visible frame for every tracked point in cfg._goodIdx — gives the
+    // moving-object trail a "from / to" anchor pair, just like the GT/Pred
+    // path below does for non-HOT3D bundles.
+    const _gt3d = clipData?._gt3d;
+    if (_gt3d) {
+      const { N, F, quant, center, half } = _gt3d;
+      const cx = center[0], cy = center[1], cz = center[2];
+      const hx = half[0],   hy = half[1],   hz = half[2];
+      const SENT = -32768, K = 1 / 32767;
+      const decode = (f, p) => {
+        const base = (f * N + p) * 3;
+        const qx = quant[base];
+        if (qx === SENT) return null;
+        const qy = quant[base + 1], qz = quant[base + 2];
+        return [(qx * K) * hx + cx,
+                (qy * K) * hy + cy,
+                (qz * K) * hz + cz];
+      };
+      for (const p of idx) {
+        let firstPt = null, lastPt = null;
+        for (let f = 0; f < F; f++) {
+          const pt = decode(f, p);
+          if (pt) { firstPt = pt; break; }
+        }
+        for (let f = F - 1; f >= 0; f--) {
+          const pt = decode(f, p);
+          if (pt) { lastPt = pt; break; }
+        }
+        push(firstPt); push(lastPt);
       }
-      if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p]);
+    } else {
+      const T_clip = cfg.gt_3d?.length || 0;
+      if (T_clip === 0) return;
+      for (const p of idx) {
+        // Global start (frame 0) and end markers — tied to the GT layer since
+        // GT now spans the entire trajectory.
+        if (this.opts.showGT) {
+          push(cfg.gt_3d[0]?.[p]);
+          push(cfg.gt_3d[T_clip - 1]?.[p]);
+        }
+        if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p]);
+      }
     }
     if (!records.length) return;
     const geom = new THREE.SphereGeometry(rEnd, 14, 12);
@@ -4687,6 +4733,10 @@ async function init() {
     tick();
     // Populate the raw-RGB strip panel with sampled frames from the mp4.
     buildRawThumbs(10).catch(err => console.warn('raw-thumbs failed:', err));
+    // Prediction-frames strip (panel ⑥b). Bundles that ship a
+    // `pred_video_frames_hires` block (currently HOT3D clip-003020 with the
+    // DAS prediction output) reveal this panel; everyone else hides it.
+    buildPredStrip().catch(err => console.warn('pred-strip failed:', err));
   });
 
   // Full-source video setup (EgoDex only — gated by the bundle's full_video).
@@ -4918,6 +4968,41 @@ async function buildVideoFrameStrip(hostId, mp4Url, N) {
 // the mp4 by seeking a hidden <video> and drawing each frame onto its own
 // canvas. Runs once per clip load; sequential seeks (browser doesn't
 // guarantee parallel seek correctness) but typical clips are short.
+// Prediction-frames strip (panel ⑥b). Reveals the panel + populates it from
+// `clipData.pred_video_frames_hires.frames` (a list of {url, frame_idx}).
+// One <img> per frame, lazy-loaded. The panel stays hidden when the bundle
+// has no such field — only HOT3D clip-003020 ships these today (DAS pred).
+async function buildPredStrip() {
+  const card = document.getElementById('card-pred-frames');
+  const host = document.getElementById('pred-strip');
+  const tag  = document.getElementById('pred-strip-tag');
+  if (!card || !host) return;
+  const meta = clipData?.pred_video_frames_hires;
+  if (!meta || !Array.isArray(meta.frames) || meta.frames.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  host.innerHTML = '';
+  if (tag && meta.panel_label) tag.textContent = meta.panel_label;
+  for (const f of meta.frames) {
+    const cell = document.createElement('div');
+    cell.className = 'raw-thumb';
+    const img = document.createElement('img');
+    img.src = f.url;
+    img.loading = 'lazy';
+    img.style.display = 'block';
+    img.style.width = '100%';
+    img.style.height = 'auto';
+    cell.appendChild(img);
+    const lbl = document.createElement('div');
+    lbl.className = 'raw-thumb-lbl';
+    lbl.textContent = (f.frame_idx != null) ? `frame ${f.frame_idx}` : '';
+    cell.appendChild(lbl);
+    host.appendChild(cell);
+  }
+}
+
 async function buildRawThumbs(N = 6) {
   const host = document.getElementById('raw-strip');
   if (!host) return;
