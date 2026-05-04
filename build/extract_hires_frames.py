@@ -61,6 +61,10 @@ HOT3D_STITCH = {
         ("clip-001995", 84, 149),
         ("clip-001996",  0,  39),
     ],
+    # Single-clip bundles (no stitch — one entry covering [src_start, src_end]).
+    "hot3d_clip003020_obj0_s023_e056": [
+        ("clip-003020", 23, 56),
+    ],
 }
 
 
