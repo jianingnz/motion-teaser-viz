@@ -1711,45 +1711,39 @@ function selectIdxByStrategy(strategy, scores, n_keep, n_jumpy = 0) {
   }
 }
 
-// ──────────── Spatial-coverage selection (voxel-grid in 3D, HOT3D-only) ────────────
-// Density-following algorithms (K-means, Lloyd-relaxed FPS) all bunch
-// picks where the cohort is denser. On HOT3D's moving-object meshes the
-// front-facing surface usually has more tracks than the back, so those
-// algorithms produce picks that cluster on the visible front of the
-// object — even when "evenly distributed in 3D" is the goal. Plain FPS
-// avoids that bias but lands on the cohort's bbox extrema, which reads
-// as a polygonal "structure".
+// ──────────── Spatial-coverage selection (Poisson-disk in 3D, HOT3D-only) ────────────
+// Density-following algorithms (K-means, Lloyd-relaxed FPS) bunch picks
+// where the cohort is denser. Plain FPS avoids that bias but lands on
+// the bbox extrema, reading as a polygonal "structure". Voxel-grid
+// stratified sampling helps but the cell-centre snap is still pulled
+// by intra-cell density variation.
 //
-// Voxel-grid stratified sampling sidesteps both failure modes by
-// dividing the cohort's bbox into a regular 3D grid and taking exactly
-// one track per non-empty cell (the cohort point closest to the cell's
-// centre). The result is *spatially* uniform — picks land in different
-// bbox cells regardless of cohort density — and not extremal, since
-// the chosen cohort points are mid-cell rather than corner-of-cloud.
+// Poisson-disk sampling is the textbook "blue-noise" algorithm: pick K
+// tracks where every pair is at least r apart, with r auto-tuned to
+// make exactly K picks fit. The minimum-spacing constraint is
+// orientation-independent so picks fill the available surface area
+// uniformly, regardless of where the cohort happens to be denser.
 //
 // Algorithm:
-//   1. Build the cohort's frame-0 3D positions (existing helper).
-//   2. Compute the bbox; choose a per-axis cell count whose product is
-//      ~2·K, with the per-axis count proportional to that axis's
-//      extent (so a tall thin object gets more height-cells than
-//      width-cells, instead of an isotropic 2×2×2 that wastes one
-//      dimension).
-//   3. Bucket each cohort track into a cell. For each non-empty cell,
-//      pick the track closest to the cell's centre.
-//   4. If the # non-empty cells > K, thin to K via FPS over the cell
-//      reps (so the kept K span the cohort even when the grid was
-//      coarser than the cohort's intrinsic shape). If < K, augment
-//      with the un-picked cohort track that's farthest from the
-//      already-selected set (FPS continuation), so the final count is
-//      always K.
+//   1. Cohort = moving-object frame-0 3D positions (existing helper).
+//   2. Compute bbox diagonal; r0 = bbox_diag / sqrt(K · 4) as an
+//      initial guess (treats the cohort as a quasi-2D surface in 3D).
+//   3. Iterate the cohort in deterministic random order. Accept a
+//      track if its distance to every already-accepted pick is ≥ r.
+//   4. If we end up with < K accepts, halve r and continue from where
+//      we stopped. If we get more than K, stop early. A few binary-
+//      search-style passes converge on a radius that yields exactly K
+//      picks evenly spaced.
+//
+// Determinism: the iteration order is seeded by (M, K) — same K and
+// same cohort gives the same picks every render. Different K gives
+// different layouts, but both are uniform-density.
 //
 // Scope: HOT3D + moving object only. Anchor frame = 0. Pool memoised
 // on motionMinMag.
 //
-// Cost: O(M + cells + K·picks) — the cell bucketing is a single pass,
-// the cell-rep lookup uses pre-built per-cell point lists, and FPS
-// thinning runs over at most a few hundred cells. Sub-millisecond at
-// K ≤ 30 over the 4000-track sub-sampled cohort.
+// Cost: O(K · M) per radius-fit pass; a few passes converge quickly.
+// Sub-millisecond at K ≤ 30 over the 4000-track sub-sampled cohort.
 function _mulberry32(seed) {
   let s = seed | 0;
   return function() {
@@ -1820,19 +1814,38 @@ function _buildHot3dSpatialPool3D(clipData) {
   if (poolIdx.length < 2) return null;
   const built = { poolIdx, positions: new Float32Array(flat), dim: 3 };
   g._spatialPool3DCache = { motionMin, built };
+  // Diagnostic: cohort density per bbox-octant. If the pool itself is
+  // concentrated on one side (mesh-pose annotations one-sided at frame
+  // 0), no down-stream sampler can pick from the empty side. Logged
+  // once per cache miss so it's easy to grep: "cohort octants:".
+  let mn=[Infinity,Infinity,Infinity], mx=[-Infinity,-Infinity,-Infinity];
+  for (let i = 0; i < poolIdx.length; i++) {
+    for (let j = 0; j < 3; j++) {
+      const v = built.positions[i*3 + j];
+      if (v < mn[j]) mn[j] = v;
+      if (v > mx[j]) mx[j] = v;
+    }
+  }
+  const mid = [(mn[0]+mx[0])/2, (mn[1]+mx[1])/2, (mn[2]+mx[2])/2];
+  const oct = new Int32Array(8);
+  for (let i = 0; i < poolIdx.length; i++) {
+    const o = ((built.positions[i*3]   > mid[0]) ? 1 : 0)
+            | ((built.positions[i*3+1] > mid[1]) ? 2 : 0)
+            | ((built.positions[i*3+2] > mid[2]) ? 4 : 0);
+    oct[o]++;
+  }
+  console.log(`spatial pool: ${poolIdx.length} tracks; cohort octants: [${[...oct].join(',')}]`);
   return built;
 }
-// Voxel-grid stratified sampling — see header comment above for why this
-// beats both K-means (density bias) and pure FPS (extremal corners) for
-// the user's "evenly distributed on the object cloud" goal.
+// Poisson-disk sampling — see header comment above for why this beats
+// K-means / FPS / voxel-grid for the user's "evenly distributed on the
+// object cloud" goal.
 const SPATIAL_MAX_POOL = 4000;
-function voxelGridSelectIdx(positions, poolIdx, K, dim) {
+function poissonDiskSelectIdx(positions, poolIdx, K, dim) {
   const D = dim === 2 ? 2 : 3;
   let M = poolIdx.length;
   if (M === 0) return [];
   if (K >= M) return poolIdx.slice().sort((a, b) => a - b);
-  // Stride sub-sample huge cohorts. Same as before: tracks aren't ordered
-  // by position so a stride is effectively a uniform thinning.
   if (M > SPATIAL_MAX_POOL) {
     const stride = Math.ceil(M / SPATIAL_MAX_POOL);
     const sub = []; const subFlat = [];
@@ -1844,7 +1857,7 @@ function voxelGridSelectIdx(positions, poolIdx, K, dim) {
     positions = new Float32Array(subFlat);
     M = poolIdx.length;
   }
-  // 1) bbox over cohort.
+  // bbox diagonal — sets the scale for the initial radius guess.
   const mn = new Float64Array(D); for (let j = 0; j < D; j++) mn[j] =  Infinity;
   const mx = new Float64Array(D); for (let j = 0; j < D; j++) mx[j] = -Infinity;
   for (let i = 0; i < M; i++) {
@@ -1854,61 +1867,76 @@ function voxelGridSelectIdx(positions, poolIdx, K, dim) {
       if (v > mx[j]) mx[j] = v;
     }
   }
-  const ext = new Float64Array(D);
-  let nonZeroDims = 0;
+  let bboxDiag2 = 0;
   for (let j = 0; j < D; j++) {
-    ext[j] = Math.max(0, mx[j] - mn[j]);
-    if (ext[j] > 1e-9) nonZeroDims++;
+    const e = mx[j] - mn[j];
+    bboxDiag2 += e * e;
   }
-  if (nonZeroDims === 0) return poolIdx.slice(0, K).sort((a,b)=>a-b);
-  // 2) Per-axis cell count, proportional to extent. Target ~2·K total
-  //    cells so the grid resolves the cohort even when the bbox is
-  //    elongated; we then thin down to K via FPS in step 4. Use the
-  //    geometric-mean-of-extents normalisation so the proportionality
-  //    works for any aspect ratio, then ceil to ensure ≥1 per axis.
-  let logSum = 0;
-  for (let j = 0; j < D; j++) logSum += Math.log(Math.max(ext[j], 1e-9));
-  const geoMean = Math.exp(logSum / D);
-  // total cells = ∏ nCells[j], target ≈ 2K. With per-axis nCells[j] = a·ext[j],
-  //   ∏ a·ext[j] = a^D · ∏ext[j] = 2K  →  a = (2K / ∏ext)^(1/D).
-  let prodExt = 1; for (let j = 0; j < D; j++) prodExt *= Math.max(ext[j], 1e-9);
-  const TARGET = Math.max(K, 2 * K);
-  const a = Math.pow(TARGET / Math.max(prodExt, 1e-12), 1 / D);
-  const nCells = new Int32Array(D);
-  for (let j = 0; j < D; j++) {
-    nCells[j] = Math.max(1, Math.ceil(a * Math.max(ext[j], 1e-9)));
+  const bboxDiag = Math.sqrt(Math.max(bboxDiag2, 1e-18));
+  // Deterministic shuffle — ordering of the cohort drives Poisson-disk
+  // accept/reject; the seed is keyed by (M, K) so both stay stable.
+  const rand = _mulberry32(M * 1009 + K * 31 + D);
+  const order = new Int32Array(M);
+  for (let i = 0; i < M; i++) order[i] = i;
+  for (let i = M - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const t = order[i]; order[i] = order[j]; order[j] = t;
   }
-  // 3) Bucket tracks into cells. Each cell entry stores the cohort point
-  //    closest to the cell's centre (on-the-fly so we don't build per-cell
-  //    arrays — each cell only needs the running best).
-  const cellPick = new Map();    // packed-cell-key → { i, dSq }
-  for (let i = 0; i < M; i++) {
-    let key = 0, mult = 1;
-    let dToCenter = 0;
-    for (let j = 0; j < D; j++) {
-      const norm = ext[j] > 1e-9 ? (positions[i*D + j] - mn[j]) / ext[j] : 0.5;
-      const cell = Math.max(0, Math.min(nCells[j] - 1, Math.floor(norm * nCells[j])));
-      const cellCenter = mn[j] + (cell + 0.5) * ext[j] / nCells[j];
-      const e = positions[i*D + j] - cellCenter;
-      dToCenter += e * e;
-      key = key * (nCells[j] + 1) + cell;   // packed multi-axis key
-      mult *= (nCells[j] + 1);
+  // Single-pass acceptance helper — scans the shuffled cohort and keeps
+  // tracks whose distance to every already-kept pick is ≥ r. Returns
+  // the kept indices (into the local positions buffer).
+  const tryRadius = (r) => {
+    const r2 = r * r;
+    const kept = [];
+    for (let oi = 0; oi < M; oi++) {
+      const i = order[oi];
+      let okay = true;
+      for (let kk = 0; kk < kept.length; kk++) {
+        const p = kept[kk];
+        let d2 = 0;
+        for (let j = 0; j < D; j++) {
+          const e = positions[i*D + j] - positions[p*D + j];
+          d2 += e * e;
+          if (d2 >= r2) break;
+        }
+        if (d2 < r2) { okay = false; break; }
+      }
+      if (okay) {
+        kept.push(i);
+        if (kept.length > K * 4) break;   // plenty for binary-search bracket
+      }
     }
-    const prev = cellPick.get(key);
-    if (!prev || dToCenter < prev.dSq) cellPick.set(key, { i, dSq: dToCenter });
+    return kept;
+  };
+  // Binary-search the radius that yields exactly K picks. Initial guess
+  // r0 = bboxDiag / sqrt(K·4) — treats the cohort as a quasi-2D surface
+  // in 3D and starts close to the right scale.
+  let lo = 0;
+  let hi = bboxDiag * 2;
+  let best = null;
+  for (let iter = 0; iter < 14; iter++) {
+    const r = (lo + hi) * 0.5;
+    const kept = tryRadius(r);
+    if (kept.length >= K) {
+      // r might be too small; remember this as a feasible upper-bound.
+      best = kept;
+      lo = r;        // search higher r → fewer, more-spread picks
+    } else {
+      hi = r;        // r too big — fewer picks accepted
+    }
+    if (kept.length === K) { best = kept; break; }
   }
-  const reps = []; const repsFlat = [];
-  for (const { i } of cellPick.values()) {
-    reps.push(poolIdx[i]);
-    for (let j = 0; j < D; j++) repsFlat.push(positions[i*D + j]);
+  if (!best) {
+    // Pathological: even r=0 didn't give K. Fall back to FPS, which
+    // always returns K picks.
+    return fpsSelectIdx(positions, poolIdx, K, D);
   }
-  // 4) Hit exactly K via FPS. If we already have ≥K cell reps we FPS-thin
-  //    them so the kept K still span the cohort. If we have <K reps the
-  //    grid was too coarse — fall back to FPS over the full cohort.
-  if (reps.length >= K) {
-    return fpsSelectIdx(new Float32Array(repsFlat), reps, K, D);
-  }
-  return fpsSelectIdx(positions, poolIdx, K, D);
+  // Trim to K. `best` may be slightly above K because the radius search
+  // brackets from above; take the first K (which are the *earliest
+  // accepted* in the deterministic order, so they're a stable subset).
+  const final = best.slice(0, K).map(i => poolIdx[i]);
+  final.sort((a, b) => a - b);
+  return final;
 }
 // Farthest-point sampling. Used both as the spatial-coverage thinning
 // step on the voxel-grid cell reps (when the grid produced ≥ K) and as
@@ -1973,14 +2001,14 @@ function fpsSelectIdx(positions, poolIdx, K, dim) {
   out.sort((a, b) => a - b);
   return out;
 }
-// Top-level entry: voxel-grid stratified sampling. Returns K spatially
-// uniform track indices, or null if no usable pool (caller falls back
-// to a score-based strategy).
+// Top-level entry: Poisson-disk sampling. Returns K spatially-uniform
+// track indices, or null if no usable pool (caller falls back to a
+// score-based strategy).
 function selectSpatialIdx(clipData, cfg, K) {
   const built = _buildSpatialPool(clipData, cfg);
   if (!built) return null;
-  return voxelGridSelectIdx(built.positions, built.poolIdx,
-                            Math.max(1, K | 0), built.dim || 3);
+  return poissonDiskSelectIdx(built.positions, built.poolIdx,
+                              Math.max(1, K | 0), built.dim || 3);
 }
 
 // ──────────── Rainbow palette (GT/Pred time-encoded hue) ────────────
@@ -4449,7 +4477,7 @@ async function init() {
     if (sel && !sel.querySelector('option[value="spatial"]')) {
       const opt = document.createElement('option');
       opt.value = 'spatial';
-      opt.textContent = 'Spatial coverage (3D voxel-grid — HOT3D)';
+      opt.textContent = 'Spatial coverage (3D Poisson-disk — HOT3D)';
       sel.appendChild(opt);
     }
     if (Settings.gtStrategy === 'smoothest') {
