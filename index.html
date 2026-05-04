@@ -714,6 +714,14 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn" id="cmap-rev" title="Reverse the colormap direction (newest ↔ oldest)">⇄ Reverse</button>
           <span id="cmap-current-lbl" style="font-family:monospace;font-size:.75rem;color:var(--text-muted);"></span>
         </div>
+        <!-- One global brightness knob applied to every gradient site.
+             0   = nearly white / very faint
+             1   = pure colormap (matches the chip swatch)
+             2   = boosted (RGB×2 clamped — extra-vivid trails) -->
+        <div class="fld" style="margin-top:10px;">
+          <div class="lbl-row"><span title="Lerps the rendered colour from white (0) → pure LUT (1) → boosted (2). Default 1.0 matches the chip swatch.">Trail brightness</span><span class="v" id="cmap-intensity-lbl">1.00×</span></div>
+          <input type="range" id="cmap-intensity" min="0" max="2" step="0.02" value="1">
+        </div>
       </div>
     </details>
 
@@ -1338,9 +1346,14 @@ const Settings = {
   // (GT / Pred / Raw / HOT3D object-cloud trails + the matching 2D overlays).
   // 'twoColor' = legacy oldEnd → newEnd lerp using the colour pickers in the
   // Layers section; anything else is a perceptual LUT sampled at the same t.
-  // `cmapReverse` flips the lookup direction.
-  cmapPreset:  'magma',
-  cmapReverse: false,
+  // `cmapReverse` flips the lookup direction. `cmapIntensity` is a single
+  // brightness knob applied AFTER LUT lookup:
+  //   < 1 — lerp toward white (faint / washed-out trails)
+  //   = 1 — pure LUT (matches the chip swatch in the sidebar)
+  //   > 1 — multiply RGB and clamp (boosted / extra-vivid trails)
+  cmapPreset:    'magma',
+  cmapReverse:   false,
+  cmapIntensity: 1.0,
 
   // ── Sampling & strategy (live-tunable) ──────────────────────────
   trailLen:       12,    // frames of trail behind the playhead in the live big panel
@@ -2043,11 +2056,26 @@ function colormapRgb01(t, name, reverse) {
   const i1 = Math.min(255, i0 + 1);
   const f = x - i0;
   const a0 = i0 * 3, a1 = i1 * 3;
-  return [
-    (lut[a0]   + (lut[a1]   - lut[a0]  ) * f) / 255,
-    (lut[a0+1] + (lut[a1+1] - lut[a0+1]) * f) / 255,
-    (lut[a0+2] + (lut[a1+2] - lut[a0+2]) * f) / 255,
-  ];
+  let r = (lut[a0]   + (lut[a1]   - lut[a0]  ) * f) / 255;
+  let g = (lut[a0+1] + (lut[a1+1] - lut[a0+1]) * f) / 255;
+  let b = (lut[a0+2] + (lut[a1+2] - lut[a0+2]) * f) / 255;
+  // Single global brightness knob (Settings.cmapIntensity, slider exposed in
+  // the Time-gradient palette section). I < 1 lerps RGB toward white for a
+  // washed-out / faint look; I > 1 multiplies and clamps for extra vividness
+  // beyond the LUT's natural range. I = 1 leaves the LUT unchanged so the
+  // rendered trails match the chip swatch's perceptual progression.
+  const I = (Settings && Settings.cmapIntensity != null) ? +Settings.cmapIntensity : 1;
+  if (I < 1) {
+    const m = 1 - I;
+    r = r + (1 - r) * m;
+    g = g + (1 - g) * m;
+    b = b + (1 - b) * m;
+  } else if (I > 1) {
+    r = Math.min(1, r * I);
+    g = Math.min(1, g * I);
+    b = Math.min(1, b * I);
+  }
+  return [r, g, b];
 }
 function colormapRgb255(t, name, reverse) {
   const c = colormapRgb01(t, name, reverse);
@@ -2742,14 +2770,16 @@ class Panel {
         const t0 = tArr[i], t1 = tArr[i + 1];
         const tc0 = t0 < 0 ? 0 : (t0 > 1 ? 1 : t0);
         const tc1 = t1 < 0 ? 0 : (t1 > 1 ? 1 : t1);
-        // mixLo / tExp shape t identically for both colour modes so the user
-        // sliders keep their meaning (pale floor + curve) when switching.
+        // Two-colour mode shapes t via mixLo / tExp (pale floor + curve);
+        // colormap mode samples the LUT directly across the full [0,1] range
+        // so the trail spans the whole palette (matches the chip swatch).
+        // Brightness is applied inside colormapRgb01 via Settings.cmapIntensity.
         const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc0, T_EXP);
         const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc1, T_EXP);
         let cR0, cG0, cB0, cR1, cG1, cB1;
         if (cmap) {
-          [cR0, cG0, cB0] = colormapRgb01(k0, cmap.name, cmap.reverse);
-          [cR1, cG1, cB1] = colormapRgb01(k1, cmap.name, cmap.reverse);
+          [cR0, cG0, cB0] = colormapRgb01(tc0, cmap.name, cmap.reverse);
+          [cR1, cG1, cB1] = colormapRgb01(tc1, cmap.name, cmap.reverse);
         } else {
           // k=0 → oldEnd, k=1 → newEnd.
           cR0 = oR * (1 - k0) + nR * k0; cG0 = oG * (1 - k0) + nG * k0; cB0 = oB * (1 - k0) + nB * k0;
@@ -2832,7 +2862,10 @@ class Panel {
         const k = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(t, T_EXP);
         let cR, cG, cB;
         if (cmap) {
-          [cR, cG, cB] = colormapRgb01(k, cmap.name, cmap.reverse);
+          // Colormap path: use raw t so the LUT covers [0, 1] across the
+          // trail (matches the sidebar chip). Two-colour path keeps the
+          // mixLo/tExp shaping for the legacy pale-floor look.
+          [cR, cG, cB] = colormapRgb01(t, cmap.name, cmap.reverse);
         } else {
           cR = oR * (1 - k) + nR * k; cG = oG * (1 - k) + nG * k; cB = oB * (1 - k) + nB * k;
         }
@@ -3731,14 +3764,16 @@ class Panel {
     // each track has its own [0, 1] arc-length parametrisation. The cost
     // is one Math.pow per emitted vertex (~M tracks × trailLen vertices
     // = ~5k pow calls per render, negligible).
-    // Object-cloud trails use the 'obj' role so a separate dropdown drives
-    // them (independent of GT/Pred/Raw). Selecting a colormap bypasses the
-    // newCol/oldCol pickers above; mixLo / tExp still shape the parameter.
+    // Object-cloud trails honour the SAME global colormap preset as every
+    // other gradient site (selectable via the chip row in the Time-gradient
+    // sidebar). Two-colour mode keeps the mixLo/tExp shaping for the pale
+    // floor; colormap mode samples the LUT across the full [0, 1] range so
+    // the trail spans the whole palette.
     const objCmap = _useColormapFor('obj');
     const colorAt = (t) => {
       const tc = t < 0 ? 0 : (t > 1 ? 1 : t);
       const k = MIX_LO + (1 - MIX_LO) * Math.pow(tc, T_EXP);
-      if (objCmap) return colormapRgb01(k, objCmap.name, objCmap.reverse);
+      if (objCmap) return colormapRgb01(tc, objCmap.name, objCmap.reverse);
       return [rN * k + rO * (1 - k),
               gN * k + gO * (1 - k),
               bN * k + bO * (1 - k)];
@@ -5386,7 +5421,11 @@ function strokeGradientPath(ctx, pts, baseRgb, lineWidth, dash=null,
     const k = MIX_LO + (MIX_HI - MIX_LO) * tg;
     let r, g, b;
     if (cmap) {
-      const c = colormapRgb255(k, cmap.name, cmap.reverse);
+      // Sample the LUT at the unshaped global gradient fraction so the 2D
+      // overlay covers the full palette (matches the chip swatch + the 3D
+      // trails). Brightness comes from Settings.cmapIntensity inside the
+      // colormap helper.
+      const c = colormapRgb255(tg, cmap.name, cmap.reverse);
       r = c[0]; g = c[1]; b = c[2];
     } else {
       r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
@@ -5466,7 +5505,8 @@ function drawRaw2D(ctx, raw2d, ptIdx, fStart, fEnd, W, H,
         const a = A_LO + (A_HI - A_LO) * t;
         let r, g, b;
         if (cmap) {
-          const c = colormapRgb255(k, cmap.name, cmap.reverse);
+          // Raw t into the LUT — full palette across the 2D raw path.
+          const c = colormapRgb255(t, cmap.name, cmap.reverse);
           r = c[0]; g = c[1]; b = c[2];
         } else {
           r = Math.min(255, Math.round(baseRgb[0] * k + 255 * (1 - k)));
@@ -5535,11 +5575,11 @@ function drawVideoOverlay(fiFrac) {
 
   // Current-frame dots — INTERPOLATED so they track the smooth video motion.
   // Under colormap mode the pred ringDot picks up the colormap colour at the
-  // current global-t (after mixLo / tExp shaping) so it matches the trail head.
+  // current global-t (raw, no mixLo/tExp shaping) so it matches the head of
+  // the 3D trail and the chip swatch.
   const tCur = Math.max(0, Math.min(1, fiFrac / Tdenom));
-  const _kCur = Settings.mixLo + (1 - Settings.mixLo) * Math.pow(tCur, Settings.tExp);
   const _predCmap = _useColormapFor('pred');
-  const predRgb = _predCmap ? colormapRgb255(_kCur, _predCmap.name, _predCmap.reverse) : TRAIL_RGB.pred;
+  const predRgb = _predCmap ? colormapRgb255(tCur, _predCmap.name, _predCmap.reverse) : TRAIL_RGB.pred;
   for (const p of idx) {
     const ptColor = pickHex(ptColors[p]);
     if (cfg.gt_2d) {
@@ -6115,9 +6155,13 @@ function bindControls() {
       } else {
         // Sample the LUT at 5 stops so the chip's bar previews the actual
         // perceptual progression the trails will draw.
+        // Sample the LUT directly (NOT via colormapRgb01) so the chip swatch
+        // always shows the canonical palette — the trail-brightness slider
+        // only affects rendered trails, never the picker itself.
+        const lut = COLORMAP_LUTS[name];
         const stops = [0, 0.25, 0.5, 0.75, 1].map(t => {
-          const c = colormapRgb255(t, name, false);
-          return `rgb(${c[0]},${c[1]},${c[2]}) ${(t*100).toFixed(0)}%`;
+          const i = Math.round(t * 255) * 3;
+          return `rgb(${lut[i]},${lut[i+1]},${lut[i+2]}) ${(t*100).toFixed(0)}%`;
         });
         bar.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
       }
@@ -6147,6 +6191,23 @@ function bindControls() {
     };
   }
   refreshCmapChips();
+  // Trail-brightness slider — single global knob applied inside colormapRgb01.
+  // < 1 lerps RGB toward white (faint), > 1 multiplies and clamps (boosted).
+  // We don't gate this on cmapPreset !== 'twoColor' because the slider only
+  // affects the colormap path; in two-colour mode it's a silent no-op.
+  const cmapIntensityEl  = document.getElementById('cmap-intensity');
+  const cmapIntensityLbl = document.getElementById('cmap-intensity-lbl');
+  if (cmapIntensityEl) {
+    cmapIntensityEl.value = String(Settings.cmapIntensity ?? 1);
+    if (cmapIntensityLbl) cmapIntensityLbl.textContent = `${(+cmapIntensityEl.value).toFixed(2)}×`;
+    cmapIntensityEl.oninput = (e) => {
+      const v = parseFloat(e.target.value);
+      Settings.cmapIntensity = v;
+      if (cmapIntensityLbl) cmapIntensityLbl.textContent = `${v.toFixed(2)}×`;
+      buildTimeLegend();
+      rerenderAll();
+    };
+  }
 
   // Hi-res capture wiring. Resolves the chosen panel by canvas id, calls
   // Hi-res capture wiring. Each panel renders into a scaled WebGL buffer,
@@ -6528,11 +6589,10 @@ function buildTimeLegend() {
     const t = i / (N - 1);
     let r, g, b;
     if (cmap) {
-      // Show the GT colormap as the user will see it in the trails. mixLo /
-      // tExp are baked in upstream — apply the same shape here so the legend
-      // matches the rendered swatch sequence.
-      const k = Settings.mixLo + (1 - Settings.mixLo) * Math.pow(t, Settings.tExp);
-      [r, g, b] = colormapRgb255(k, cmap.name, cmap.reverse);
+      // The legend mirrors what the trails draw in colormap mode: raw t
+      // through the LUT (full [0, 1] range) with cmapIntensity applied
+      // inside the helper. So the dots match the chip swatch directly.
+      [r, g, b] = colormapRgb255(t, cmap.name, cmap.reverse);
     } else {
       const k = 0.20 + 0.80 * t;
       r = Math.round(base[0] * k + 255 * (1 - k));
@@ -6680,6 +6740,7 @@ const PRESET_INPUTS = [
   // ranges + selects
   'rate-sel','scrub','col-gt','col-pred','col-endpoint','col-bg',
   'col-page-top','col-page-bot','pc-size','pc-shade',
+  'cmap-intensity',
   'n-keep','ball-stride','ball-scale','endpoint-scale','line-scale','line-scale-picks',
   'obj-R','obj-K','obj-dot',
   'trail-len','smooth-samples','n-raw','n-raw-jumpy',
