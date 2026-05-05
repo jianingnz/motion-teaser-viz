@@ -2967,7 +2967,7 @@ class Panel {
   // pickable) so the markers always pop against the rainbow trail and the
   // PC, regardless of the object's local appearance. Drawn larger than the
   // largest trail ball so they read as the trajectory's anchors.
-  _addEndpointSpheres(cfg) {
+  _addEndpointSpheres(cfg, fiFrac) {
     const idx = (this.opts.paperMode && cfg._goodIdxPaper) ? cfg._goodIdxPaper
                                                            : (cfg._goodIdx || []);
     if (!idx.length) return;
@@ -2981,12 +2981,14 @@ class Panel {
       records.push([pt[0], -pt[1], -pt[2]]);
     };
 
-    // HOT3D dense object-cloud path: cfg.gt_3d is a sparse stub (null), real
+    // HOT3D dense object-cloud path: cfg.gt_3d is a sparse stub (null) — real
     // positions live in clipData._gt3d (Int16-quantized typed arrays). Place
-    // an endpoint sphere at the FIRST visible frame (annotated) and the LAST
-    // visible frame for every tracked point in cfg._goodIdx — gives the
-    // moving-object trail a "from / to" anchor pair, just like the GT/Pred
-    // path below does for non-HOT3D bundles.
+    // endpoint spheres at the FIRST and LAST annotated frames WITHIN the
+    // current trail window so the markers always sit on the visible trail
+    // (was: clip-wide first/last, which left endpoints floating away from
+    // the rendered trail at fiNow=0). Trail window mirrors
+    // _addObjectCloudTrails: predictionMode → [0, fiNow]; otherwise rolling
+    // window of objectCloudTrailLen frames behind the playhead.
     const _gt3d = clipData?._gt3d;
     if (_gt3d) {
       const { N, F, quant, center, half } = _gt3d;
@@ -3002,29 +3004,36 @@ class Panel {
                 (qy * K) * hy + cy,
                 (qz * K) * hz + cz];
       };
+      const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
+      const fiNow = Math.max(0, Math.min(F - 1, Math.round(fiFrac ?? (F - 1))));
+      const fStart = Settings.predictionMode ? 0 : Math.max(0, fiNow - trailLen);
+      const fEnd   = fiNow;
       for (const p of idx) {
         let firstPt = null, lastPt = null;
-        for (let f = 0; f < F; f++) {
+        for (let f = fStart; f <= fEnd; f++) {
           const pt = decode(f, p);
           if (pt) { firstPt = pt; break; }
         }
-        for (let f = F - 1; f >= 0; f--) {
+        for (let f = fEnd; f >= fStart; f--) {
           const pt = decode(f, p);
           if (pt) { lastPt = pt; break; }
         }
-        push(firstPt); push(lastPt);
+        // Draw both anchors only when there's an actual trail segment in the
+        // window (≥ 2 distinct annotated frames). Single-frame tracks would
+        // render an endpoint at a position with no corresponding trail.
+        if (firstPt && lastPt && firstPt !== lastPt) {
+          push(firstPt); push(lastPt);
+        }
       }
     } else {
+      // Legacy non-HOT3D bundles (EgoDex / DROID / HD-EPIC). Per user spec,
+      // only the START anchor is drawn — the end-of-clip / end-of-pred
+      // markers were noisy ("a bunch of yellow dots floating where the track
+      // disappears") and didn't add much signal, so we drop them.
       const T_clip = cfg.gt_3d?.length || 0;
       if (T_clip === 0) return;
       for (const p of idx) {
-        // Global start (frame 0) and end markers — tied to the GT layer since
-        // GT now spans the entire trajectory.
-        if (this.opts.showGT) {
-          push(cfg.gt_3d[0]?.[p]);
-          push(cfg.gt_3d[T_clip - 1]?.[p]);
-        }
-        if (this.opts.showPred) push(cfg.pred_3d?.[T_clip - 1]?.[p]);
+        if (this.opts.showGT) push(cfg.gt_3d[0]?.[p]);
       }
     }
     if (!records.length) return;
@@ -3333,7 +3342,7 @@ class Panel {
     // Global start/end markers in the object's frame-0 sampled RGB. Drawn
     // last so they sit on top of the trail balls + lines. Always evaluated
     // (live and paper) — these are *global* anchors, independent of fiFrac.
-    if (this.opts.showEndpoints) this._addEndpointSpheres(cfg);
+    if (this.opts.showEndpoints) this._addEndpointSpheres(cfg, fiFrac);
     // Dedicated "initial-position" view: every tracked point at frame 0 in
     // its own object RGB. Independent of trail/endpoint state.
     if (this.opts.showInitialDots) this._addInitialDotsLayer(cfg);
@@ -5344,16 +5353,28 @@ function bindFullVideoControls() {
 function _enableMultiSelectClickToggle(sel) {
   if (!sel || sel.dataset.toggleWired === '1') return;
   sel.dataset.toggleWired = '1';
-  // Intercept native mousedown so plain-click no longer wipes the selection
-  // — toggle just the clicked option and re-fire the change event ourselves.
-  // Shift/Ctrl/Meta still toggle (no range-select needed since toggle covers
-  // the workflow). We focus the element so keyboard nav still works after.
+  // Intercept native mousedown to give a more intuitive selection model on
+  // <select multiple>:
+  //   * Plain click       → REPLACE: select only this option (matches the
+  //                         "click one track, see one track" mental model
+  //                         users expect, especially in the HOT3D picker
+  //                         where the listbox boots with N spatial picks
+  //                         already selected).
+  //   * Ctrl/Meta+click   → TOGGLE this option in/out of the selection.
+  //   * Shift+click       → TOGGLE (treated like Ctrl; no range-select
+  //                         since toggle already covers the workflow).
+  // We focus the element so keyboard nav still works after a click.
   sel.addEventListener('mousedown', (e) => {
     const opt = e.target.closest('option');
     if (!opt || opt.parentElement !== sel) return;
     e.preventDefault();
     sel.focus();
-    opt.selected = !opt.selected;
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      opt.selected = !opt.selected;
+    } else {
+      // Plain click: replace selection with just this option.
+      for (const o of sel.options) o.selected = (o === opt);
+    }
     sel.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
