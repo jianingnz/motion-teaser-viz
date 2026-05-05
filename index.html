@@ -3193,13 +3193,21 @@ class Panel {
       if (predMode && fiClamp > 0) {
         this._addObjectCloudLayer(cfg, 0, 1.0, 'moving');
       }
-      // Query-points cloud — frame-0 moving cloud always drawn (mirrors
-      // predMode's frame-0 layer but for the non-prediction view). Skip
-      // when predMode already drew frame 0, or when fiClamp itself is 0
-      // (else we'd double-draw with the playhead cloud below).
-      if (Settings.showQueryPoints && !predMode && fiClamp > 0) {
+      // Query-points cloud — exactly mirrors panel ⑤'s rendering
+      // (object cloud at frame 0, 'moving' filter, plus the red
+      // tracked-point markers when those are enabled). Drawn
+      // unconditionally when showQueryPoints is on, regardless of
+      // predMode / fiClamp / ghostFrames — same geometry as the
+      // existing predMode frame-0 layer would produce, so duplicate
+      // paint is visually a no-op (additive blending in the
+      // transparent queue) but the toggle is now self-contained and
+      // doesn't depend on the user happening to be in prediction mode.
+      if (Settings.showQueryPoints) {
         const qa = Math.max(0, Math.min(1, Settings.queryPointsAlpha ?? 1.0));
         this._addObjectCloudLayer(cfg, 0, qa, 'moving');
+        if (Settings.trackedMarkerOnInitial) {
+          this._addTrackedPointMarkers(cfg);
+        }
       }
       for (const gf of ghosts) {
         const f = Math.round(gf);
