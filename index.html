@@ -3239,6 +3239,11 @@ class Panel {
       const MIX_HI = 1.00;
       const T_EXP  = isPaper ? Settings.paperTExp : 1.00;
       const arcLen = !!Settings.trailGradientByArcLen;
+      // Honour the global colormap palette for the raw role too. When
+      // cmapPreset !== 'twoColor', sample the LUT at raw t directly
+      // (matches the chip swatch); when 'twoColor', fall back to the legacy
+      // oldR/newR colour-pickers + mixLo/tExp lerp.
+      const cmapRaw = _useColormapFor('raw');
       for (const p of rawIdxList) {
         // Collect contiguous visible sub-paths for this point in the window
         let sp = [];
@@ -3275,12 +3280,19 @@ class Panel {
           }
           for (let i = 0; i < m - 1; i++) {
             const tc0 = tArr[i], tc1 = tArr[i + 1];
-            const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc0, T_EXP);
-            const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc1, T_EXP);
             const a = path[i], b = path[i+1];
             segs.push(a[0], a[1], a[2], b[0], b[1], b[2]);
-            cols.push(oR*(1-k0) + nR*k0, oG*(1-k0) + nG*k0, oB*(1-k0) + nB*k0);
-            cols.push(oR*(1-k1) + nR*k1, oG*(1-k1) + nG*k1, oB*(1-k1) + nB*k1);
+            if (cmapRaw) {
+              const c0 = colormapRgb01(tc0, cmapRaw.name, cmapRaw.reverse);
+              const c1 = colormapRgb01(tc1, cmapRaw.name, cmapRaw.reverse);
+              cols.push(c0[0], c0[1], c0[2]);
+              cols.push(c1[0], c1[1], c1[2]);
+            } else {
+              const k0 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc0, T_EXP);
+              const k1 = MIX_LO + (MIX_HI - MIX_LO) * Math.pow(tc1, T_EXP);
+              cols.push(oR*(1-k0) + nR*k0, oG*(1-k0) + nG*k0, oB*(1-k0) + nB*k0);
+              cols.push(oR*(1-k1) + nR*k1, oG*(1-k1) + nG*k1, oB*(1-k1) + nB*k1);
+            }
           }
         }
       }
