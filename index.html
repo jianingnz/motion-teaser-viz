@@ -1251,6 +1251,20 @@ import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js
 const CLIP_URL = new URLSearchParams(location.search).get('clip')
   || 'static/data/clean_surface_1713_t10.json';
 
+// Dataset kind inferred from the clip-id stem. Used to gate dataset-specific
+// rendering quirks (e.g. only EgoDex + DAVIS get a pred-start endpoint sphere
+// alongside the GT-start one — HOT3D / DROID / HD-EPIC don't).
+const CLIP_STEM = CLIP_URL.split('/').pop().replace(/\.json$/, '');
+const DATASET_KIND = (() => {
+  if (CLIP_STEM.startsWith('hot3d_'))                return 'hot3d';
+  if (/^P\d{2}-/.test(CLIP_STEM))                    return 'hd_epic';
+  if (/^(AUTOLab|GuptaLab|PennPAL)_/.test(CLIP_STEM)) return 'droid';
+  // EgoDex + DAVIS share the descriptive-name pattern (camel_, flamingo_,
+  // car-turn_, clean_surface_, basic_pick_place_, …). Treat them as one
+  // bucket since both want the pred-start endpoint enabled.
+  return 'egodex_or_davis';
+})();
+
 // Sync the clip-selector dropdown to the current clip and reload on change.
 // The clip-sel reload also drops the `?obj=` param because object names don't
 // generalise across clips (soy sauce → bowl etc).
@@ -3040,19 +3054,17 @@ class Panel {
         push(qPt);
       }
     } else {
-      // Legacy non-HOT3D bundles (EgoDex / DROID / HD-EPIC). Two markers per
-      // track: (1) the START anchor at frame 0 (gt_3d), and (2) the
-      // pred-start at frame n_hist (pred_3d) — i.e. the first predicted
-      // frame, marking where the model's trajectory begins. The
-      // end-of-clip / end-of-pred markers were noisy ("yellow dots floating
-      // where the track disappears") so we don't draw those.
+      // Non-HOT3D bundles. GT-start sphere at frame 0 always; the pred-start
+      // sphere (also at frame 0, where history begins — NOT at n_hist) is
+      // only added for EgoDex + DAVIS. DROID / HD-EPIC explicitly excluded
+      // per user request.
       const T_clip = cfg.gt_3d?.length || 0;
       if (T_clip === 0) return;
-      const nHist = cfg.n_hist || 0;
+      const wantPredStart = (DATASET_KIND === 'egodex_or_davis');
       for (const p of idx) {
         if (this.opts.showGT) push(cfg.gt_3d[0]?.[p]);
-        if (this.opts.showPred && nHist > 0 && nHist < T_clip)
-          push(cfg.pred_3d?.[nHist]?.[p]);
+        if (wantPredStart && this.opts.showPred)
+          push(cfg.pred_3d?.[0]?.[p]);
       }
     }
     if (!records.length) return;
@@ -4512,6 +4524,19 @@ function populateObjSelector(clipData, cfg) {
 
 async function init() {
   const resp = await fetch(CLIP_URL + '?v=' + Date.now());
+  if (!resp.ok) {
+    // Most common cause: a stale `?clip=…` URL param that points at a bundle
+    // we've since renamed/deleted. GitHub Pages serves its 404.html instead,
+    // and `resp.json()` would throw "Unexpected token '<', "<!DOCTYPE …" .
+    // Drop the bad ?clip= and reload onto the default clip so the user
+    // doesn't have to debug a URL-shaped landmine.
+    console.warn(`bundle JSON fetch failed (${resp.status}) for ${CLIP_URL} — clearing stale ?clip= and reloading`);
+    const u = new URL(location.href);
+    u.searchParams.delete('clip');
+    u.searchParams.delete('obj');
+    location.replace(u.toString());
+    return;
+  }
   clipData = await resp.json();
   // Honor a `?obj=<name>` query param so deep-links into a specific HD-EPIC
   // object (e.g. `?clip=...&obj=soy%20sauce`) re-open at the same view. Falls
