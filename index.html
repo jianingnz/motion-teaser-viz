@@ -606,9 +606,17 @@ footer a { color: #2563eb; text-decoration: none; }
 
   <!-- Preset save/load row, sits above the accordion -->
   <div class="preset-row">
-    <select id="preset-sel" title="Load a saved preset"><option value="">— preset —</option></select>
-    <button class="btn" id="preset-save" title="Save the current settings as a named preset">Save</button>
+    <select id="preset-sel" title="Load a saved preset (localStorage)"><option value="">— preset —</option></select>
+    <button class="btn" id="preset-save" title="Save the current settings as a named preset (localStorage)">Save</button>
     <button class="btn" id="preset-del" title="Delete the selected preset">Del</button>
+  </div>
+  <!-- File-based config dump — round-trip every UI control + camera state +
+       picker selections + cmap chip + clip URL through a single JSON file
+       you can stash, share, or check into a paper repo. -->
+  <div class="preset-row">
+    <button class="btn" id="cfg-export" title="Download a single JSON file capturing every sidebar control + camera + picker selections + cmap chip + clip URL">💾 Save config</button>
+    <button class="btn" id="cfg-import-btn" title="Load a previously saved config JSON and apply every control + camera + picker selections at once">📂 Load config</button>
+    <input type="file" id="cfg-import" accept="application/json,.json" style="display:none;">
   </div>
 
   <div class="sb-body">
@@ -2983,12 +2991,10 @@ class Panel {
 
     // HOT3D dense object-cloud path: cfg.gt_3d is a sparse stub (null) — real
     // positions live in clipData._gt3d (Int16-quantized typed arrays). Place
-    // endpoint spheres at the FIRST and LAST annotated frames WITHIN the
-    // current trail window so the markers always sit on the visible trail
-    // (was: clip-wide first/last, which left endpoints floating away from
-    // the rendered trail at fiNow=0). Trail window mirrors
-    // _addObjectCloudTrails: predictionMode → [0, fiNow]; otherwise rolling
-    // window of objectCloudTrailLen frames behind the playhead.
+    // ONE endpoint sphere per track at clip-frame-0 — the "query point" the
+    // tracker was seeded with. Per user spec, no end-of-trail marker (was:
+    // start + end inside the trail window, which read as scattered yellow
+    // dots all along t). The sphere stays fixed as the playhead moves.
     const _gt3d = clipData?._gt3d;
     if (_gt3d) {
       const { N, F, quant, center, half } = _gt3d;
@@ -3004,26 +3010,15 @@ class Panel {
                 (qy * K) * hy + cy,
                 (qz * K) * hz + cz];
       };
-      const trailLen = Math.max(1, Settings.objectCloudTrailLen | 0);
-      const fiNow = Math.max(0, Math.min(F - 1, Math.round(fiFrac ?? (F - 1))));
-      const fStart = Settings.predictionMode ? 0 : Math.max(0, fiNow - trailLen);
-      const fEnd   = fiNow;
       for (const p of idx) {
-        let firstPt = null, lastPt = null;
-        for (let f = fStart; f <= fEnd; f++) {
+        // Walk forward from frame 0 until the track is annotated; almost
+        // always frame 0 itself for HOT3D moving-object tracks.
+        let qPt = null;
+        for (let f = 0; f < F; f++) {
           const pt = decode(f, p);
-          if (pt) { firstPt = pt; break; }
+          if (pt) { qPt = pt; break; }
         }
-        for (let f = fEnd; f >= fStart; f--) {
-          const pt = decode(f, p);
-          if (pt) { lastPt = pt; break; }
-        }
-        // Draw both anchors only when there's an actual trail segment in the
-        // window (≥ 2 distinct annotated frames). Single-frame tracks would
-        // render an endpoint at a position with no corresponding trail.
-        if (firstPt && lastPt && firstPt !== lastPt) {
-          push(firstPt); push(lastPt);
-        }
+        push(qPt);
       }
     } else {
       // Legacy non-HOT3D bundles (EgoDex / DROID / HD-EPIC). Per user spec,
@@ -6473,6 +6468,7 @@ function bindControls() {
   bindSidebar();
   bindPalettes();
   bindPresets();
+  _bindFullConfigButtons();
 
   video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
   bindKeyboardCamera();
@@ -6885,7 +6881,11 @@ function _capturePreset() {
     if (el) out.toggles[id] = el.classList.contains('on');
   }
   // Global colormap preset isn't a DOM input — store the live Settings keys.
-  out.cmap = { name: Settings.cmapPreset, reverse: !!Settings.cmapReverse };
+  out.cmap = {
+    name:      Settings.cmapPreset,
+    reverse:   !!Settings.cmapReverse,
+    intensity: Settings.cmapIntensity ?? 1,
+  };
   return out;
 }
 function _applyPreset(p) {
@@ -6907,13 +6907,153 @@ function _applyPreset(p) {
   if (p.cmap && typeof p.cmap.name === 'string') {
     Settings.cmapPreset = p.cmap.name;
     Settings.cmapReverse = !!p.cmap.reverse;
+    if (p.cmap.intensity != null) Settings.cmapIntensity = +p.cmap.intensity;
     document.querySelectorAll('.cmap-chip').forEach(c => {
       c.classList.toggle('active', c.dataset.name === Settings.cmapPreset);
     });
     document.getElementById('cmap-rev')?.classList.toggle('on', Settings.cmapReverse);
+    const intEl = document.getElementById('cmap-intensity');
+    if (intEl && p.cmap.intensity != null) {
+      intEl.value = String(p.cmap.intensity);
+      intEl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
     buildTimeLegend();
     rerenderAll();
   }
+}
+
+// ──────────── Full-config JSON file save/load ────────────
+// Captures EVERYTHING needed to reproduce the current view from a single
+// JSON: clip URL, all sidebar inputs + toggles, cmap chip + reverse +
+// intensity (handled by _capturePreset), live camera state, picker
+// selections, and the click-hidden PC index set. Writes a downloadable
+// .json; loads via a hidden <input type="file">.
+function _captureFullConfig() {
+  const base = _capturePreset();
+  const cam = (typeof camState !== 'undefined' && camState && camState.target) ? {
+    target: { x: camState.target.x, y: camState.target.y, z: camState.target.z },
+    yaw:   camState.yaw,
+    pitch: camState.pitch,
+    dist:  camState.dist,
+  } : null;
+  const pickerGt  = readPickerSelection('gt-pick')  || [];
+  const pickerRaw = readPickerSelection('raw-pick') || [];
+  const pcHidden  = (clipData && clipData._pcHidden) ? Array.from(clipData._pcHidden) : [];
+  return {
+    schema:   'motion-teaser-viz/full-config',
+    version:  1,
+    saved_at: new Date().toISOString(),
+    clip_url: (typeof CLIP_URL === 'string') ? CLIP_URL : null,
+    obj:      new URLSearchParams(location.search).get('obj') || null,
+    inputs:   base.inputs,
+    toggles:  base.toggles,
+    cmap:     base.cmap,
+    camera:   cam,
+    picker:   { gt: pickerGt, raw: pickerRaw },
+    pc_hidden: pcHidden,
+  };
+}
+function _applyFullConfig(cfgJson) {
+  if (!cfgJson || typeof cfgJson !== 'object') {
+    throw new Error('config: not a JSON object');
+  }
+  if (cfgJson.schema && cfgJson.schema !== 'motion-teaser-viz/full-config') {
+    throw new Error(`config: unknown schema ${cfgJson.schema}`);
+  }
+  // If the saved clip differs from the live one, navigate to the saved
+  // clip with the config payload tucked into sessionStorage so the next
+  // page load re-applies it after init() finishes.
+  const wantUrl = cfgJson.clip_url || null;
+  const wantObj = cfgJson.obj || null;
+  if (wantUrl && (typeof CLIP_URL !== 'string' || wantUrl !== CLIP_URL)) {
+    sessionStorage.setItem('mt_pending_config', JSON.stringify(cfgJson));
+    const params = new URLSearchParams();
+    params.set('clip', wantUrl);
+    if (wantObj) params.set('obj', wantObj);
+    location.search = '?' + params.toString();
+    return;   // page reload imminent
+  }
+  // Same clip — apply inputs/toggles/cmap via the existing preset path.
+  _applyPreset({
+    inputs:  cfgJson.inputs  || {},
+    toggles: cfgJson.toggles || {},
+    cmap:    cfgJson.cmap    || null,
+  });
+  // Picker selections (must run AFTER the inputs/toggles so n-keep etc.
+  // have already been applied — recomputeGtIdx may have refilled the
+  // listbox in between).
+  const gtSel = document.getElementById('gt-pick');
+  if (gtSel && Array.isArray(cfgJson.picker?.gt)) {
+    const want = new Set(cfgJson.picker.gt.map(Number));
+    for (const o of gtSel.options) o.selected = want.has(parseInt(o.value, 10));
+    gtSel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  const rawSel = document.getElementById('raw-pick');
+  if (rawSel && Array.isArray(cfgJson.picker?.raw)) {
+    const want = new Set(cfgJson.picker.raw.map(Number));
+    for (const o of rawSel.options) o.selected = want.has(parseInt(o.value, 10));
+    rawSel.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  // Hidden PC point set.
+  if (clipData && Array.isArray(cfgJson.pc_hidden)) {
+    clipData._pcHidden = new Set(cfgJson.pc_hidden.map(Number));
+    if (typeof rebuildAllStatic === 'function') rebuildAllStatic();
+  }
+  // Camera state.
+  if (cfgJson.camera && typeof camState !== 'undefined' && camState) {
+    const c = cfgJson.camera;
+    if (c.target) camState.target.set(+c.target.x, +c.target.y, +c.target.z);
+    if (c.yaw   != null) camState.yaw   = +c.yaw;
+    if (c.pitch != null) camState.pitch = +c.pitch;
+    if (c.dist  != null) camState.dist  = +c.dist;
+    if (typeof rerenderAll === 'function') rerenderAll();
+  }
+}
+function _downloadFullConfig() {
+  const cfg = _captureFullConfig();
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const stem = ((typeof CLIP_URL === 'string') ? CLIP_URL.split('/').pop() : 'clip').replace(/\.json$/, '');
+  const ts = new Date().toISOString().replace(/[:T]/g, '-').replace(/\..+$/, '');
+  a.download = `mt_config_${stem}_${ts}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+function _bindFullConfigButtons() {
+  const btnE = document.getElementById('cfg-export');
+  if (btnE) btnE.addEventListener('click', () => {
+    try { _downloadFullConfig(); }
+    catch (e) { alert('Save config failed: ' + e.message); }
+  });
+  const btnI = document.getElementById('cfg-import-btn');
+  const inp  = document.getElementById('cfg-import');
+  if (btnI && inp) {
+    btnI.addEventListener('click', () => inp.click());
+    inp.addEventListener('change', async () => {
+      const f = inp.files?.[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        _applyFullConfig(JSON.parse(text));
+      } catch (e) {
+        console.error('Load config failed:', e);
+        alert('Load config failed: ' + e.message);
+      } finally {
+        inp.value = '';   // allow re-loading the same file
+      }
+    });
+  }
+  // If the previous session navigated here with a queued config (clip-URL
+  // had to change), apply it now that init() has finished.
+  try {
+    const pending = sessionStorage.getItem('mt_pending_config');
+    if (pending) {
+      sessionStorage.removeItem('mt_pending_config');
+      _applyFullConfig(JSON.parse(pending));
+    }
+  } catch (e) { console.warn('pending config replay failed:', e); }
 }
 function bindPresets() {
   const sel = document.getElementById('preset-sel');
