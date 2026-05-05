@@ -68,6 +68,15 @@ HOT3D_STITCH = {
     "hot3d_clip003020_obj0_s023_e056": [
         ("clip-003020", 23, 56),
     ],
+    "hot3d_clip002658_obj3_s038_e055": [
+        ("clip-002658", 38, 55),
+    ],
+    "hot3d_clip003137_obj0_s055_e074": [
+        ("clip-003137", 55, 74),
+    ],
+    "hot3d_clip002562_obj2_s008_e025": [
+        ("clip-002562",  8, 25),
+    ],
 }
 
 # DROID bundle id → identifying parts of the raw-DROID mp4 path. The full
