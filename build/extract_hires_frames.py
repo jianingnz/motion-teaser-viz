@@ -180,18 +180,40 @@ def hot3d_stitch_for_clip(clip_id: str):
 
 def grab_frames_from_mp4(mp4: Path, indices: list[int]) -> list[np.ndarray]:
     """Read BGR frames at the given source-frame indices. Indices are in the
-    mp4's NATIVE frame domain (30 fps for EgoDex source / HOT3D source)."""
+    mp4's NATIVE frame domain (30 fps for EgoDex source / HOT3D source).
+
+    cv2's CAP_PROP_FRAME_COUNT can over-report by 1-3 vs. what's actually
+    seekable on some MPEG4 files (notably the egodex MPEG-4 SP encodes —
+    e.g. part4/pour/1027.mp4 reports 143 but the last readable frame is
+    141). Rather than crashing on the off-by-one, fall back step-by-step
+    to the last successfully read frame so a strip near the end of the
+    clip still produces 10 jpgs."""
     cap = cv2.VideoCapture(str(mp4))
     if not cap.isOpened():
         raise RuntimeError(f"cannot open {mp4}")
     out = []
+    last_ok = None
     for fi in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(fi))
-        ok, frame = cap.read()
+        target = int(fi)
+        ok = False; frame = None
+        for back in range(0, 4):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, target - back))
+            ok, frame = cap.read()
+            if ok:
+                if back > 0:
+                    print(f"  WARN: cv2 failed at frame {target} of {mp4.name}, "
+                          f"using frame {target - back} instead")
+                break
         if not ok:
+            if last_ok is not None:
+                print(f"  WARN: cv2 failed at frame {target} of {mp4.name}, "
+                      f"reusing last good frame")
+                out.append(last_ok)
+                continue
             cap.release()
-            raise RuntimeError(f"failed to read frame {fi} of {mp4}")
+            raise RuntimeError(f"failed to read frame {target} of {mp4}")
         out.append(frame)
+        last_ok = frame
     cap.release()
     return out
 
@@ -261,7 +283,13 @@ def build_egodex_full_strip(clip: dict, video_stem: str, n_full: int):
     cap.release()
     if n_src <= 0:
         raise RuntimeError(f"unable to read frame count from {src_mp4}")
-    src_picks = even_indices(n_src, n_full)
+    # cv2's CAP_PROP_FRAME_COUNT can over-report by 1 vs. what's actually
+    # seekable on some MPEG4 files (e.g. egodex part4/pour/1027.mp4 reports
+    # 143 but the last readable frame is 141). Pin even_indices to
+    # n_src - 2 as a safety margin so the rightmost pick lands inside
+    # the readable range.
+    n_seek = max(1, n_src - 2)
+    src_picks = even_indices(n_seek, n_full)
     print(f"  EgoDex full strip: {len(src_picks)} frames @ {src_fps:.2f}fps "
           f"from {src_mp4.name} (n_src={n_src})  src_indices={src_picks}")
     return src_mp4, src_picks, src_fps
