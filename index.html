@@ -430,8 +430,8 @@ footer a { color: #2563eb; text-decoration: none; }
           </optgroup>
           <optgroup label="DAVIS">
             <option value="static/data/camel_camal_t2.json">camel_camal · t2</option>
-            <option value="static/data/flamingo_flamingo_t6.json">flamingo_flamingo · t6</option>
-            <option value="static/data/car-turn_silver_car_t3.json">car-turn_silver_car · t3</option>
+            <option value="static/data/flamingo_flamingo_t2.json">flamingo_flamingo · t2</option>
+            <option value="static/data/car-turn_silver_car_t2.json">car-turn_silver_car · t2</option>
           </optgroup>
           <optgroup label="HOT3D">
             <option value="static/data/hot3d_clip1995_clip1996.json">clip-001995 → clip-001996 · cross-clip stitched scene (MoGe @ first frame)</option>
@@ -3040,14 +3040,19 @@ class Panel {
         push(qPt);
       }
     } else {
-      // Legacy non-HOT3D bundles (EgoDex / DROID / HD-EPIC). Per user spec,
-      // only the START anchor is drawn — the end-of-clip / end-of-pred
-      // markers were noisy ("a bunch of yellow dots floating where the track
-      // disappears") and didn't add much signal, so we drop them.
+      // Legacy non-HOT3D bundles (EgoDex / DROID / HD-EPIC). Two markers per
+      // track: (1) the START anchor at frame 0 (gt_3d), and (2) the
+      // pred-start at frame n_hist (pred_3d) — i.e. the first predicted
+      // frame, marking where the model's trajectory begins. The
+      // end-of-clip / end-of-pred markers were noisy ("yellow dots floating
+      // where the track disappears") so we don't draw those.
       const T_clip = cfg.gt_3d?.length || 0;
       if (T_clip === 0) return;
+      const nHist = cfg.n_hist || 0;
       for (const p of idx) {
         if (this.opts.showGT) push(cfg.gt_3d[0]?.[p]);
+        if (this.opts.showPred && nHist > 0 && nHist < T_clip)
+          push(cfg.pred_3d?.[nHist]?.[p]);
       }
     }
     if (!records.length) return;
