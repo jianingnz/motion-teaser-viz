@@ -616,6 +616,10 @@ def main():
             "showBalls": False, "showEndpoints": False,
             "trackSmoothWindow": 1,
             "maxSceneDepth": 0.85,
+            # Frame-0 "query points" cloud — the moving object's surface
+            # at the start of the clip, mirroring panel ⑤'s rendering.
+            "showQueryPoints": True,
+            "queryPointsAlpha": 1.0,
         },
     }
     out_json = out_data / f"{args.name}.json"

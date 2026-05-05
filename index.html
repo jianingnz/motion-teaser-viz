@@ -863,6 +863,11 @@ footer a { color: #2563eb; text-decoration: none; }
         </div>
         <div class="toggle-grid" style="margin-top:6px;">
           <button class="btn full" id="t-object-cloud" title="Render gt_3d at the playhead as a colored Points cloud using pt_colors_rgb (HOT3D mode).">object cloud</button>
+          <button class="btn full" id="t-query-points" title="Always draw the moving object's frame-0 surface cloud (the 'query points' the tracker was seeded with). Mirrors panel ⑤ rendering — same dot style, same per-track RGB.">query points (frame 0)</button>
+        </div>
+        <div class="fld">
+          <div class="lbl-row"><span title="Opacity for the frame-0 query-points cloud. 1.0 = same as playhead cloud; lower values fade it back so the playhead reads as foreground.">Query-points opacity</span><span class="v" id="query-points-alpha-lbl">1.00</span></div>
+          <input type="range" id="query-points-alpha" min="0" max="1" step="0.02" value="1">
         </div>
         <div class="fld">
           <div class="lbl-row"><span title="Disc size (CSS pixels) for the object cloud points. Higher = the surface cloud visually dominates over the trails behind it.">Object cloud size</span><span class="v" id="obj-cloud-size-lbl">14.0</span></div>
@@ -1479,6 +1484,14 @@ const Settings = {
   // to frame 0 regardless of trail-length so the trail reads as
   // 'frame-0 points → predicted trajectory'.
   predictionMode:         true,
+  // Query-points cloud (HOT3D): always draw the moving object's frame-0
+  // surface cloud, regardless of playhead position or predictionMode.
+  // This is the "starting" position — the points the tracker was queried
+  // for. Bundles that ship cfg._gt3d enable this via viewer_defaults so
+  // the user always sees where the trail begins. queryPointsAlpha lets
+  // the user dim it relative to the playhead cloud.
+  showQueryPoints:        false,
+  queryPointsAlpha:       1.0,
   // Ground grid helper. Y-offset is the world-y of the grid plane; in
   // HOT3D anchor coords positive Y is DOWN (display convention) so a
   // positive groundGridY drops the grid below the camera/origin.
@@ -3180,12 +3193,22 @@ class Panel {
       if (predMode && fiClamp > 0) {
         this._addObjectCloudLayer(cfg, 0, 1.0, 'moving');
       }
+      // Query-points cloud — frame-0 moving cloud always drawn (mirrors
+      // predMode's frame-0 layer but for the non-prediction view). Skip
+      // when predMode already drew frame 0, or when fiClamp itself is 0
+      // (else we'd double-draw with the playhead cloud below).
+      if (Settings.showQueryPoints && !predMode && fiClamp > 0) {
+        const qa = Math.max(0, Math.min(1, Settings.queryPointsAlpha ?? 1.0));
+        this._addObjectCloudLayer(cfg, 0, qa, 'moving');
+      }
       for (const gf of ghosts) {
         const f = Math.round(gf);
         if (!Number.isFinite(f) || f < 0 || f >= T || f === fiClamp) continue;
         // In prediction mode the frame-0 'ghost' would double-draw on
         // top of the solid frame-0 cloud — skip it.
         if (predMode && f === 0) continue;
+        // Same guard for the query-points layer above.
+        if (Settings.showQueryPoints && f === 0) continue;
         this._addObjectCloudLayer(cfg, f, /*alpha=*/Settings.ghostOpacity, 'moving');
       }
       if (Settings.objectCloudTrails && Settings.objectCloudTrailCount > 0) {
@@ -4368,6 +4391,14 @@ function applyBundleViewerDefaults(clipData) {
   }
   if (vd.skipStaticObjCloud !== undefined) {
     Settings.skipStaticObjCloud = !!vd.skipStaticObjCloud;
+  }
+  if (vd.showQueryPoints !== undefined) {
+    Settings.showQueryPoints = !!vd.showQueryPoints;
+    const t = document.getElementById('t-query-points');
+    if (t) t.classList.toggle('on', Settings.showQueryPoints);
+  }
+  if (vd.queryPointsAlpha !== undefined) {
+    Settings.queryPointsAlpha = +vd.queryPointsAlpha;
   }
 }
 
@@ -6071,6 +6102,20 @@ function bindControls() {
       rerenderAll();
     };
   }
+  // Frame-0 query-points cloud toggle (mirrors panel ⑤'s rendering inside
+  // the big interactive scene). Alpha slider lets the user dial it back so
+  // the playhead cloud still reads as foreground.
+  const tQueryPts = document.getElementById('t-query-points');
+  if (tQueryPts) {
+    tQueryPts.classList.toggle('on', Settings.showQueryPoints);
+    tQueryPts.onclick = () => {
+      Settings.showQueryPoints = !Settings.showQueryPoints;
+      tQueryPts.classList.toggle('on', Settings.showQueryPoints);
+      rerenderAll();
+    };
+  }
+  wireSlider('query-points-alpha', 'query-points-alpha-lbl', v => v.toFixed(2),
+             v => { Settings.queryPointsAlpha = v; rerenderAll(); });
   const tObjTrailHonorVis = document.getElementById('t-object-cloud-trail-honor-vis');
   if (tObjTrailHonorVis) {
     tObjTrailHonorVis.classList.toggle('on', Settings.objectCloudTrailHonorVis);
