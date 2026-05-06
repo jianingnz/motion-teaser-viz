@@ -3400,6 +3400,44 @@ class Panel {
           rMin, rMax, T_TOTAL, null, 'pred');
       }
     }
+    // HOT3D motion5 overlay: render motion5-viz's pred (and optionally GT)
+    // trails on top of the dense object cloud. Independent point set + frame
+    // count from cfg.gt_3d/pred_3d, so it gets its own _buildTrailLayer call
+    // with cfg._m5.idx and a capped trailEnd (motion5 covers fewer frames
+    // than the bundle's mp4 — typically 15 vs 18-20).
+    if (cfg._m5) {
+      const m5 = cfg._m5;
+      const T_m5 = m5.pred_3d?.length || 0;
+      if (T_m5 > 0) {
+        const trailEndM5 = isPaper ? T_m5 : Math.min(lastFi + 1, T_m5);
+        if (this.opts.showPred && m5.pred_3d) {
+          const layer = this._buildTrailLayer(
+            m5.pred_3d, 0, trailEndM5, m5.idx,
+            this.lineMats.pred, this.lineBaseCols.pred,
+            true, paperMix, T_m5, 'pred');
+          if (layer) this.dynGroup.add(layer);
+          if (this.opts.showBalls) {
+            this._addTrailBallsLayer(
+              m5.pred_3d, 0, trailEndM5, m5.idx,
+              this.lineBaseCols.pred, true, paperMix,
+              rMin, rMax, T_m5, null, 'pred');
+          }
+        }
+        if (this.opts.showGT && m5.gt_3d) {
+          const layer = this._buildTrailLayer(
+            m5.gt_3d, 0, trailEndM5, m5.idx,
+            this.lineMats.gt, this.lineBaseCols.gt,
+            true, paperMix, T_m5, 'gt');
+          if (layer) this.dynGroup.add(layer);
+          if (this.opts.showBalls) {
+            this._addTrailBallsLayer(
+              m5.gt_3d, 0, trailEndM5, m5.idx,
+              this.lineBaseCols.gt, true, paperMix,
+              rMin, rMax, T_m5, null, 'gt');
+          }
+        }
+      }
+    }
     // Global start/end markers in the object's frame-0 sampled RGB. Drawn
     // last so they sit on top of the trail balls + lines. Always evaluated
     // (live and paper) — these are *global* anchors, independent of fiFrac.
@@ -4610,6 +4648,29 @@ async function init() {
     cfg.gt_2d = null;
     cfg.pred_2d = null;
     cfg.pt_colors_rgb = new Array(N_obj);   // sparse
+  }
+  // motion5 prediction overlay (HOT3D only): bundle ships `m5_trails` with
+  // motion5-viz's 80-pt sampled GT + Pred 3D arrays, already rigid-aligned
+  // to our gt3d.bin frame. We expose them under cfg._m5 so the trail
+  // renderer can draw them as an extra layer alongside the dense object
+  // cloud (which is the existing "GT" reference for HOT3D).
+  if (clipData.m5_trails) {
+    const mt = clipData.m5_trails;
+    const N_m5 = (mt.gt_3d?.[0]?.length) || 0;
+    cfg._m5 = {
+      gt_3d:    mt.gt_3d,
+      pred_3d:  mt.pred_3d,
+      vis:      mt.vis,
+      n_hist:   mt.n_hist | 0,
+      hist_frames:   mt.hist_frames,
+      future_frames: mt.future_frames,
+      n_pts:    N_m5,
+      // idx covers all motion5 points by default — they're already sampled
+      // (~80) so a track-picker subset isn't needed here.
+      idx: Array.from({length: N_m5}, (_, i) => i),
+    };
+    console.log(`m5_trails: T=${mt.gt_3d?.length || 0}  N=${N_m5}  ` +
+                `n_hist=${mt.n_hist}  fit=${mt.fit_residual_mm_median}mm med`);
   }
   if (clipData.cam_bin?.url) {
     const cam = await loadCamBinary(clipData.cam_bin.url);
