@@ -3384,7 +3384,10 @@ class Panel {
           rMin, rMax, T_TOTAL, null, 'gt');
       }
     }
-    if (this.opts.showPred) {
+    if (this.opts.showPred && cfg.pred_3d) {
+      // HOT3D bundles set cfg.pred_3d to null in the loader (real data, if
+      // any, lives in cfg._m5 below) — skip this branch in that case to
+      // avoid `null.length` inside _buildTrailLayer hanging the render.
       // Same accumulation rule as GT — full trail from frame 0 to current
       // frame, no sliding window.
       const trailEnd = isPaper ? T_clip : (lastFi + 1);
