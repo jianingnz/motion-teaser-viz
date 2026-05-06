@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
-"""Bake motion5-viz's hotworld prediction (and GT) trails into an existing
-motion-teaser-viz HOT3D bundle.
+"""Bake motion5-viz's hotworld prediction into an existing motion-teaser-viz
+HOT3D bundle as an overlay trail.
 
-Why: the user wants to compare motion5's model prediction against GT in our
-HOT3D viewer, while keeping our existing visualization (MoGe-dense scene PC
-+ 2000-pt object cloud from gt3d.bin). motion5's hotworld JSON stores 80
-sampled points × (3 hist + 12 future) frames of GT and predicted 3D
-positions, plus per-point RGB.
+Why displacement-based: motion5's hotworld JSON ships gt_3d / pred_3d for
+80 sampled points in a slightly different coordinate frame from our
+gt3d.bin (different upstream npz, no R_ROT90 applied). Trying to globally
+rigid-align them leaves a residual that visibly offsets the trails from
+the dense 2000-pt object cloud the viewer renders.
 
-Coordinate-frame caveat: motion5's hot3d source coords come from
-`dense_3d.npz` (un-rotated), while our `gt3d.bin` is in the anchor-display
-frame produced by prepare_hot3d_singleclip.py (rotated by `R_ROT90`). They
-differ by a rigid transform. We solve for R, t via Kabsch/Procrustes on
-nearest-neighbor pairs (motion5 GT ↔ our gt3d.bin at the same frame), then
-apply that transform to motion5's gt_3d and pred_3d before stuffing them
-into the bundle.
+Approach instead:
 
-Result: a new top-level field `m5_trails` on the bundle JSON containing the
-transformed gt_3d/pred_3d arrays, vis, per-point RGB, and frame metadata.
-The viewer reads this field and renders motion5's trails alongside the
-existing object cloud.
+  1. NN-match motion5's frame-0 points → our gt3d.bin frame-0 points.
+     This gives 80 mtv indices, one per motion5 sample point.
+  2. **GT trail** = our gt3d.bin's positions at those 80 mtv indices, across
+     all bundle frames. By construction this trail IS a strict subset of
+     the dense object cloud, so it tracks it exactly.
+  3. **Pred trail** = anchor at the GT frame-0 position + R @ (motion5_pred[f]
+     - motion5_pred[0]). The rotation R comes from a Kabsch fit between
+     motion5 and mtv per-point displacements; t is implicit (anchor pinned
+     to GT frame-0). This makes pred and GT coincide at frame 0 by
+     construction and uses motion5's predicted relative motion thereafter.
+
+Caveats:
+  * Bundles produced this way no longer represent the literal motion5
+    eval pred — the predicted positions are translated to our anchor.
+    The shape and direction of the predicted trajectory is preserved.
+  * If motion5's NN-match to mtv has poor coverage (low pair count or
+    high pair distance), the pred shape may not perfectly mirror what
+    motion5 displays. This is a one-shot demo overlay, not a metric eval.
 
 Usage:
     python build/bake_motion5_pred_into_hot3d.py \
@@ -36,8 +44,8 @@ from scipy.spatial import cKDTree
 
 
 def decode_gt3d_bin(path: Path):
-    """Decode gt3d v2 binary → (xyz (F,N,3) float32 with NaN for unannotated,
-    vis (F,N) bool, rgb (N,3) uint8). Mirrors the JS loader (loadGT3DBinary)."""
+    """Decode gt3d v2 binary → (xyz (F,N,3) with NaN for unannotated,
+    vis (F,N) bool). Mirrors the JS loader."""
     with open(path, "rb") as f:
         magic = f.read(4)
         assert magic == b"GT3D", f"bad magic: {magic!r}"
@@ -61,24 +69,20 @@ def decode_gt3d_bin(path: Path):
     xyz = quant.astype(np.float32) * K * half + center
     valid = quant[..., 0] != SENT
     xyz[~valid] = np.nan
-    return xyz, valid, rgb, obj_ids, axisMin, axisMax
+    return xyz, valid
 
 
-def kabsch(A: np.ndarray, B: np.ndarray):
-    """Solve B ≈ A @ R.T + t for rigid R (3,3), t (3,). Returns R, t,
-    plus per-pair residual norms (m)."""
-    ca = A.mean(0)
-    cb = B.mean(0)
+def kabsch_R_only(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """Solve for R such that displacements (B - B0) ≈ R @ (A - A0). Returns
+    just R (3x3); translation is irrelevant since we anchor explicitly."""
+    ca = A.mean(0); cb = B.mean(0)
     H = (A - ca).T @ (B - cb)
-    U, S, Vt = np.linalg.svd(H)
+    U, _, Vt = np.linalg.svd(H)
     R = Vt.T @ U.T
     if np.linalg.det(R) < 0:
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
-    t = cb - R @ ca
-    A_x = A @ R.T + t
-    err = np.linalg.norm(A_x - B, axis=1)
-    return R, t, err
+    return R
 
 
 def main():
@@ -87,86 +91,124 @@ def main():
     ap.add_argument("--bundle-json", required=True, type=Path,
                     help="motion-teaser-viz HOT3D bundle JSON to update in place.")
     ap.add_argument("--max-nn-dist", type=float, default=0.5,
-                    help="NN-pair filter (m). Drops pairs farther than this "
-                         "before fitting the rigid transform.")
+                    help="NN-pair distance cutoff (m) when matching motion5 → mtv at frame 0.")
     args = ap.parse_args()
 
     m5 = json.loads(args.motion5_json.read_text())
     cfg5 = m5["configs"][0]
-    m5_gt = np.asarray(cfg5["gt_3d"], dtype=np.float32)
-    m5_pred = np.asarray(cfg5["pred_3d"], dtype=np.float32)
+    m5_gt = np.asarray(cfg5["gt_3d"], dtype=np.float32)        # (T_m5, N_m5, 3)
+    m5_pred = np.asarray(cfg5["pred_3d"], dtype=np.float32)    # (T_m5, N_m5, 3)
     m5_vis = np.asarray(cfg5["vis"], dtype=bool)
-    # pt_colors_rgb is optional — motion5 hotworld JSONs don't ship it (the
-    # site renders trails with a colormap gradient, not per-track RGB).
-    m5_pt_colors = cfg5.get("pt_colors_rgb")
-    m5_hist = cfg5["hist_frames"]
-    m5_future = cfg5["future_frames"]
+    m5_hist_frames = cfg5["hist_frames"]
+    m5_future_frames = cfg5["future_frames"]
     m5_n_hist = int(cfg5["n_hist"])
-    T_m5, N_m5 = m5_gt.shape[0], m5_gt.shape[1]
-    print(f"motion5: T={T_m5}, N={N_m5}, hist={m5_hist}, future_count={len(m5_future)}")
+    T_m5, N_m5, _ = m5_gt.shape
+    print(f"motion5: T={T_m5}  N={N_m5}  hist={m5_hist_frames}  "
+          f"future_count={len(m5_future_frames)}")
 
     bundle = json.loads(args.bundle_json.read_text())
     bundle_dir = args.bundle_json.parent
     gt3d_url = bundle["gt3d_bin"]["url"]
-    gt3d_path = bundle_dir.parent.parent / gt3d_url
-    if not gt3d_path.exists():
-        gt3d_path = Path(gt3d_url)
+    gt3d_path = (bundle_dir.parent.parent / gt3d_url) if not Path(gt3d_url).is_absolute() else Path(gt3d_url)
     if not gt3d_path.exists():
         gt3d_path = (args.bundle_json.parent / Path(gt3d_url).name).resolve()
-    print(f"reading gt3d.bin from {gt3d_path}")
-    mtv_xyz, mtv_vis, _, _, _, _ = decode_gt3d_bin(gt3d_path)
+    print(f"reading gt3d.bin: {gt3d_path}")
+    mtv_xyz, mtv_vis = decode_gt3d_bin(gt3d_path)
     F_mtv = mtv_xyz.shape[0]
-    print(f"mtv gt3d: F={F_mtv}, N={mtv_xyz.shape[1]}")
+    print(f"mtv gt3d: F={F_mtv}  N={mtv_xyz.shape[1]}")
 
-    # Pair (motion5 GT) with (mtv gt3d at same frame, NN). Use only frames
-    # both have (the first min(T_m5, F_mtv)).
-    F_pair = min(T_m5, F_mtv)
-    A_list = []  # motion5 GT positions
-    B_list = []  # mtv gt3d positions (NN-matched)
-    for fi in range(F_pair):
-        mtv_f = mtv_xyz[fi]
-        valid = mtv_vis[fi] & np.isfinite(mtv_f).all(axis=1)
-        if not valid.any():
-            continue
-        tree = cKDTree(mtv_f[valid])
-        m5_f = m5_gt[fi]
-        m5_v = m5_vis[fi] if m5_vis.shape[0] > fi else np.ones(N_m5, dtype=bool)
-        m5_keep = m5_v & np.isfinite(m5_f).all(axis=1)
-        if not m5_keep.any():
-            continue
-        d, idx = tree.query(m5_f[m5_keep], k=1)
-        keep = d < args.max_nn_dist
-        A_list.append(m5_f[m5_keep][keep])
-        B_list.append(mtv_f[valid][idx[keep]])
-    A = np.concatenate(A_list, axis=0)
-    B = np.concatenate(B_list, axis=0)
-    print(f"NN pairs: {len(A)}")
+    # ── Step 1: match motion5 frame-0 → mtv frame-0 NN. Drop any motion5
+    #            point that doesn't have a close mtv neighbour. ──
+    mtv0 = mtv_xyz[0]
+    mtv0_valid = mtv_vis[0] & np.isfinite(mtv0).all(axis=1)
+    tree = cKDTree(mtv0[mtv0_valid])
+    mtv0_orig_idx = np.where(mtv0_valid)[0]   # map filtered-tree-idx → original mtv idx
+    m5_0 = m5_gt[0]
+    m5_0_valid = (m5_vis[0] if m5_vis.shape[0] > 0 else np.ones(N_m5, dtype=bool)) \
+                 & np.isfinite(m5_0).all(axis=1)
+    dists = np.full(N_m5, np.inf, dtype=np.float32)
+    mtv_idx = np.full(N_m5, -1, dtype=np.int64)
+    if m5_0_valid.any():
+        d, ii = tree.query(m5_0[m5_0_valid], k=1)
+        dists[m5_0_valid] = d
+        mtv_idx[m5_0_valid] = mtv0_orig_idx[ii]
+    keep = (dists < args.max_nn_dist) & (mtv_idx >= 0)
+    n_keep = int(keep.sum())
+    print(f"frame-0 NN match: {n_keep}/{N_m5} motion5 pts paired (median dist "
+          f"{np.median(dists[keep])*1000:.2f}mm)")
 
-    R, t, err = kabsch(A, B)
-    print(f"rigid fit: median resid={np.median(err)*1000:.2f}mm  "
-          f"mean={err.mean()*1000:.2f}mm  max={err.max()*1000:.2f}mm")
+    # ── Step 2: GT trail = mtv positions at the matched mtv indices,
+    #            across all min(T_m5, F_mtv) frames. ──
+    F_use = min(T_m5, F_mtv)
+    kept_idx = np.where(keep)[0]              # motion5-point indices we keep
+    kept_mtv = mtv_idx[keep]                  # corresponding mtv indices
+    gt_trail = np.full((F_use, n_keep, 3), np.nan, dtype=np.float32)
+    for fi in range(F_use):
+        gt_trail[fi] = mtv_xyz[fi, kept_mtv, :]
+    # Mark invisible frames (NaN) explicitly so the JS renderer skips.
+    vis_trail = mtv_vis[:F_use, kept_mtv]
 
-    def xform(arr):
-        # arr shape (T, N, 3) → (T, N, 3) after applying R @ p + t.
-        flat = arr.reshape(-1, 3)
-        out = flat @ R.T + t
-        return out.reshape(arr.shape).astype(np.float32)
+    # ── Step 3: pred trail. Solve R from frame-0 displacements between
+    #            motion5 (relative to motion5_pred[0]) and mtv (relative to
+    #            mtv[0]) at the kept points. Since pred[0]==gt[0], we can
+    #            just use motion5_gt at later frames or motion5_pred — for
+    #            R fitting we use motion5_gt frame 1's displacement, since
+    #            it should match mtv frame 1's displacement. ──
+    # Stack displacements from all hist+early-future frames where both have data
+    A_disp = []
+    B_disp = []
+    A0 = m5_gt[0, kept_idx]                   # motion5 anchor
+    B0 = mtv_xyz[0, kept_mtv]                 # mtv anchor
+    for fi in range(1, F_use):
+        a_disp = m5_gt[fi, kept_idx] - A0
+        b_disp = mtv_xyz[fi, kept_mtv] - B0
+        valid = (np.isfinite(a_disp).all(axis=1)
+                 & np.isfinite(b_disp).all(axis=1))
+        if valid.any():
+            A_disp.append(a_disp[valid])
+            B_disp.append(b_disp[valid])
+    if A_disp:
+        A_disp = np.concatenate(A_disp, axis=0)
+        B_disp = np.concatenate(B_disp, axis=0)
+        # Solve for R via Kabsch (no centering — these are displacement vectors)
+        H = A_disp.T @ B_disp
+        U, _, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1, :] *= -1
+            R = Vt.T @ U.T
+        A_x = A_disp @ R.T
+        err = np.linalg.norm(A_x - B_disp, axis=1)
+        print(f"motion5→mtv displacement R fit: {len(A_disp)} pairs  "
+              f"median resid={np.median(err)*1000:.2f}mm  "
+              f"max={err.max()*1000:.2f}mm")
+    else:
+        print("not enough displacement pairs — using identity R.")
+        R = np.eye(3, dtype=np.float32)
 
-    m5_gt_x = xform(m5_gt)
-    m5_pred_x = xform(m5_pred)
+    # Build pred trail: anchor at mtv frame 0, displacement from motion5_pred.
+    pred_trail = np.full((F_use, n_keep, 3), np.nan, dtype=np.float32)
+    A0_kept = m5_pred[0, kept_idx]            # = m5_gt[0] at hist frames
+    for fi in range(F_use):
+        # Motion5 predicted displacement from motion5's anchor at this frame.
+        m5_disp = m5_pred[fi, kept_idx] - A0_kept     # (n_keep, 3)
+        # Rotate into mtv's frame; add mtv anchor.
+        pred_trail[fi] = (m5_disp @ R.T) + B0
+        # Drop frames where any input was NaN.
+        bad = ~np.isfinite(m5_pred[fi, kept_idx]).all(axis=1)
+        pred_trail[fi, bad] = np.nan
 
+    # ── Step 4: write back ──
     bundle["m5_trails"] = {
-        "gt_3d":   np.round(m5_gt_x, 5).tolist(),
-        "pred_3d": np.round(m5_pred_x, 5).tolist(),
-        "vis":     m5_vis.tolist(),
-        "pt_colors_rgb": m5_pt_colors,
+        "gt_3d":   np.round(gt_trail, 5).tolist(),
+        "pred_3d": np.round(pred_trail, 5).tolist(),
+        "vis":     vis_trail.tolist(),
         "n_hist":  m5_n_hist,
-        "hist_frames":   m5_hist,
-        "future_frames": m5_future,
+        "hist_frames":   m5_hist_frames,
+        "future_frames": m5_future_frames,
         "obj_name": cfg5.get("obj_name", ""),
-        "fit_residual_mm_median": round(float(np.median(err) * 1000), 2),
-        "fit_residual_mm_max":    round(float(err.max() * 1000), 2),
-        "n_pairs": int(len(A)),
+        "n_pts": int(n_keep),
+        "alignment": "frame0_anchor_with_displacement_R",
         "source_motion5_json": str(args.motion5_json),
     }
     # Make pred trail visible by default — that's the comparison we want.
