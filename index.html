@@ -6136,6 +6136,7 @@ async function _captureGifFromPanel(canvasId, gifFps, delay, quality, setProg) {
 
   const wasPaused = video.paused;
   video.pause();
+  const savedT  = video.currentTime;
 
   // Capture at the panel canvas's current backing-store size — the user's live
   // camera + sizing are honoured exactly. We DO NOT call panel.capture() per
@@ -6158,6 +6159,14 @@ async function _captureGifFromPanel(canvasId, gifFps, delay, quality, setProg) {
   const savedFi = App._lastFi;
   for (let fi = 0; fi < T; fi++) {
     setProg(`Frame ${fi + 1} / ${T} — rendering…`);
+    // The 3D scene draws the live <video> element onto the camera frustum's
+    // far rectangle (see `Camera frustum + recent-trail polyline + (optional)
+    // video texture` in updateDynamic). Without seeking the video first, the
+    // GIF's every-frame frustum would show the same paused frame. Seek to
+    // the centre of the trajectory-frame's interval and *wait* for the
+    // decoder so the next render() reads the right pixels into the
+    // CanvasTexture.
+    await _gifSeekVideo(video, (fi + 0.5) / App.fps);
     panel.updateDynamic(cfg, fi);
     panel.render();
     // The WebGL backing buffer is read directly by gif.js via the canvas
@@ -6180,7 +6189,9 @@ async function _captureGifFromPanel(canvasId, gifFps, delay, quality, setProg) {
     try { gif.render(); } catch (e) { reject(e); }
   });
 
-  // Restore the panel to the live playback frame so the viewer is consistent.
+  // Restore the panel + video to where we were before the capture started,
+  // so the live viewer doesn't "jump" after the GIF download.
+  video.currentTime = savedT;
   if (savedFi >= 0) {
     panel.updateDynamic(cfg, savedFi);
     panel.render();
