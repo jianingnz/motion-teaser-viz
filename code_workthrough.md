@@ -124,25 +124,34 @@ Every prep script emits the same shape (some fields optional):
 ## Per-frame tick (line 4910)
 ```
 processKeyboardCamera(now)        // WASD + E/C; mutates camState
-fiFracRaw = video.currentTime / App.tPerFrame
-fi      = floor(fiFracRaw).clamp(start, end)
-fiFrac  = fiFracRaw.clamp(start, end)
+if currentTime > clipEndTime + 0.5/fps:
+    currentTime = clipStartTime         // skip libx264-pad duplicates
+mediaT  = App._rvfcMediaTime ?? video.currentTime    // rVFC-precise
+fiFrac  = mediaT * App.fps          .clamp(start, end)
+fi      = round(fiFrac)             .clamp(start, end)
 drawVideoOverlay(fiFrac)          // every rAF: dots glide sub-frame via interp2d
 if fi !== App._lastFi:
     update labels + scrub bar
     panels (non-paperMode).updateDynamic(cfg, fi).render()   // integer-frame only
 requestAnimationFrame(tick)
 ```
-Two-tier update rate: the 2D overlay refreshes every rAF for smooth
-dot motion, but the 3D panels only re-render when the integer frame
-changes (rebuilding trails per rAF would burn GPU for visuals that
-don't change between integer frames). The fiFrac→trajectory map is
-*linear in mp4 time*, not `round(currentTime*fps)`, so the sync is
-robust to bundles whose mp4 has a different frame count than the
-trajectory (older `prepare_clip.py` bundles, which left libx264 to pad).
-`App.baselineRate` (set in `loadedmetadata`) makes
-`video.playbackRate × rate-sel` always work out to 15 trajectory-frames
-per wall-clock second at 1×.
+- `App._rvfcMediaTime` is set by `video.requestVideoFrameCallback` —
+  Chrome/Safari/Firefox now hand back `metadata.mediaTime` for the
+  *exact* frame the browser just painted, eliminating the half-frame
+  drift that comes from polling `video.currentTime`.
+- Trajectory frame i has presentation time `i/fps` in the source
+  domain. mp4s whose encoder padded extras past T-1 (older bundles —
+  see `problem.md` 2026-05-13 entry) are handled by the early-loop
+  guard: as soon as `currentTime` crosses `clipEndTime + 0.5/fps`, the
+  video jumps back to start, so the duplicate-pad section never plays.
+- `App.baselineRate = 15 / App.fps` (set in `loadedmetadata`) makes
+  `video.playbackRate × rate-sel` always work out to 15
+  trajectory-frames/sec at the rate-sel default (1×). 30-fps HOT3D
+  plays at 0.5×, 24-fps DAVIS at 0.625×, 15-fps EgoDex/HD-EPIC at 1×.
+- Two-tier update rate: the 2D overlay refreshes every rAF for smooth
+  dot motion (interp2d sub-frame), but the 3D panels only re-render
+  when the integer `fi` changes — rebuilding trails per rAF would burn
+  GPU for visuals that don't change between integer frames.
 
 ## `class Panel` (line 2046)
 ```
@@ -289,8 +298,11 @@ Per-dataset specifics:
     The live camera is honoured exactly — frame the shot in the viewer,
     then export.
 - gif.js (`gif.js.optimized@1.0.1`) is loaded from CDN in `<head>`; the
-  quantizer workers are explicitly pinned to the same CDN build via
-  `workerScript`.
+  quantizer worker script is fetched on first capture and wrapped in a
+  same-origin Blob URL by `_ensureGifWorkerUrl()` (fallback CDN list:
+  jsdelivr → unpkg → classic gif.js@0.2.0). The blob trick is what
+  makes `new Worker(workerScript)` succeed on github.io, which refuses
+  cross-origin Worker construction.
 - One GIF frame per trajectory frame; `delay = 1000/gifFps` ms; loops
   forever (`repeat: 0`). Output filename:
   `<clip_id>_{clip,fullvideo,canvas-id}_<gifFps>fps.gif`.

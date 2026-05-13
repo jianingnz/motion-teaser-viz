@@ -4922,28 +4922,40 @@ async function init() {
     App.clipEndFrame   = af[af.length - 1];               // T-1 after remap
     App.totalFrames    = T;
     App.fps            = +(clipData.fps || 15);
-    // Some clip mp4s in static/videos/ ended up with N_mp4 ≠ T frames because
-    // prepare_clip.py's old ffmpeg pipeline didn't pin `-fps_mode cfr -r {fps}`,
-    // so libx264 padded/duplicated frames. We can't re-encode in the viewer, but
-    // we CAN sync the overlay by treating the mp4's full duration as the [0, T-1]
-    // trajectory timeline (linear map) — and we set playbackRate so the clip
-    // always plays at 15 trajectory-frames per wall-clock second, no matter what
-    // fps the mp4 was encoded at. `App.fps` is preserved only for legacy callers.
+    // Sync contract:
+    //   trajectory_frame_i (= mp4 source frame i) has presentation time i/fps.
+    // We get the displayed frame's exact mediaTime via requestVideoFrameCallback
+    // (set up at the bottom of init()), so `fi = round(mediaTime * fps)` lines up
+    // 1-to-1 with the visible mp4 frame. Older bundles whose mp4 has trailing
+    // duplicate frames (encoder-side pad) are still handled — we loop the
+    // <video> back to 0 once currentTime crosses the last trajectory-frame's
+    // time, so the duplicates never play.
     App.targetFps     = 15;
-    App.clipStartTime = 0;
-    App.clipEndTime   = video.duration || (T / App.fps);
-    App.tPerFrame     = App.clipEndTime / Math.max(1, T);   // mp4-seconds per trajectory-frame
-    // Baseline playbackRate that yields exactly 15 trajectory-frames/sec wall-clock.
-    // The rate-sel dropdown multiplies this baseline so its semantics are now
-    // "fraction of 15fps wall-clock playback" (1× = 15fps, 0.25× = quarter speed).
-    App.baselineRate  = video.duration > 0
-      ? Math.max(0.01, (video.duration * App.targetFps) / T)
-      : 1.0;
+    App.clipStartTime = App.clipStartFrame / App.fps;
+    App.clipEndTime   = App.clipEndFrame   / App.fps;
+    // Wall-clock pacing baseline: playbackRate that yields exactly 15
+    // trajectory-frames/sec regardless of the mp4's native fps (HOT3D 30fps →
+    // 0.5×; DAVIS 24fps → 0.625×; EgoDex/HD-EPIC 15fps → 1×). The rate-sel
+    // dropdown multiplies this; 1× = 15 fps wall-clock.
+    App.baselineRate  = Math.max(0.01, App.targetFps / App.fps);
     const rateMul = parseFloat(document.getElementById('rate-sel').value) || 1.0;
     video.playbackRate = App.baselineRate * rateMul;
     video.currentTime = App.clipStartTime;
     video.pause();
     setupVideoOverlay();
+    // requestVideoFrameCallback (Chrome 83+, Safari 15.4+, Firefox 132+) hands
+    // us metadata.mediaTime — the *exact* presentation time of the frame the
+    // browser just painted. Stash it on App._rvfcMediaTime so the rAF tick()
+    // can compute `fi = round(mediaTime * fps)` against the truly-displayed
+    // frame, not against the polled `video.currentTime` (which can lead by up
+    // to half a frame). Fall back gracefully if the API is missing.
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      const onVfc = (_now, meta) => {
+        App._rvfcMediaTime = meta?.mediaTime ?? video.currentTime;
+        video.requestVideoFrameCallback(onVfc);
+      };
+      video.requestVideoFrameCallback(onVfc);
+    }
     tick();
     // Populate the raw-RGB strip panel with sampled frames from the mp4.
     buildRawThumbs(10).catch(err => console.warn('raw-thumbs failed:', err));
@@ -4968,28 +4980,27 @@ async function init() {
     // mutated camState; in that case the panels were already re-rendered.
     processKeyboardCamera(performance.now());
     if (video.duration && App.clipEndTime != null) {
-      // Loop once we've crossed the last trajectory-frame's slot. We compare in
-      // mp4-seconds; one trajectory-frame lasts `App.tPerFrame` mp4 seconds.
-      if (video.currentTime >= App.clipEndTime - 1e-3) {
-        video.currentTime = 0;
+      // Loop the <video> back to the first trajectory frame as soon as we cross
+      // the last one's presentation time. Older bundles' mp4s have trailing
+      // duplicate frames (encoder pad) past clipEndTime — looping early skips
+      // them so the user doesn't see the trajectory freeze on the final frame.
+      if (video.currentTime > App.clipEndTime + 0.5 / App.fps) {
+        video.currentTime = App.clipStartTime;
       }
-      // Linear map: mp4 time → trajectory frame. Robust to the mp4 having a
-      // different frame count from the trajectory (older bundles do — see
-      // `App.tPerFrame` setup above). Keep both the integer index (for the 3D
-      // panels / labels / trail length) and the fractional index (so the 2D
-      // overlay dots can glide between trajectory frames in lock-step with the
-      // playing video, not snap once per frame).
-      const fiFracRaw = video.currentTime / App.tPerFrame;
+      // Prefer the exact mediaTime of the most-recently-rendered frame
+      // (delivered by requestVideoFrameCallback into App._rvfcMediaTime).
+      // `video.currentTime` lags the displayed frame by up to half a frame in
+      // some browsers, which was the "a little bit off" the user reported.
+      const mediaT = (App._rvfcMediaTime != null) ? App._rvfcMediaTime
+                                                  : video.currentTime;
+      const fiFracRaw = mediaT * App.fps;
       const fi = Math.max(App.clipStartFrame,
-                  Math.min(App.clipEndFrame,
-                  Math.floor(fiFracRaw)));
+                  Math.min(App.clipEndFrame, Math.round(fiFracRaw)));
       const fiFrac = Math.max(App.clipStartFrame,
                   Math.min(App.clipEndFrame, fiFracRaw));
-      // Re-draw the 2D overlay every animation frame so the dots track the
-      // currently-displayed mp4 frame exactly (the linear map above is what
-      // makes that a tight correspondence). drawVideoOverlay reads `fiFrac`
-      // for the dots and rounds for the trail; trails only change at integer
-      // boundaries so this is cheap.
+      // Re-draw the 2D overlay every animation frame so the dots glide
+      // between trajectory frames (interp2d uses the fractional fi). Trails
+      // only change at integer boundaries so this is cheap.
       drawVideoOverlay(fiFrac);
       if (fi !== App._lastFi) {
         App._lastFi = fi;
@@ -5338,11 +5349,17 @@ function setupFullVideo() {
   v.addEventListener('loadedmetadata', () => {
     overlay.width  = v.videoWidth;
     overlay.height = v.videoHeight;
-    // Same proportional-mapping + 15fps-wall-clock contract the clip panel uses.
-    FullApp.tPerFrame = (v.duration || (FullApp.T / FullApp.fps)) / Math.max(1, FullApp.T);
-    v.playbackRate = v.duration > 0
-      ? Math.max(0.05, (v.duration * 15) / FullApp.T)
-      : 1.0;
+    // Same 15-fps-wall-clock baseline as the cut-clip panel. `fi` is computed
+    // from the displayed frame's mediaTime (rVFC) in tickFullVideo() so the
+    // overlay matches the painted mp4 frame exactly.
+    v.playbackRate = Math.max(0.01, 15 / FullApp.fps);
+    if (typeof v.requestVideoFrameCallback === 'function') {
+      const onVfc = (_now, meta) => {
+        FullApp._rvfcMediaTime = meta?.mediaTime ?? v.currentTime;
+        v.requestVideoFrameCallback(onVfc);
+      };
+      v.requestVideoFrameCallback(onVfc);
+    }
     drawFullTimeline();
     v.play().catch(() => { /* autoplay sometimes blocked; user-resumable */ });
     requestAnimationFrame(tickFullVideo);
@@ -5362,12 +5379,17 @@ function setupFullVideo() {
 function tickFullVideo() {
   const v = FullApp.fullVideo;
   if (v && v.duration) {
-    const tpf = FullApp.tPerFrame || (v.duration / Math.max(1, FullApp.T));
-    const fiFrac = Math.max(0, Math.min(FullApp.T - 1, v.currentTime / tpf));
-    const fi = Math.floor(fiFrac);
-    // Re-draw the overlay every animation frame so the dots glide with the
-    // video (matches the cut-clip panel behaviour above). Trails inside
-    // drawFullVideoOverlay only change at integer boundaries.
+    // mediaTime → trajectory frame via the mp4's native fps (`FullApp.fps`).
+    // Loop back when we cross the last trajectory-frame's slot so any encoder
+    // padding past T-1 is skipped (matches the cut-clip behaviour).
+    const endTime = (FullApp.T - 1) / FullApp.fps;
+    if (v.currentTime > endTime + 0.5 / FullApp.fps) {
+      v.currentTime = 0;
+    }
+    const mediaT  = (FullApp._rvfcMediaTime != null) ? FullApp._rvfcMediaTime
+                                                     : v.currentTime;
+    const fiFrac  = Math.max(0, Math.min(FullApp.T - 1, mediaT * FullApp.fps));
+    const fi      = Math.round(fiFrac);
     drawFullVideoOverlay(fiFrac);
     if (fi !== FullApp.fi) {
       FullApp.fi = fi;
@@ -5955,7 +5977,35 @@ function drawVideoOverlay(fiFrac) {
 // 15 fps wall-clock playback the viewer just standardised on. gif.js does
 // LZW + quantization in workers — `workerScript` is pinned to the same CDN
 // build we load in <head> so worker spawning doesn't 404.
-const GIF_WORKER_URL = 'https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js';
+// gif.js spawns its quantizer / LZW workers from `workerScript`. The CDN copy
+// of gif.worker.js doesn't always come back with the `Access-Control-Allow-Origin`
+// header github.io's strict-origin Worker constructor requires, so we fetch the
+// script ourselves and re-serve it from a same-origin blob URL. The blob URL is
+// computed lazily on first export and cached for the page's lifetime.
+const GIF_WORKER_CDN_CANDIDATES = [
+  'https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js',
+  'https://unpkg.com/gif.js.optimized@1.0.1/dist/gif.worker.js',
+  'https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js',
+];
+let _gifWorkerUrl = null;
+async function _ensureGifWorkerUrl() {
+  if (_gifWorkerUrl) return _gifWorkerUrl;
+  let lastErr = null;
+  for (const url of GIF_WORKER_CDN_CANDIDATES) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const src = await res.text();
+      // wrap as a blob so the resulting Worker URL is same-origin.
+      const blob = new Blob([src], { type: 'application/javascript' });
+      _gifWorkerUrl = URL.createObjectURL(blob);
+      return _gifWorkerUrl;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw new Error(`could not fetch gif.worker.js from any CDN: ${lastErr}`);
+}
 
 function _gifDownload(blob, fileName) {
   const url = URL.createObjectURL(blob);
@@ -6014,17 +6064,17 @@ async function captureGif() {
 }
 
 async function _captureGifFromVideo(target, gifFps, delay, quality, setProg) {
-  let v, T, tPerFrame, overlayDraw, overlayCanvas;
+  let v, T, fps, overlayDraw, overlayCanvas;
   if (target === 'video') {
     v = video;
     T = App.totalFrames;
-    tPerFrame = App.tPerFrame;
+    fps = App.fps;
     overlayDraw = (fi) => drawVideoOverlay(fi);
     overlayCanvas = vidOver;
   } else {
     v = FullApp.fullVideo;
     T = FullApp.T;
-    tPerFrame = FullApp.tPerFrame;
+    fps = FullApp.fps;
     overlayDraw = (fi) => drawFullVideoOverlay(fi);
     overlayCanvas = document.getElementById('full-vid-overlay');
   }
@@ -6038,10 +6088,11 @@ async function _captureGifFromVideo(target, gifFps, delay, quality, setProg) {
   off.width = W; off.height = H;
   const ctx = off.getContext('2d');
 
+  const workerUrl = await _ensureGifWorkerUrl();
   const gif = new GIF({
     workers: 2,
     quality,
-    workerScript: GIF_WORKER_URL,
+    workerScript: workerUrl,
     width: W,
     height: H,
     repeat: 0,           // 0 = loop forever
@@ -6049,10 +6100,13 @@ async function _captureGifFromVideo(target, gifFps, delay, quality, setProg) {
 
   // Frame range: one GIF frame per trajectory frame so timing matches the
   // viewer's 15 fps wall-clock playback. If the user picked a higher gifFps
-  // we still emit T frames but with proportionally shorter `delay`.
+  // we still emit T frames but with proportionally shorter `delay`. Seek by
+  // (fi + 0.5) / fps — the centre of the frame interval — so the decoder
+  // robustly lands on the intended frame even when its PTS sits a hair
+  // before/after the integer slot.
   for (let fi = 0; fi < T; fi++) {
     setProg(`Frame ${fi + 1} / ${T} — seeking…`);
-    await _gifSeekVideo(v, fi * tPerFrame);
+    await _gifSeekVideo(v, (fi + 0.5) / fps);
     ctx.drawImage(v, 0, 0, W, H);
     overlayDraw(fi);
     if (overlayCanvas) ctx.drawImage(overlayCanvas, 0, 0, W, H);
@@ -6090,10 +6144,11 @@ async function _captureGifFromPanel(canvasId, gifFps, delay, quality, setProg) {
   const canvas = panel.canvas;
   const W = canvas.width, H = canvas.height;
 
+  const workerUrl = await _ensureGifWorkerUrl();
   const gif = new GIF({
     workers: 2,
     quality,
-    workerScript: GIF_WORKER_URL,
+    workerScript: workerUrl,
     width: W,
     height: H,
     repeat: 0,
@@ -7596,12 +7651,13 @@ function stepFrame(dir) {
   if (!video.duration || App.clipEndFrame == null) return;
   video.pause();
   document.getElementById('play-btn').textContent = '▶';
-  // Convert mp4 time → trajectory frame using the same linear map tick() uses
-  // (so step-by-arrow stays consistent with the overlay even when the mp4 has
-  // a different frame count from the trajectory).
-  const cur  = Math.floor(video.currentTime / App.tPerFrame);
+  // mediaTime is the displayed frame's exact presentation time; round trips
+  // to the same integer trajectory frame tick() shows. Without rVFC we fall
+  // back to currentTime, which is good enough when the user is stepping.
+  const mediaT = (App._rvfcMediaTime != null) ? App._rvfcMediaTime : video.currentTime;
+  const cur  = Math.round(mediaT * App.fps);
   const next = Math.max(App.clipStartFrame, Math.min(App.clipEndFrame, cur + dir));
-  video.currentTime = next * App.tPerFrame;
+  video.currentTime = next / App.fps;
 }
 
 // Layer toggles apply to both the live big panel (panels[0]) and the

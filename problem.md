@@ -75,6 +75,50 @@ can be repaired the same way.
 (it has `poses_full` in scope) — mirror the HD-EPIC builder
 (`prepare_hdepic.py:347-349`).
 
+## 2026-05-13 (later) — linear-map sync was WORSE than `round(t*fps)`
+**Symptom**: After the first 2026-05-13 patch landed, the 2D overlay
+was visibly *more* off than before — the trail head sat several frames
+ahead of the visible utensils on `insert_remove_utensils_534_t185`.
+**Root cause**: The linear map `fi = floor(currentTime / (duration/T))`
+assumed the T trajectory frames are uniformly spread over `duration`
+mp4-seconds. For `insert_remove_utensils_534_t185.mp4` that's false —
+the mp4 has 24 unique frames at native 15 fps (mediaTime 0..1.533 s)
+followed by 16 *duplicate* frames of trajectory frame 23 at the end
+(libx264 pad). So a uniform map mid-way-through-mp4 said `fi=12` while
+the displayed frame was actually source frame 9.
+**Fix**: Reverted `tick()` / `tickFullVideo()` to the per-frame formula
+`fi = round(mediaTime * App.fps)`. To get the *exactly-displayed*
+mediaTime instead of polling `video.currentTime` (which can lead by up
+to half a frame in Chrome), we set up `video.requestVideoFrameCallback`
+in the `loadedmetadata` handler and stash `meta.mediaTime` on
+`App._rvfcMediaTime`. The early-loop guard `currentTime > clipEndTime +
+0.5/fps` skips the trailing duplicate frames so the trajectory never
+"freezes" on the last frame. `playbackRate` is now `15 / App.fps` so a
+30-fps HOT3D mp4 plays at 0.5×, a 24-fps DAVIS mp4 at 0.625×, and
+every clip looks like 15 trajectory-frames/sec wall-clock.
+**Prevent**: When mp4 PTS layout matters for overlay sync, verify by
+MSE-matching mp4 frames against source frames (see
+`tmp/...` one-shot from this debug) before changing the sync math.
+
+## 2026-05-13 — GIF worker blocked by CORS on GitHub Pages
+**Symptom**: `GIF capture failed: Failed to construct 'Worker': Script
+at 'https://cdn.jsdelivr.net/.../gif.worker.js' cannot be accessed
+from origin 'https://jianingnz.github.io'`.
+**Root cause**: `new GIF({ workerScript: <cross-origin URL> })` makes
+the browser spawn a Worker directly from the foreign URL; github.io's
+strict-origin Worker constructor refuses unless the response carries
+`Access-Control-Allow-Origin: *`, which jsdelivr doesn't reliably set
+for arbitrary npm files.
+**Fix**: Added `_ensureGifWorkerUrl()` which fetches the worker script
+text (falls through a list of CDN candidates: jsdelivr → unpkg →
+classic gif.js), wraps it in a same-origin `Blob`, and uses the
+resulting `blob:` URL as `workerScript`. Blob URLs are always
+same-origin, so the Worker constructor accepts them. Cached for the
+page's lifetime.
+**Prevent**: When using libraries that spawn Workers via a URL
+argument, always wrap third-party worker scripts in a same-origin
+blob — same trick applies to mediabunny, ffmpeg.wasm, etc.
+
 ### Template
 ```
 ## <YYYY-MM-DD> — short title
