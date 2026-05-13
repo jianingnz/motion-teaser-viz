@@ -121,18 +121,28 @@ Every prep script emits the same shape (some fields optional):
 15. `bindControls()` — wires up the entire sidebar (sliders, colour
     pickers, palette/preset buttons, layer toggles, eraser, …).
 
-## Per-frame tick (line 4520)
+## Per-frame tick (line 4910)
 ```
 processKeyboardCamera(now)        // WASD + E/C; mutates camState
-fi = round(video.currentTime * fps).clamp(start, end)
+fiFracRaw = video.currentTime / App.tPerFrame
+fi      = floor(fiFracRaw).clamp(start, end)
+fiFrac  = fiFracRaw.clamp(start, end)
+drawVideoOverlay(fiFrac)          // every rAF: dots glide sub-frame via interp2d
 if fi !== App._lastFi:
     update labels + scrub bar
-    panels (non-paperMode).updateDynamic(cfg, fi).render()
-    drawVideoOverlay(fi)
+    panels (non-paperMode).updateDynamic(cfg, fi).render()   // integer-frame only
 requestAnimationFrame(tick)
 ```
-Only an **integer frame change** triggers re-render — playhead /
-trail-ball positions never drift between sub-frame `tick`s.
+Two-tier update rate: the 2D overlay refreshes every rAF for smooth
+dot motion, but the 3D panels only re-render when the integer frame
+changes (rebuilding trails per rAF would burn GPU for visuals that
+don't change between integer frames). The fiFrac→trajectory map is
+*linear in mp4 time*, not `round(currentTime*fps)`, so the sync is
+robust to bundles whose mp4 has a different frame count than the
+trajectory (older `prepare_clip.py` bundles, which left libx264 to pad).
+`App.baselineRate` (set in `loadedmetadata`) makes
+`video.playbackRate × rate-sel` always work out to 15 trajectory-frames
+per wall-clock second at 1×.
 
 ## `class Panel` (line 2046)
 ```
@@ -261,3 +271,26 @@ Per-dataset specifics:
 - Sidebar "Capture" section (in `bindControls`): panel selector + scale
   dropdown (1×, 2×, 4×, 8×) + "All panels" mode that walks every visible
   3D panel and downloads `<clip_id>_<canvas-id>_<scale>x.png`.
+
+## Animated-GIF capture
+- Same "Capture" sidebar section also has a **GIF** sub-block with three
+  controls: target, fps, quality. Implemented in `captureGif()`
+  (`index.html` ≈ line 6020), split into two helpers:
+  - `_captureGifFromVideo(target, …)` for ① clip video and ⓪ full source
+    video. Seeks the `<video>` to `fi * tPerFrame` (`seeked` event),
+    composites the frame onto an offscreen canvas, calls
+    `drawVideoOverlay(fi)` (or `drawFullVideoOverlay`) to re-draw the
+    overlay for that exact frame, then overlays it on the offscreen
+    canvas and pushes to `gif.js`.
+  - `_captureGifFromPanel(canvasId, …)` for the 3D scenes
+    (`canvas-all`, `canvas-gt`, `canvas-pred`, `canvas-cmp`). Walks
+    `fi=0..T-1`, calls `panel.updateDynamic(cfg, fi); panel.render()`,
+    snapshots the canvas (works because `preserveDrawingBuffer:true`).
+    The live camera is honoured exactly — frame the shot in the viewer,
+    then export.
+- gif.js (`gif.js.optimized@1.0.1`) is loaded from CDN in `<head>`; the
+  quantizer workers are explicitly pinned to the same CDN build via
+  `workerScript`.
+- One GIF frame per trajectory frame; `delay = 1000/gifFps` ms; loops
+  forever (`repeat: 0`). Output filename:
+  `<clip_id>_{clip,fullvideo,canvas-id}_<gifFps>fps.gif`.

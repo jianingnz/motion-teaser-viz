@@ -142,6 +142,29 @@ All produce: depth-backprojected scene PC (subsample=3 typical), per-frame
 - Track-smoothing slider rebuilds `cfg.gt_3d / pred_3d` and `clipData.raw_3d`
   from a snapshot on every change so going back to "Original" is exact.
 
+## Recent additions (2026-05-13)
+- **Overlay-to-video sync is now duration-based, not fps-based.** The clip
+  panel ① and the full-source panel ⓪ both map `video.currentTime / video.duration`
+  → trajectory frame in `tick()` / `tickFullVideo()`, and the
+  `loadedmetadata` handler sets `video.playbackRate` so each trajectory
+  frame plays for exactly 1/15 s wall-clock regardless of the mp4's
+  encoded fps or frame count. This fixes the drift that came from
+  `prepare_clip.py`-era bundles whose mp4s had more frames than the
+  trajectory (libx264 padded under the old encoder args).
+- **Rate-sel dropdown is now a multiplier** on the new 15-fps wall-clock
+  baseline (stored in `App.baselineRate`). `1×` = 15 fps wall-clock,
+  `0.25×` = quarter speed. The default is `1×`.
+- **2D-track dots glide between trajectory frames.** `drawVideoOverlay`
+  / `drawFullVideoOverlay` are called every animation frame with a
+  fractional `fiFrac`; `interp2d` smooths the current-frame dot so it
+  follows the smoothly-playing video instead of snapping. Trails still
+  grow on integer-frame boundaries (cheap, no visual benefit to smoothing).
+- **Animated-GIF capture** in the sidebar Capture section. Targets:
+  ① video + 2D overlay, ⓪ full source video + overlay, and the 3D-scene
+  panels ③/④a/④b/④c with the live camera. Uses
+  `gif.js.optimized@1.0.1` from CDN (workers spawned via `workerScript`).
+  Emits one GIF frame per trajectory frame; loops forever.
+
 ## Recent additions (2026-05-04)
 - **Per-role colormap palette mode** (replaced the old single rainbow
   toggle). 8 LUTs (magma/inferno/plasma/viridis/cividis/turbo/rocket/mako)

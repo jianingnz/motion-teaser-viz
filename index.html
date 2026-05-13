@@ -399,6 +399,10 @@ footer a { color: #2563eb; text-decoration: none; }
      import map, so we ship the self-contained UMD instead. Exposes
      window.jspdf.jsPDF, used by Panel.capture(scale)'s sidebar wiring. -->
 <script src="https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<!-- gif.js: animated-GIF encoder used by the sidebar's "Capture GIF" button.
+     The worker URL is passed explicitly to `new GIF({ workerScript })` so the
+     CDN-loaded library can spawn its quantizer workers. -->
+<script src="https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.js"></script>
 </head>
 <body>
 <div class="page">
@@ -637,10 +641,10 @@ footer a { color: #2563eb; text-decoration: none; }
           <button class="btn" id="play-btn" title="Play / pause">▶</button>
           <button class="btn" id="step-back" title="Step one frame back">◀|</button>
           <button class="btn" id="step-fwd"  title="Step one frame forward">|▶</button>
-          <select class="btn" id="rate-sel" title="Playback speed">
-            <option value="1">1×</option>
+          <select class="btn" id="rate-sel" title="Playback speed (multiplier on the 15 fps wall-clock baseline)">
+            <option value="1" selected>1× (15 fps)</option>
             <option value="0.5">0.5×</option>
-            <option value="0.25" selected>0.25×</option>
+            <option value="0.25">0.25×</option>
             <option value="0.1">0.1×</option>
           </select>
           <span class="frame-lbl" id="frame-lbl">frame 0/0</span>
@@ -1221,6 +1225,43 @@ footer a { color: #2563eb; text-decoration: none; }
         <div style="margin-top:6px;font-size:.7rem;color:var(--text-muted);font-family:monospace;">
           Output: single-page PDF, page size = panel CSS box × scale (in pixels).
           Camera + lighting + colormap state captured exactly as drawn.
+        </div>
+        <hr style="border:none;border-top:1px solid var(--border);margin:10px 0 8px;"/>
+        <div class="lbl-row" style="margin-bottom:6px;"><span>Animated GIF</span></div>
+        <div class="fld">
+          <div class="lbl-row"><span>Target</span></div>
+          <select id="gif-target" style="width:100%;">
+            <option value="video">① Video + 2D-track overlay</option>
+            <option value="full-video">⓪ Full source video + overlay</option>
+            <option value="canvas-all">③ Big 3D scene (combined view, live camera)</option>
+            <option value="canvas-gt">④a GT-only 3D scene</option>
+            <option value="canvas-pred">④b Pred-only 3D scene</option>
+            <option value="canvas-cmp">④c GT+Pred+error 3D scene</option>
+          </select>
+        </div>
+        <div class="fld" style="margin-top:8px;">
+          <div class="lbl-row"><span>Frames-per-second</span></div>
+          <select id="gif-fps" style="width:100%;">
+            <option value="15" selected>15 fps (matches viewer)</option>
+            <option value="30">30 fps (smoother, larger file)</option>
+            <option value="10">10 fps (smaller file)</option>
+          </select>
+        </div>
+        <div class="fld" style="margin-top:8px;">
+          <div class="lbl-row"><span>Quality</span></div>
+          <select id="gif-quality" style="width:100%;">
+            <option value="10" selected>Default (quality=10)</option>
+            <option value="5">Higher (slower, larger)</option>
+            <option value="20">Lower (faster, smaller)</option>
+          </select>
+        </div>
+        <div class="toggle-grid" style="margin-top:10px;">
+          <button class="btn full" id="gif-go" title="Render the selected target frame-by-frame and download an animated GIF. 3D-scene exports keep the current live camera + layer toggles.">🎞 Capture GIF</button>
+        </div>
+        <div id="gif-progress" style="margin-top:6px;font-size:.7rem;color:var(--text-muted);font-family:monospace;display:none;"></div>
+        <div style="margin-top:6px;font-size:.7rem;color:var(--text-muted);font-family:monospace;">
+          One GIF frame per trajectory frame; loops forever. 3D-scene exports
+          use the live camera/lighting state.
         </div>
       </div>
     </details>
@@ -4881,11 +4922,25 @@ async function init() {
     App.clipEndFrame   = af[af.length - 1];               // T-1 after remap
     App.totalFrames    = T;
     App.fps            = +(clipData.fps || 15);
-    // Native-fps mp4 → time of frame fi is exactly fi/fps. We use fps directly
-    // (not currentTime/duration) so the trajectory-frame index is the same
-    // integer the video element is actually displaying — no interpolation drift.
-    App.clipStartTime  = App.clipStartFrame / App.fps;
-    App.clipEndTime    = App.clipEndFrame   / App.fps;
+    // Some clip mp4s in static/videos/ ended up with N_mp4 ≠ T frames because
+    // prepare_clip.py's old ffmpeg pipeline didn't pin `-fps_mode cfr -r {fps}`,
+    // so libx264 padded/duplicated frames. We can't re-encode in the viewer, but
+    // we CAN sync the overlay by treating the mp4's full duration as the [0, T-1]
+    // trajectory timeline (linear map) — and we set playbackRate so the clip
+    // always plays at 15 trajectory-frames per wall-clock second, no matter what
+    // fps the mp4 was encoded at. `App.fps` is preserved only for legacy callers.
+    App.targetFps     = 15;
+    App.clipStartTime = 0;
+    App.clipEndTime   = video.duration || (T / App.fps);
+    App.tPerFrame     = App.clipEndTime / Math.max(1, T);   // mp4-seconds per trajectory-frame
+    // Baseline playbackRate that yields exactly 15 trajectory-frames/sec wall-clock.
+    // The rate-sel dropdown multiplies this baseline so its semantics are now
+    // "fraction of 15fps wall-clock playback" (1× = 15fps, 0.25× = quarter speed).
+    App.baselineRate  = video.duration > 0
+      ? Math.max(0.01, (video.duration * App.targetFps) / T)
+      : 1.0;
+    const rateMul = parseFloat(document.getElementById('rate-sel').value) || 1.0;
+    video.playbackRate = App.baselineRate * rateMul;
     video.currentTime = App.clipStartTime;
     video.pause();
     setupVideoOverlay();
@@ -4913,14 +4968,29 @@ async function init() {
     // mutated camState; in that case the panels were already re-rendered.
     processKeyboardCamera(performance.now());
     if (video.duration && App.clipEndTime != null) {
-      if (video.currentTime > App.clipEndTime + 0.5 / App.fps) {
-        video.currentTime = App.clipStartTime;
+      // Loop once we've crossed the last trajectory-frame's slot. We compare in
+      // mp4-seconds; one trajectory-frame lasts `App.tPerFrame` mp4 seconds.
+      if (video.currentTime >= App.clipEndTime - 1e-3) {
+        video.currentTime = 0;
       }
-      // Integer source-frame index = round(currentTime * fps). Because the mp4
-      // is at native fps, this matches the frame the <video> is showing.
+      // Linear map: mp4 time → trajectory frame. Robust to the mp4 having a
+      // different frame count from the trajectory (older bundles do — see
+      // `App.tPerFrame` setup above). Keep both the integer index (for the 3D
+      // panels / labels / trail length) and the fractional index (so the 2D
+      // overlay dots can glide between trajectory frames in lock-step with the
+      // playing video, not snap once per frame).
+      const fiFracRaw = video.currentTime / App.tPerFrame;
       const fi = Math.max(App.clipStartFrame,
                   Math.min(App.clipEndFrame,
-                  Math.round(video.currentTime * App.fps)));
+                  Math.floor(fiFracRaw)));
+      const fiFrac = Math.max(App.clipStartFrame,
+                  Math.min(App.clipEndFrame, fiFracRaw));
+      // Re-draw the 2D overlay every animation frame so the dots track the
+      // currently-displayed mp4 frame exactly (the linear map above is what
+      // makes that a tight correspondence). drawVideoOverlay reads `fiFrac`
+      // for the dots and rounds for the trail; trails only change at integer
+      // boundaries so this is cheap.
+      drawVideoOverlay(fiFrac);
       if (fi !== App._lastFi) {
         App._lastFi = fi;
         const fiRel = fi - App.clipStartFrame;
@@ -4930,14 +5000,14 @@ async function init() {
         const denom = Math.max(1e-6, App.clipEndTime - App.clipStartTime);
         document.getElementById('scrub').value = Math.max(0, Math.min(100,
           (video.currentTime - App.clipStartTime) / denom * 100));
-        // Same integer fi drives BOTH trails and current dots → no drift.
-        // The paperMode panel is a static composite, so it never re-renders
-        // from tick — only the camera-rotate handler refreshes it.
+        // 3D panels still update on integer-frame changes only (re-rendering
+        // every rAF would burn GPU for trails that are unchanged between
+        // integer frames). The paperMode panel is a static composite, so it
+        // never re-renders from tick — only the camera-rotate handler does.
         panels.forEach(p => {
           if (p.opts.paperMode) return;
           p.updateDynamic(cfg, fi); p.render();
         });
-        drawVideoOverlay(fi);
       }
     }
     requestAnimationFrame(tick);
@@ -5268,6 +5338,11 @@ function setupFullVideo() {
   v.addEventListener('loadedmetadata', () => {
     overlay.width  = v.videoWidth;
     overlay.height = v.videoHeight;
+    // Same proportional-mapping + 15fps-wall-clock contract the clip panel uses.
+    FullApp.tPerFrame = (v.duration || (FullApp.T / FullApp.fps)) / Math.max(1, FullApp.T);
+    v.playbackRate = v.duration > 0
+      ? Math.max(0.05, (v.duration * 15) / FullApp.T)
+      : 1.0;
     drawFullTimeline();
     v.play().catch(() => { /* autoplay sometimes blocked; user-resumable */ });
     requestAnimationFrame(tickFullVideo);
@@ -5287,12 +5362,16 @@ function setupFullVideo() {
 function tickFullVideo() {
   const v = FullApp.fullVideo;
   if (v && v.duration) {
-    const fi = Math.max(0, Math.min(FullApp.T - 1,
-                Math.round(v.currentTime * FullApp.fps)));
+    const tpf = FullApp.tPerFrame || (v.duration / Math.max(1, FullApp.T));
+    const fiFrac = Math.max(0, Math.min(FullApp.T - 1, v.currentTime / tpf));
+    const fi = Math.floor(fiFrac);
+    // Re-draw the overlay every animation frame so the dots glide with the
+    // video (matches the cut-clip panel behaviour above). Trails inside
+    // drawFullVideoOverlay only change at integer boundaries.
+    drawFullVideoOverlay(fiFrac);
     if (fi !== FullApp.fi) {
       FullApp.fi = fi;
       document.getElementById('full-vid-frame').textContent = `frame ${fi}/${FullApp.T - 1}`;
-      drawFullVideoOverlay(fi);
       drawFullTimeline();
     }
   }
@@ -5347,7 +5426,7 @@ function ensureFullPicks() {
   }
 }
 
-function drawFullVideoOverlay(fi) {
+function drawFullVideoOverlay(fiFrac) {
   const ctx = FullApp.overlayCtx;
   if (!ctx) return;
   const v = FullApp.fullVideo;
@@ -5357,6 +5436,11 @@ function drawFullVideoOverlay(fi) {
 
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.setLineDash([]);
+
+  // Trails grow on integer-frame boundaries; the current-frame dot interpolates
+  // sub-frame so it tracks the smoothly-playing video, not the once-per-frame
+  // snap of the trail.
+  const fi = Math.floor(fiFrac);
 
   // ── GT layer (filtered + smoothed full-video tracks) ──
   const gtTracks = clipData.full_video_2d?.tracks;
@@ -5375,7 +5459,7 @@ function drawFullVideoOverlay(fi) {
         if (prev) { ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(xy[0], xy[1]); ctx.stroke(); }
         prev = xy;
       }
-      const cur = gtTracks[fi]?.[p];
+      const cur = interp2d(gtTracks, fiFrac, p);
       if (cur && cur[0] != null && Number.isFinite(cur[0])) {
         ctx.beginPath(); ctx.arc(cur[0] * W, cur[1] * H, 3.4, 0, Math.PI * 2); ctx.fill();
       }
@@ -5854,6 +5938,201 @@ function drawVideoOverlay(fiFrac) {
   }
 }
 
+// ──────────── Animated-GIF capture ────────────
+// Sidebar "Capture GIF" button → render every trajectory frame into a GIF.
+// Two paths:
+//
+//   • Video target — composite the <video> element (seek + wait for `seeked`)
+//     onto an offscreen canvas, then overlay the 2D-track canvas. Uses
+//     `drawVideoOverlay` so the GIF has exactly the same overlay the live
+//     viewer shows (colormap chips, layer toggles, etc.).
+//
+//   • 3D-scene target — call `panel.updateDynamic(cfg, fi); panel.render()`
+//     for each frame, then snapshot the WebGL canvas. The current live
+//     camera state is honoured (the user frames the shot first, then exports).
+//
+// Both paths emit one GIF frame per trajectory frame so timing matches the
+// 15 fps wall-clock playback the viewer just standardised on. gif.js does
+// LZW + quantization in workers — `workerScript` is pinned to the same CDN
+// build we load in <head> so worker spawning doesn't 404.
+const GIF_WORKER_URL = 'https://cdn.jsdelivr.net/npm/gif.js.optimized@1.0.1/dist/gif.worker.js';
+
+function _gifDownload(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function _gifSeekVideo(v, t) {
+  // Resolve when the video element has actually finished seeking. We use
+  // `seeked` (singular) because `seeking` fires before the new frame is ready.
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const onSeeked = () => { if (done) return; done = true; v.removeEventListener('seeked', onSeeked); resolve(); };
+    const onError = () => { if (done) return; done = true; v.removeEventListener('error', onError); reject(new Error('video seek error')); };
+    v.addEventListener('seeked', onSeeked, { once: true });
+    v.addEventListener('error',  onError,  { once: true });
+    v.currentTime = t;
+    // Safety: some encodings never re-emit `seeked` if the time is identical
+    // to the current one. Force-resolve after one rAF in that case.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (!done) { done = true; v.removeEventListener('seeked', onSeeked); resolve(); }
+    }));
+  });
+}
+
+async function captureGif() {
+  if (typeof GIF !== 'function') {
+    alert('GIF encoder failed to load (gif.js CDN script). Reload the page.');
+    return;
+  }
+  const target  = document.getElementById('gif-target')?.value || 'video';
+  const gifFps  = +(document.getElementById('gif-fps')?.value || 15);
+  const quality = +(document.getElementById('gif-quality')?.value || 10);
+  const delay   = Math.max(1, Math.round(1000 / gifFps));
+  const btn = document.getElementById('gif-go');
+  const prog = document.getElementById('gif-progress');
+  const origLabel = btn.textContent;
+  const setProg = (msg) => { if (prog) { prog.style.display = ''; prog.textContent = msg; } };
+  const clearProg = () => { if (prog) { prog.style.display = 'none'; prog.textContent = ''; } };
+  btn.disabled = true;
+  btn.textContent = '🎞 Capturing…';
+  try {
+    if (target === 'video' || target === 'full-video') {
+      await _captureGifFromVideo(target, gifFps, delay, quality, setProg);
+    } else {
+      await _captureGifFromPanel(target, gifFps, delay, quality, setProg);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origLabel;
+    clearProg();
+  }
+}
+
+async function _captureGifFromVideo(target, gifFps, delay, quality, setProg) {
+  let v, T, tPerFrame, overlayDraw, overlayCanvas;
+  if (target === 'video') {
+    v = video;
+    T = App.totalFrames;
+    tPerFrame = App.tPerFrame;
+    overlayDraw = (fi) => drawVideoOverlay(fi);
+    overlayCanvas = vidOver;
+  } else {
+    v = FullApp.fullVideo;
+    T = FullApp.T;
+    tPerFrame = FullApp.tPerFrame;
+    overlayDraw = (fi) => drawFullVideoOverlay(fi);
+    overlayCanvas = document.getElementById('full-vid-overlay');
+  }
+  if (!v || !v.videoWidth || !T) throw new Error('video not ready');
+
+  const wasPaused = v.paused;
+  v.pause();
+
+  const W = v.videoWidth, H = v.videoHeight;
+  const off = document.createElement('canvas');
+  off.width = W; off.height = H;
+  const ctx = off.getContext('2d');
+
+  const gif = new GIF({
+    workers: 2,
+    quality,
+    workerScript: GIF_WORKER_URL,
+    width: W,
+    height: H,
+    repeat: 0,           // 0 = loop forever
+  });
+
+  // Frame range: one GIF frame per trajectory frame so timing matches the
+  // viewer's 15 fps wall-clock playback. If the user picked a higher gifFps
+  // we still emit T frames but with proportionally shorter `delay`.
+  for (let fi = 0; fi < T; fi++) {
+    setProg(`Frame ${fi + 1} / ${T} — seeking…`);
+    await _gifSeekVideo(v, fi * tPerFrame);
+    ctx.drawImage(v, 0, 0, W, H);
+    overlayDraw(fi);
+    if (overlayCanvas) ctx.drawImage(overlayCanvas, 0, 0, W, H);
+    gif.addFrame(off, { copy: true, delay });
+  }
+
+  setProg('Encoding GIF…');
+  await new Promise((resolve, reject) => {
+    gif.on('progress', (p) => setProg(`Encoding GIF… ${Math.round(p * 100)}%`));
+    gif.on('finished', (blob) => {
+      const stem = (CLIP_URL.split('/').pop() || 'clip').replace(/\.json$/, '');
+      _gifDownload(blob, `${stem}_${target === 'video' ? 'clip' : 'fullvideo'}_${gifFps}fps.gif`);
+      resolve();
+    });
+    try { gif.render(); } catch (e) { reject(e); }
+  });
+
+  if (!wasPaused) v.play().catch(() => {});
+}
+
+async function _captureGifFromPanel(canvasId, gifFps, delay, quality, setProg) {
+  const panel = panels.find(p => p?.canvas?.id === canvasId);
+  if (!panel) throw new Error(`no panel with id ${canvasId}`);
+  if (panel.opts?.paperMode) {
+    throw new Error('paper-mode panels are static composites — capture as PDF, not GIF');
+  }
+
+  const wasPaused = video.paused;
+  video.pause();
+
+  // Capture at the panel canvas's current backing-store size — the user's live
+  // camera + sizing are honoured exactly. We DO NOT call panel.capture() per
+  // frame because that re-allocates a scaled framebuffer; for animation we
+  // want the cheap render path.
+  const canvas = panel.canvas;
+  const W = canvas.width, H = canvas.height;
+
+  const gif = new GIF({
+    workers: 2,
+    quality,
+    workerScript: GIF_WORKER_URL,
+    width: W,
+    height: H,
+    repeat: 0,
+  });
+
+  const T = App.totalFrames;
+  const savedFi = App._lastFi;
+  for (let fi = 0; fi < T; fi++) {
+    setProg(`Frame ${fi + 1} / ${T} — rendering…`);
+    panel.updateDynamic(cfg, fi);
+    panel.render();
+    // The WebGL backing buffer is read directly by gif.js via the canvas
+    // — works because the renderer was constructed with preserveDrawingBuffer
+    // (see the Panel.capture wiring comment). copy:true snapshots immediately.
+    gif.addFrame(canvas, { copy: true, delay });
+    // Yield to the browser so the progress UI updates and we don't trip the
+    // long-task watchdog mid-render.
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  setProg('Encoding GIF…');
+  await new Promise((resolve, reject) => {
+    gif.on('progress', (p) => setProg(`Encoding GIF… ${Math.round(p * 100)}%`));
+    gif.on('finished', (blob) => {
+      const stem = (CLIP_URL.split('/').pop() || 'clip').replace(/\.json$/, '');
+      _gifDownload(blob, `${stem}_${canvasId}_${gifFps}fps.gif`);
+      resolve();
+    });
+    try { gif.render(); } catch (e) { reject(e); }
+  });
+
+  // Restore the panel to the live playback frame so the viewer is consistent.
+  if (savedFi >= 0) {
+    panel.updateDynamic(cfg, savedFi);
+    panel.render();
+  }
+  if (!wasPaused) video.play().catch(() => {});
+}
+
 // ──────────── Chronophotography overlay (static, full sequence) ────────────
 function drawChronoOverlay() {
   if (!chronoOver.width) return;
@@ -5926,7 +6205,12 @@ function bindControls() {
     if (video.paused) { video.play(); document.getElementById('play-btn').textContent = '❚❚'; }
     else { video.pause(); document.getElementById('play-btn').textContent = '▶'; }
   };
-  document.getElementById('rate-sel').onchange = e => video.playbackRate = parseFloat(e.target.value);
+  document.getElementById('rate-sel').onchange = e => {
+    // rate-sel is a multiplier on the 15fps-wall-clock baseline we compute in
+    // `loadedmetadata` (App.baselineRate). 1× → 15 trajectory-frames/sec.
+    const mul = parseFloat(e.target.value) || 1.0;
+    video.playbackRate = (App.baselineRate || 1.0) * mul;
+  };
   document.getElementById('scrub').oninput = e => {
     if (!video.duration || App.clipEndTime == null) return;
     video.currentTime = App.clipStartTime + (e.target.value/100) * (App.clipEndTime - App.clipStartTime);
@@ -6548,6 +6832,18 @@ function bindControls() {
     };
   }
 
+  // ── Animated-GIF capture ──────────────────────────────────────────
+  // Two flavours: a video-panel GIF that composites <video> + the 2D-track
+  // overlay canvas per frame, and a 3D-scene GIF that re-renders the chosen
+  // Panel for every trajectory frame using the LIVE camera state (so the
+  // user can frame the shot, then export). gif.js runs the LZW + median-cut
+  // quantization in workers — `workerScript` points at the CDN bundle.
+  const gifGo = document.getElementById('gif-go');
+  if (gifGo) gifGo.onclick = () => captureGif().catch(err => {
+    console.error('gif capture failed:', err);
+    alert('GIF capture failed: ' + (err?.message || err));
+  });
+
   // ── Sampling section ──────────────────────────────────────────────
   wireSlider('trail-len', 'trail-len-lbl', v => `${v|0}`,
              v => { Settings.trailLen = v|0; rerenderAll(); });
@@ -6627,7 +6923,12 @@ function bindControls() {
   bindPresets();
   _bindFullConfigButtons();
 
-  video.playbackRate = parseFloat(document.getElementById('rate-sel').value);
+  // Honor the rate-sel multiplier on top of the 15fps-wall-clock baseline that
+  // loadedmetadata installed in App.baselineRate (1× = 15fps, 0.25× = quarter).
+  {
+    const mul = parseFloat(document.getElementById('rate-sel').value) || 1.0;
+    video.playbackRate = (App.baselineRate || 1.0) * mul;
+  }
   bindKeyboardCamera();
   bindPcSourceSelector();
   bindTrajectoryPickers();
@@ -7295,9 +7596,12 @@ function stepFrame(dir) {
   if (!video.duration || App.clipEndFrame == null) return;
   video.pause();
   document.getElementById('play-btn').textContent = '▶';
-  const cur  = Math.round(video.currentTime * App.fps);
+  // Convert mp4 time → trajectory frame using the same linear map tick() uses
+  // (so step-by-arrow stays consistent with the overlay even when the mp4 has
+  // a different frame count from the trajectory).
+  const cur  = Math.floor(video.currentTime / App.tPerFrame);
   const next = Math.max(App.clipStartFrame, Math.min(App.clipEndFrame, cur + dir));
-  video.currentTime = next / App.fps;
+  video.currentTime = next * App.tPerFrame;
 }
 
 // Layer toggles apply to both the live big panel (panels[0]) and the
